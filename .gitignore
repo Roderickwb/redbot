@@ -1,0 +1,15 @@
+# Configuratiebestanden met gevoelige informatie
+config.json
+
+# Virtuele omgeving
+.venv/
+
+# PyCharm specifieke bestanden
+.idea/
+
+# Logbestanden
+*.log
+
+# Cachebestanden
+__pycache__/
+*.pyc

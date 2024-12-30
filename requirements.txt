@@ -1,0 +1,6 @@
+websocket-client
+pandas
+logging
+streamlit
+python-dotenv
+ta==0.11.0  # of vervang '0.10.2' door de geïnstalleerde versie

@@ -1,10 +1,33 @@
-markets:
-  - XRP-EUR
-  - BTC-EUR
-  - ETH-EUR
+database:
+  # (optioneel) database-instellingen
+  host: "localhost"
+  user: "some_user"
+  # ...
+
+pairs:
+  XRP-EUR: {}
+  BTC-EUR: {}
+  ETH-EUR: {}
+  DOGE-EUR: {}
+  SOL-EUR: {}
+
+websocket:
+  url: "wss://ws.bitvavo.com/v2/"
+
+# Andere configuratie die je nodig hebt:
+# ...
+
 
 intervals:
   - 1m
   - 5m
   - 15m
   - 1h
+
+database:
+  host: localhost
+  port: 5432
+  name: market_data
+  user: admin
+  password: secret_password
+

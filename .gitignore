@@ -14,9 +14,11 @@ __pycache__/
 # Database, overal genegeerd
 *.db
 
-# Logs, in elke subfolder
-logs/
+
+
+# Logs in elke submap
 **/logs/
+*.log
 
 
 # Environment Variables

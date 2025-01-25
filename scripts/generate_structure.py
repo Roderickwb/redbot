@@ -15,5 +15,5 @@ def print_structure(root_dir, max_depth=2):
             print(f"{sub_indent}{f}")
 
 if __name__ == "__main__":
-    project_dir = '.'  # Huidige map
+    project_dir = '..'  # Huidige map
     print_structure(project_dir, max_depth=2)

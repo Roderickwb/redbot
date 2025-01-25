@@ -1,0 +1,63 @@
+database:
+  user: some_user
+  host: localhost
+pairs:
+  XRP-EUR: {}
+  BTC-EUR: {}
+  ETH-EUR: {}
+  DOGE-EUR: {}
+  SOL-EUR: {}
+websocket:
+  url: wss://ws.bitvavo.com/v2/
+scalping:
+  stop_loss_pct: 0.0075
+  tp1_pct: 0.03
+  tp2_pct: 0.05
+  rsi_lower: 40
+  rsi_upper: 60
+  use_trailing_for_last25: true
+  volatility_threshold: 0.0
+  volume_factor: 0.0
+intervals:
+- 1m
+- 5m
+- 15m
+- 1h
+- 4h
+- 1d
+pullback_accumulate_strategy:
+  pullback_threshold_pct: 0.8118
+  depth_trend: -0.2
+  rsi_bull_threshold: 41.3554
+  rsi_bear_threshold: 50.2701
+  macd_bull_threshold: -0.6362
+  macd_bear_threshold: 0.9403
+  main_timeframe: 1h
+  trend_timeframe: 4h
+  entry_timeframe: 5m
+  daily_timeframe: 1d
+  flash_crash_timeframe: 5m
+  atr_window: 14
+  accumulate_threshold: 1.25
+  position_size_pct: 0.1
+  tp1_atr_mult: 1.2393
+  tp2_atr_mult: 2.3
+  trail_atr_mult: 1.3243
+  initial_capital: 125
+  max_daily_loss_pct: 7.5
+  flash_crash_drop_pct: 10.0
+  use_depth_trend: true
+  pivot_points_window: 20
+  rsi_window: 14
+  pullback_rolling_window: 10
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  ml_model_enabled: true
+  ml_model_path: models/pullback_model.pkl
+  stop_loss_pct: 0.0129
+ml_engine:
+  model_path: models/pullback_model.pkl
+
+ml_settings:
+ auto_overwrite_params: false

@@ -1,33 +1,149 @@
 database:
-  # (optioneel) database-instellingen
-  host: "localhost"
-  user: "some_user"
-  # ...
-
-pairs:
-  XRP-EUR: {}
-  BTC-EUR: {}
-  ETH-EUR: {}
-  DOGE-EUR: {}
-  SOL-EUR: {}
+  user: some_user
+  host: localhost
 
 websocket:
-  url: "wss://ws.bitvavo.com/v2/"
-
-# Andere configuratie die je nodig hebt:
-# ...
-
+  url: wss://ws.bitvavo.com/v2/
 
 intervals:
-  - 1m
-  - 5m
-  - 15m
-  - 1h
+- 1m
+- 5m
+- 15m
+- 1h
+- 4h
+- 1d
 
-database:
-  host: localhost
-  port: 5432
-  name: market_data
-  user: admin
-  password: secret_password
+### PULLBACK_ACCUMULATE_STRATEGY ###
 
+pullback_accumulate_strategy:
+  # STAP 1 DE GROTE TREND: CHECK DIRECTION
+  daily_bull_rsi: 50
+  daily_bear_rsi: 50
+  h4_bull_rsi: 50
+  h4_bear_rsi: 50
+
+  # Deze bestonden al (voorbeeld) gaat om de pullback 15M candle:
+  rsi_bull_threshold: 40 # Als RSI >= 40 (oversold) dan ondersteunt dit de bullisch pullback en stappen we in
+  rsi_bear_threshold: 60 # Als RSI <= 60 (overbought) dan ondersetunt dit de bearisch pullback en stappen we uit
+
+  # Nieuw (om depth_score-checks te configureren!)
+  depth_threshold_bull: -0.3 # orderboek-analyse om te checken of er voldoende volume is om een trend te ondersteuen idealiter > 0)
+  depth_threshold_bear: 0.3
+
+  macd_bull_threshold: -1 # was 0
+  macd_bear_threshold: 1  # was 0
+
+  # bepaald hoever de pullback van de weerstand of support ,oet bewegen om in te stappen = pullback = true
+  pullback_threshold_pct: 1.0 # is redlijk
+
+  ml_model_enabled: true
+
+  main_timeframe: 1h
+  trend_timeframe: 4h
+  entry_timeframe: 5m
+  daily_timeframe: 1d
+  flash_crash_timeframe: 5m
+  atr_window: 14
+  accumulate_threshold: 1.0
+  position_size_pct: 0.05
+  tp1_atr_mult: 0.5
+  tp2_atr_mult: 1
+  trail_atr_mult: 0.5
+  initial_capital: 125
+  max_daily_loss_pct: 7.5
+  flash_crash_drop_pct: 10.0
+  use_depth_trend: true
+  pivot_points_window: 20
+  rsi_window: 14
+  pullback_rolling_window: 10
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  ml_model_path: models/pullback_model.pkl
+  stop_loss_pct: 0.015 # 0.01 is 1%
+ml_engine:
+  model_path: models/pullback_model.pkl
+ml_settings:
+  auto_overwrite_params: false
+
+pairs:
+  # Je reeds bestaande coins
+  - BTC-EUR
+  - ETH-EUR
+  - XRP-EUR
+  - DOGE-EUR
+  - SOL-EUR
+  # Extra coins
+  - ADA-EUR
+  - TRX-EUR
+  - USDT-EUR
+  - SPX-EUR
+  - BNB-EUR
+  - XVG-EUR
+  - LTC-EUR
+  - TRX-EUR
+  - XLM-EUR
+  - PEPE-EUR
+  - LINK-EUR
+  - UNI-EUR
+  - ATOM-EUR
+
+
+
+
+
+#### MULTI_DIRECTION_STRATEGY ####
+
+multi_direction_strategy:
+  log_file: "multidir_strategy.log"         # Pad of bestandsnaam voor loggen
+
+  # Timeframes
+  daily_timeframe: "1d"
+  trend_timeframe: "4h"
+  entry_timeframe: "1h"
+
+  # RSI Thresholds
+  daily_bull_rsi: 60
+  daily_bear_rsi: 40
+  rsi_window: 14
+  rsi_bull_threshold: 55
+  rsi_bear_threshold: 45
+
+  # MACD
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  macd_bull_threshold: 0
+  macd_bear_threshold: 0
+
+  # Pullback
+  pullback_threshold_pct: 0.5          # percentage
+  pullback_rolling_window: 20
+
+  # Depth Trend
+  use_depth_trend: true
+  depth_threshold_bull: 0.0
+  depth_threshold_bear: 0.0
+
+  # ATR & Money Management
+  atr_window: 14
+  tp1_atr_mult: 1.0
+  tp2_atr_mult: 2.0
+  trail_atr_mult: 1.0
+  position_size_pct: 0.2
+  initial_capital: 50
+  accumulate_threshold: 1.25
+  max_daily_loss_pct: 5.0
+
+  # Je kunt er meer aan toevoegen (stop_loss_pct, e.d.) indien gewenst
+
+### SCALPING STRATEGY ###
+scalping:
+  stop_loss_pct: 0.0075
+  tp1_pct: 0.03
+  tp2_pct: 0.05
+  rsi_lower: 40
+  rsi_upper: 60
+  use_trailing_for_last25: true
+  volatility_threshold: 0.0
+  volume_factor: 0.0

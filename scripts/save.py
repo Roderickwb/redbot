@@ -1,8 +1,14 @@
 # API-sleutels configureren
+
+from python_bitvavo_api.bitvavo import Bitvavo
+
+
+
 bitvavo = Bitvavo({
-    'APIKEY': '65999c9ac26a451f5aba36c48adb58a4b2ff8dad43cd24066ac27b606e381f49',  # Vervang door je eigen API-sleutel
-    'APISECRET': '921bce265c43bf8e747ec2f51914c58f23cbe53cfc1a6d2e1e4cca63f2caeffbc304814d2ec68285b0ad5666be5a6a34e978d7a4b3bfed906d92db017a461d64',
+    'APIKEY': '90b22d9d311f10d40b009ff55b60b920a0829ce3f678c168d4ef8ff6af99027b',  # Vervang door je eigen API-sleutel
+    'APISECRET': '7eed494f4b450e4b9bfa70b3b954937158b6c7e23984980cfc194215364d12287d92c4cb2d518cfcc53b822718b8d495ece9a41a32d93773b6fada32d5d2d58a',
     # Vervang door je eigen geheime sleutel
     'RESTURL': 'https://api.bitvavo.com/v2',
     'WSURL': 'wss://ws.bitvavo.com/v2/',
     'ACCESSWINDOW': 10000
+})

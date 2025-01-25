@@ -1,29 +1,20 @@
-import sqlite3
-import logging
-import os
+import time
+from src.database_manager.database_manager import DatabaseManager
+from src.config.config import DB_FILE
 
-# Configureer logging
-logging.basicConfig(level=logging.INFO)
+def main():
+    print("=== MINIMAL TEST ===")
 
-DB_FILE = os.path.abspath(os.path.join('/', 'market_data.db'))
+    db = DatabaseManager(db_path=DB_FILE)
+    print("DB Manager aangemaakt.")
 
-def delete_invalid_candles():
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        # Verwijder rijen waar 'timestamp' geen integer is of onlogische waarden bevat
-        cursor.execute("""
-            DELETE FROM candles 
-            WHERE typeof(timestamp) != 'integer' 
-               OR timestamp < 0
-        """)
-        deleted = cursor.rowcount
-        conn.commit()
-        logging.info(f"Ongeldige candle records verwijderd: {deleted} record(s).")
-    except sqlite3.Error as e:
-        logging.error(f"Fout bij het verwijderen van ongeldige candle records: {e}")
-    finally:
-        conn.close()
+    # We roepen alleen .create_tables() aan
+    db.create_tables()
+    print("Tables ensured/created.")
+
+    # Nu simpelweg 5 seconden wachten
+    time.sleep(5)
+    print("Eind minimal test.")
 
 if __name__ == "__main__":
-    delete_invalid_candles()
+    main()

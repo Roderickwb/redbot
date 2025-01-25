@@ -1,28 +1,28 @@
-# tests/test_bitvavo_import.py
-
+from python_bitvavo_api.bitvavo import Bitvavo
+from dotenv import load_dotenv
 import os
-import sys
+load_dotenv()
 
-# Debugging voor huidige directory
-print("Huidige werkdirectory:", os.getcwd())
 
-# Voeg de src-map toe aan sys.path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-src_path = os.path.join(project_root, 'src')
+# Jouw API-gegevens
+API_KEY = os.getenv("API_KEY")  # Haal de API-sleutel uit de omgevingsvariabelen
+API_SECRET = os.getenv("API_SECRET")  # Haal het geheime sleutel uit de omgevingsvariabelen
+WS_URL = os.getenv("WS_URL", "wss://ws.bitvavo.com/v2/")  # Gebruik standaardwaarde als WS_URL niet is ingesteld
 
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-if src_path not in sys.path:
-    sys.path.insert(0, src_path)
+def main():
 
-# Debugging sys.path
-print("Debugging sys.path:")
-for path in sys.path:
-    print(f" - {path}")
+    bitvavo = Bitvavo({
+        'APIKEY': '...',
+        'APISECRET': '...',
+        'DEBUGGING': True
+    })
 
-# Probeer de logger-module te importeren
-try:
-    from src.logger.logger import setup_logger
-    print("Import van logger module geslaagd!")
-except ModuleNotFoundError as e:
-    print(f"Fout bij importeren: {e}")
+    # Check of je time() kunt ophalen (public call). Krijg je NoneType error?
+    print("Time:", bitvavo.time())
+
+    # Probeer candles
+    c = bitvavo.candles("BTC-EUR", "1m", { "limit": 5 })
+    print("Candles:", c)
+
+if __name__ == "__main__":
+    main()

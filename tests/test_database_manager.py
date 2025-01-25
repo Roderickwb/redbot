@@ -52,6 +52,14 @@ class TestDatabaseManager(unittest.TestCase):
             except PermissionError as e:
                 logging.error(f"Kan test database niet verwijderen: {e}")
 
+    class TestDatabaseManager(unittest.TestCase):
+        def setUp(self):
+            self.db_manager = DatabaseManager("test_market_data.db")
+            self.db_manager.create_all_tables()
+
+        def tearDown(self):
+            self.db_manager.close()
+            os.remove("test_market_data.db")
 
     def test_create_tables(self):
         # Controleer of de tabellen zijn aangemaakt
@@ -76,12 +84,12 @@ class TestDatabaseManager(unittest.TestCase):
     def test_save_and_fetch_ticker(self):
         # Voeg test ticker data toe
         test_ticker = {
-            'market': 'XRP-EUR',
             'timestamp': int(time.time()),
-            'price': 0.58,
-            'volume': 5000.0,
+            'market': 'XRP-EUR',
+            'market': 0.58,
             'bestBid': 0.57,
-            'bestAsk': 0.59
+            'bestAsk': 0.59,
+            'spread': 0.002
         }
         self.db_manager.save_ticker(test_ticker)
         df = self.db_manager.fetch_data("ticker", limit=10, market="XRP-EUR")
@@ -113,4 +121,51 @@ class TestDatabaseManager(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    unittest.main()
+
+import unittest
+from src.database_manager import DatabaseManager
+
+class TestDatabaseManager(unittest.TestCase):
+    def setUp(self):
+        """Setup voor testcases."""
+        self.db_manager = DatabaseManager()  # Gebruik standaard DB_FILE vanuit config
+        self.connection = self.db_manager.connect()
+
+    def tearDown(self):
+        """Ruim de verbinding op na elke test."""
+        self.connection.close()
+
+    def test_connection(self):
+        """Test of de verbinding correct werkt."""
+        self.assertIsNotNone(self.connection, "Databaseverbinding moet succesvol zijn.")
+
+    def test_create_tables(self):
+        """Controleer of tabellen worden aangemaakt."""
+        cursor = self.connection.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = [row[0] for row in cursor.fetchall()]
+
+        expected_tables = {"candles", "ticker", "orderbook_bids", "orderbook_asks"}
+        self.assertTrue(expected_tables.issubset(set(tables)), "Alle benodigde tabellen moeten aanwezig zijn.")
+
+    def test_insert_and_fetch_data(self):
+        """Test of gegevens correct kunnen worden ingevoegd en opgehaald."""
+        cursor = self.connection.cursor()
+
+        # Voeg een testrecord in
+        cursor.execute("""
+            INSERT INTO ticker (timestamp, market, best_bid, best_ask, spread)
+            VALUES (?, ?, ?, ?, ?)
+        """, (1735464991, 'XRP-EUR', 0.57, 0.59, 0.02))
+        self.connection.commit()
+
+        # Haal het record op
+        cursor.execute("SELECT * FROM ticker WHERE market = 'XRP-EUR'")
+        rows = cursor.fetchall()
+
+        self.assertEqual(len(rows), 1, "Er moet precies één record worden opgehaald.")
+        self.assertEqual(rows[0][1], 1735464991, "De timestamp van het record moet correct zijn.")
+
+if __name__ == "__main__":
     unittest.main()

@@ -1,15 +1,29 @@
-# Configuratiebestanden met gevoelige informatie
-config.json
-
-# Virtuele omgeving
-.venv/
-
-# PyCharm specifieke bestanden
-.idea/
-
-# Logbestanden
-*.log
-
-# Cachebestanden
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments
+.venv/
+
+# IDEs
+.idea/
+*.iml
+
+# Logs
+logs/*.log
+
+# Database
+data/*.db
+
+# Environment Variables
+.env
+
+# Build directories
+build/
+dist/
+*.egg-info/
+
+# Other
+*.swp

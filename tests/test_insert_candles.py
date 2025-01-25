@@ -6,7 +6,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 def test_insert_candles():
-    db_manager = DatabaseManager(db_path='market_data.db')
+    db_manager = DatabaseManager(db_path='../data/market_data.db')
 
     # Voorbeeld candle data
     candle_data = [

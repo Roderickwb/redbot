@@ -1,7 +1,7 @@
 import sqlite3
 
 # Geef hier het pad naar je database op
-db_path = "C:/Users/My ACER/PycharmProjects/PythonProject4/market_data.db"
+db_path = "/market_data.db"
 
 # Verbind met de database
 conn = sqlite3.connect(db_path)

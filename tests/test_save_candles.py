@@ -1,7 +1,7 @@
 from src.database_manager.database_manager import DatabaseManager
 
 # Maak een instantie van DatabaseManager
-db_manager = DatabaseManager(db_path="market_data.db")
+db_manager = DatabaseManager(db_path="../data/market_data.db")
 
 # Testdata voor candles
 test_data = [

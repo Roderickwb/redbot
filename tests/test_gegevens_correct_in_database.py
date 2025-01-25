@@ -1,7 +1,7 @@
 import sqlite3
 import pandas as pd
 
-db_path = "C:/Users/My ACER/PycharmProjects/PythonProject4/market_data.db"
+db_path = "/market_data.db"
 
 conn = sqlite3.connect(db_path)
 

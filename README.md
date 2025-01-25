@@ -1,3 +1,8 @@
+# bestanden checken die in repo zitten
+cd /pad/naar/jouw/project
+git ls-files
+
+
 1. Fail-safes
 2. Trend indicator: RSI Daily and RSI 4h
 3. ATR berkenen o.b.v. H1

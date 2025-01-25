@@ -5,7 +5,7 @@ import os
 # Configureer logging
 logging.basicConfig(level=logging.INFO)
 
-DB_FILE = os.path.abspath(os.path.join('C:\\Users\\My ACER\\PycharmProjects\\PythonProject4', 'market_data.db'))
+DB_FILE = os.path.abspath(os.path.join('/', 'market_data.db'))
 
 def delete_invalid_candles():
     try:

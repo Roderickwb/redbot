@@ -1,3 +1,20 @@
+# aanzetten van de bot
+cd ~/redbot
+source venv/bin/activate
+python -m src.main
+
+# Alleen readm logs
+cd ~/redbot/logs
+tail -f naammodule.log
+
+# check of bot nog draait
+ps aux | grep main.pycd 
+
+# git pull Pi
+cd ~/redbot
+ls -la
+git pull origin master
+
 
 # We gaan drie smaken onderscheiden:
 

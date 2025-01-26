@@ -1,6 +1,29 @@
+
+# We gaan drie smaken onderscheiden:
+
+1. ENVIRONMENT=production
+
+USE_WEBSOCKET = True
+PAPER_TRADING = False (echte orders)
+
+2. ENVIRONMENT=paper
+
+USE_WEBSOCKET = True (live data)
+PAPER_TRADING = True (fake orders)
+
+3. ENVIRONMENT=development
+
+USE_WEBSOCKET = False (geen live data)
+PAPER_TRADING = True (fake orders)
+
 # bestanden checken die in repo zitten
 cd /pad/naar/jouw/project
 git ls-files
+
+# als je coder wijzig o nieuwe files aanmaakt, gebruik je nu het standaard Git-werkproces
+git add .
+git commit -m "Mijn aanpassing"
+git push
 
 
 1. Fail-safes

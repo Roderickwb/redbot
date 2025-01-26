@@ -63,6 +63,7 @@ class DatabaseManager:
         """Sluit de databaseverbinding netjes af wanneer de instantie wordt verwijderd."""
         if hasattr(self, 'connection') and self.connection:
             try:
+                logger.warning("[DatabaseManager] Destructor aangeroepen. Controleer waarom dit gebeurt!")
                 if self.connection:  # Controleer expliciet of de verbinding nog open is
                     logger.info("Destructor aangeroepen: Sluiten van databaseverbinding.")
                     self.flush_candles()  # Flush indien nodig
@@ -433,6 +434,7 @@ class DatabaseManager:
 
     # Public method: save_candles
     def save_candles(self, data):
+        logger.info(f"save_candles() aangeroepen met {len(data)} records.")
         count = self._validate_and_buffer_candles(data)
         if count > 0:
             logger.info(f"{count} candle records gevalideerd en gebufferd. (Buffer size = {len(self.candle_buffer)})")

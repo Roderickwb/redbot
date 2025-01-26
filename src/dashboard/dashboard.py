@@ -13,8 +13,9 @@ from plotly.subplots import make_subplots
 # Imports van andere modules
 from src.config.config import DB_FILE, DASHBOARD_LOG_FILE, PAIRS_CONFIG
 from src.logger.logger import setup_logger
-from src.database_manager.database_manager import DatabaseManager
 from src.indicator_analysis.indicators import IndicatorAnalysis, Market
+from main import db_manager  # Gebruik de globale instantie
+
 
 # =========================================
 # 1) Streamlit basisconfig + log
@@ -41,7 +42,7 @@ def get_current_local_timestamp():
 
 load_dotenv()
 
-db_manager = DatabaseManager(db_path=DB_FILE)
+
 # db_manager.create_tables()
 
 st.write(f"🔍 **Database pad:** {DB_FILE}")

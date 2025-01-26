@@ -1,3 +1,5 @@
+# client.py
+
 import os
 
 from src.logger.logger import setup_logger, log_error
@@ -10,22 +12,16 @@ import hashlib
 import time
 import threading
 from decimal import Decimal
-from dotenv import load_dotenv
+
+from src.logger.logger import setup_logger, log_error
 from src.indicator_analysis.indicators import IndicatorAnalysis
-from src.config.config import DB_FILE, WEBSOCKET_LOG_FILE, PAIRS_CONFIG
-from src.config.config import PULLBACK_CONFIG
+from src.config.config import DB_FILE, WEBSOCKET_LOG_FILE, PAIRS_CONFIG, PULLBACK_CONFIG
 
-# Dit is de (officiële) python-bitvavo-api import
+# Dit is de officiële python-bitvavo-api import
 from python_bitvavo_api.bitvavo import Bitvavo
-
-load_dotenv()
 
 logger = setup_logger('websocket_client', WEBSOCKET_LOG_FILE)
 logger.info("WebSocket-client gestart.")
-
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
-WS_URL = os.getenv("WS_URL", "wss://ws.bitvavo.com/v2/")
 
 
 class WebSocketClient:
@@ -53,7 +49,7 @@ class WebSocketClient:
 
         self.ws = None
 
-        # (B) NIEUW: Hier maken we een queue voor orderupdates
+        # Queue voor orderupdates
         self.order_updates_queue = queue.Queue()
 
         # Rate-limit tracker
@@ -67,12 +63,11 @@ class WebSocketClient:
 
         self.markets = PAIRS_CONFIG
         logger.info(f"[WebSocketClient] Using dynamic markets: {self.markets}")
-        self.logger = logger  # ← Zet deze regel erbij
+        self.logger = logger  # ← zet deze regel erbij
 
         # Lock + cache voor REST fallback
         self.fallback_lock = threading.Lock()
         self.fallback_price_cache = {}
-
 
     # -------------------------------------------------------------
     # Rate-limit
@@ -90,7 +85,7 @@ class WebSocketClient:
         self.calls_this_minute += 1
 
     # -------------------------------------------------------------
-    # REST-calls
+    # REST-calls (voor PAPER)
     # -------------------------------------------------------------
     def get_balance(self):
         self._check_rate_limit()
@@ -107,7 +102,7 @@ class WebSocketClient:
         logger.info(f"Simuleer place_order({side}, {symbol}, {amount}) (Geen echte call)")
 
     # -------------------------------------------------------------
-    # Nieuwe fallback-call
+    # REST-fallback (prijs opvragen)
     # -------------------------------------------------------------
     def _fetch_rest_price(self, symbol: str) -> Decimal:
         with self.fallback_lock:
@@ -152,11 +147,10 @@ class WebSocketClient:
                 rest_str_price = tickers[0]["price"]
                 rest_price = Decimal(str(rest_str_price))
                 self.fallback_price_cache[symbol] = (rest_price, now_ts)
-                logger.debug(f"[REST-Fallback] {symbol} => {rest_price} (list of tickers from REST)")
+                logger.debug(f"[REST-Fallback] {symbol} => {rest_price} (list of tickers)")
                 return rest_price
-
             else:
-                logger.warning(f"[REST-Fallback] Onverwachte return van tickerPrice({symbol}): {tickers}")
+                logger.warning(f"[REST-Fallback] Onverwachte return tickerPrice({symbol}): {tickers}")
                 return Decimal("0")
 
     # -------------------------------------------------------------
@@ -177,7 +171,7 @@ class WebSocketClient:
         return rest_price if rest_price > 0 else Decimal("0")
 
     # -------------------------------------------------------------
-    # WebSocket-functies
+    # WebSocket
     # -------------------------------------------------------------
     def generate_signature(self, timestamp, method, endpoint):
         message = f"{timestamp}{method}{endpoint}"
@@ -188,7 +182,7 @@ class WebSocketClient:
         try:
             data = json.loads(message)
         except json.JSONDecodeError as e:
-            logger.error(f"Ongeldig JSON-bericht ontvangen: {message}. Fout: {e}")
+            logger.error(f"Ongeldig JSON-bericht: {message}. Fout: {e}")
             return
 
         if data.get("event") == "pong":
@@ -215,10 +209,9 @@ class WebSocketClient:
             self.order_updates_queue.put(data)
             return
 
-        # ============== DE KEY-CHANGE: trades!! ==============
+        # Trades
         if event_type == "trade":
             self.process_trade_data(data)
-
         elif event_type == "candle":
             self.process_candle_data(data)
         elif event_type == "ticker":
@@ -227,19 +220,15 @@ class WebSocketClient:
             self.process_orderbook_data(data)
         elif event_type == "account":
             logger.info(f"Account-update: {data}")
-            # event. Je kunt hier bv. balances updaten, als je wilt
-            pass
-
         else:
             logger.debug(f"Onbekend event_type: {event_type}, data={data}")
 
     def subscribe_to_channels(self, ws):
         if self.subscribed:
-            logger.warning("Al gesubscribed, skip subscription.")
+            logger.warning("Al gesubscribed, skip.")
             return
         self.subscribed = True
 
-        # Vergeet niet "trades" toe te voegen! (staat er al)
         subscribe_payload = {
             "action": "subscribe",
             "channels": [
@@ -272,26 +261,18 @@ class WebSocketClient:
         logger.info("Abonnementen verzonden na authenticatie.")
 
     # -------------------------------------------------------------
-    # process_trade_data = HOOFDPUNT: Price komt hieruit
+    # process_trade_data
     # -------------------------------------------------------------
-
     def process_trade_data(self, data):
-        """
-        We halen de laatste verhandelde prijs uit data["trades"],
-        want daar staat meestal een lijst van 1..N trades.
-        """
         market_symbol = data.get("market")
         trades_array = data.get("trades", [])
-
         if not market_symbol:
             logger.debug("[Trades] Geen market_symbol in trade-event.")
             return
-
         if not trades_array:
-            logger.debug(f"[Trades] trade-event maar geen trades[] voor {market_symbol}.")
+            logger.debug(f"[Trades] wel event maar geen trades[] voor {market_symbol}.")
             return
 
-        # We nemen de laatste trade uit de lijst (meest recente)
         last_trade = trades_array[-1]
         now_ts = time.time()
 
@@ -305,15 +286,16 @@ class WebSocketClient:
             self.latest_prices[market_symbol] = price_float
             self.latest_update_timestamps[market_symbol] = now_ts
             logger.debug(
-                f"[Trades] {market_symbol} => last trade price={price_float}, total trades in event={len(trades_array)}"
+                f"[Trades] {market_symbol} => last trade price={price_float}, "
+                f"total trades in event={len(trades_array)}"
             )
         else:
             logger.debug(
-                f"[Trades] {market_symbol} => kon geen geldige price parsen uit {last_trade}"
+                f"[Trades] {market_symbol} => ongeldige price in {last_trade}"
             )
 
     # -------------------------------------------------------------
-    # CANDLES
+    # process_candle_data
     # -------------------------------------------------------------
     def process_candle_data(self, data):
         try:
@@ -323,7 +305,7 @@ class WebSocketClient:
             logger.info(f"Binnenkomende candle: {market}, {interval}, count={len(candles)}")
 
             if not candles:
-                logger.debug(f"Geen candles ontvangen voor {market} - {interval}.")
+                logger.debug(f"Geen candles voor {market} - {interval}.")
                 return
 
             # Voeg hier extra logging toe
@@ -337,7 +319,7 @@ class WebSocketClient:
             df_with_indicators = IndicatorAnalysis.calculate_indicators(df)
             logger.info(f"df_with_indicators shape: {df_with_indicators.shape}")
 
-            # 3. Sla de candle data op in DB
+            # In DB opslaan
             for _, row in df_with_indicators.iterrows():
                 formatted_candle = (
                     int(row["timestamp"].timestamp() * 1000),
@@ -349,7 +331,6 @@ class WebSocketClient:
                     float(row["close"]),
                     float(row["volume"])
                 )
-                # AANPASSING 1: Debug print
                 logger.info(
                     f"DEBUG Candle => ts={formatted_candle[0]}, "
                     f"market={formatted_candle[1]}, interval={formatted_candle[2]}, "
@@ -357,8 +338,8 @@ class WebSocketClient:
                 )
                 # (A) save_candles kan bv. in 'candles'-tabel
                 self.db_manager.save_candles([formatted_candle])
-                df_test = self.db_manager.fetch_data("candles", limit=10, market=market, interval=interval) # tijdelijk
-                logger.info(f"Na insert -> fetch {market}, {interval}, got {len(df_test)} records") # tijdelijk
+                df_test = self.db_manager.fetch_data("candles", limit=10, market=market, interval=interval)
+                logger.info(f"Na insert -> fetch {market}, {interval}, got {len(df_test)} records")
 
             df_with_indicators["market"] = market
             df_with_indicators["interval"] = interval
@@ -372,8 +353,7 @@ class WebSocketClient:
             logger.error(f"Fout bij verwerken van candle-data: {e}")
 
     # -------------------------------------------------------------
-    # TICKER => We slaan 'ticker' nog op in DB, maar overschrijven
-    #           NIET meer onze self.latest_prices (zie comment).
+    # process_ticker_data
     # -------------------------------------------------------------
     def process_ticker_data(self, data):
         try:
@@ -393,25 +373,13 @@ class WebSocketClient:
             self.db_manager.save_ticker(ticker_data)
             logger.info(f"Ticker verwerkt (DB): {ticker_data}")
 
-            # ===== Belangrijk: we commenten de prijs-update uit =====
-            # We willen NIET de mid-price meer opslaan als 'live' price.
-            # Als je dat wel wilt, uncomment de volgende regels.
-            #
-            # market_symbol = data.get("market")
-            # if best_ask > 0 and best_bid > 0:
-            #     live_price = (best_ask + best_bid) / 2.0
-            # else:
-            #     live_price = best_bid if best_bid > 0 else best_ask
-            #
-            # now_ts = time.time()
-            # self.latest_prices[market_symbol] = live_price
-            # self.latest_update_timestamps[market_symbol] = now_ts
+            # Geen self.latest_prices update hier (bewust).
 
         except Exception as e:
             log_error(logger, f"Fout bij verwerken van ticker-data: {e}")
 
     # -------------------------------------------------------------
-    # ORDERBOOK
+    # process_orderbook_data
     # -------------------------------------------------------------
     def process_orderbook_data(self, data):
         try:
@@ -442,7 +410,6 @@ class WebSocketClient:
                         on_error=self.on_error,
                         on_close=self.on_close
                     )
-                    # Geen protocol ping/pong
                     self.ws.run_forever(ping_interval=30, ping_timeout=10)
                 except Exception as e:
                     logger.error(f"Fout in _run_forever-lus: {e}")
@@ -476,28 +443,6 @@ class WebSocketClient:
         logger.info("Authenticatie verzonden.")
         self.subscribed = False
 
-        # self._start_json_ping(ws)
-
-    #def _start_json_ping(self, ws):
-    #    def ping_loop():
-    #        while self.running:
-    #           time.sleep(25)
-    #            if not self.running:
-    #                break
-    #            try:
-    #                # check of socket nog open is
-    #                if ws.sock and ws.sock.connected:
-    #                    logger.debug("Stuur JSON-ping naar Bitvavo.")
-    #                    ws.send(json.dumps({"action": "ping"}))
-    #                else:
-    #                    logger.debug("WS niet connected, skip ping.")
-    #            except Exception as e:
-    #                logger.error(f"Fout bij JSON-ping: {e}")
-    #                break
-
-    #    t = threading.Thread(target=ping_loop, daemon=True)
-    #    t.start()
-
     def on_error(self, ws, error):
         logger.error(f"WebSocket Error: {error}")
         try:
@@ -521,6 +466,9 @@ class WebSocketClient:
             self._thread.join(timeout=5)
         logger.info("WebSocket client is volledig gestopt.")
 
+    # -------------------------------------------------------------
+    # ORDER/FILL updates
+    # -------------------------------------------------------------
     def handle_order_update(self, data: dict):
         """
         Verwerkt 'order' event (status, partial fill, etc.) en slaat in DB op.
@@ -549,8 +497,8 @@ class WebSocketClient:
             self.db_manager.save_order(order_row)
 
             self.logger.info(
-                f"[_handle_order_update] order {order_id} => status={status}, filled={filled_amount}/{amount}")
-
+                f"[_handle_order_update] order {order_id} => status={status}, filled={filled_amount}/{amount}"
+            )
         except Exception as e:
             self.logger.error(f"Fout in _handle_order_update: {e}")
 
@@ -579,7 +527,8 @@ class WebSocketClient:
             }
             self.db_manager.save_fill(fill_row)
 
-            self.logger.info(f"[_handle_fill_update] fill => amt={fill_amount} @ price={fill_price}, fee={fee_amount}")
-
+            self.logger.info(
+                f"[_handle_fill_update] fill => amt={fill_amount} @ price={fill_price}, fee={fee_amount}"
+            )
         except Exception as e:
             self.logger.error(f"Fout in _handle_fill_update: {e}")

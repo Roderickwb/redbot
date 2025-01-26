@@ -11,10 +11,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # Imports van andere modules
-from src.config.config import DB_FILE, DASHBOARD_LOG_FILE
+from src.config.config import DB_FILE, DASHBOARD_LOG_FILE, PAIRS_CONFIG
 from src.logger.logger import setup_logger
-from src.database_manager.database_manager import DatabaseManager
 from src.indicator_analysis.indicators import IndicatorAnalysis, Market
+from src.main import db_manager
 
 # =========================================
 # 1) Streamlit basisconfig + log
@@ -22,7 +22,7 @@ from src.indicator_analysis.indicators import IndicatorAnalysis, Market
 st.set_page_config(page_title="Crypto Dashboard", layout="wide")
 
 # PAS AAN: nu zonder 10m
-markets = ["XRP-EUR", "BTC-EUR", "ETH-EUR", "SOL-EUR", "DOGE-EUR"]
+markets = PAIRS_CONFIG
 intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
 
 logger = setup_logger('dashboard', DASHBOARD_LOG_FILE)
@@ -41,7 +41,7 @@ def get_current_local_timestamp():
 
 load_dotenv()
 
-db_manager = DatabaseManager(db_path=DB_FILE)
+
 # db_manager.create_tables()
 
 st.write(f"🔍 **Database pad:** {DB_FILE}")
@@ -166,6 +166,7 @@ with tab2:
     selected_market = st.selectbox("Selecteer Markt (Candles)", markets, index=0)
     selected_interval = st.selectbox("Selecteer Interval (Candles)", intervals, index=0)
     record_limit = st.slider("Aantal Records (Candles)", min_value=10, max_value=500, step=10, value=100)
+    chart_type = st.selectbox("Grafiektype", ["Candles", "Line"], index=0)
 
     df_candles = fetch_and_calculate_indicators(selected_market, selected_interval, record_limit)
     if df_candles.empty:
@@ -186,7 +187,7 @@ with tab2:
             # Eenvoudige pivot:
             high_ = df_['high'].max()
             low_ = df_['low'].min()
-            close_ = df_['close'][-1]
+            close_ = df_['close'].iloc[-1]
             pivot = (high_ + low_ + close_) / 3
             r1 = 2 * pivot - low_
             s1 = 2 * pivot - high_
@@ -208,8 +209,14 @@ with tab2:
             df_trades["timestamp"] = pd.to_datetime(df_trades["timestamp"], unit="ms", errors="coerce")
             df_trades["timestamp"] = df_trades["timestamp"].dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam")
             # Filteren op alleen buys/sells (optioneel)
-            buys = df_trades[df_trades["side"] == "BUY"]
-            sells = df_trades[df_trades["side"] == "SELL"]
+            buys = df_trades[df_trades["side"].str.upper() == "BUY"]
+            sells = df_trades[df_trades["side"].str.upper() == "SELL"]
+
+            st.write("**[DEBUG] Candles time range:**",
+                     df_candles.index.min(), "->", df_candles.index.max())
+            if not df_trades.empty:
+                st.write("**[DEBUG] Trades time range:**",
+                         df_trades["timestamp"].min(), "->", df_trades["timestamp"].max())
         else:
             buys = pd.DataFrame()
             sells = pd.DataFrame()
@@ -221,22 +228,34 @@ with tab2:
             vertical_spacing=0.02,
             row_heights=[0.5, 0.2, 0.3],
             specs=[
-                [{"type": "candlestick"}],
+                [{"type": "scatter"}],
                 [{"type": "scatter"}],
                 [{"type": "scatter"}]
             ]
         )
-        # (1) Candlestick
-        fig.add_trace(go.Candlestick(
-            x=df_candles.index,
-            open=df_candles['open'],
-            high=df_candles['high'],
-            low=df_candles['low'],
-            close=df_candles['close'],
-            name='Candlesticks',
-            increasing=dict(line=dict(color='green')),
-            decreasing=dict(line=dict(color='red'))
-        ), row=1, col=1)
+
+        # === Afhankelijk van de keuze: Candlestick of Lijn ===
+        if chart_type == "Candles":
+            fig.add_trace(go.Candlestick(
+                x=df_candles.index,
+                open=df_candles['open'],
+                high=df_candles['high'],
+                low=df_candles['low'],
+                close=df_candles['close'],
+                name='Candlesticks',
+                increasing=dict(line=dict(color='green')),
+                decreasing=dict(line=dict(color='red'))
+            ), row=1, col=1)
+        else:
+            # Lijngrafiek van de closing-prijs
+            fig.add_trace(go.Scatter(
+                x=df_candles.index,
+                y=df_candles['close'],
+                mode='lines',
+                line=dict(color='green', width=2),
+                name='Line Chart'
+            ), row=1, col=1)
+
         # (2) Bollinger
         fig.add_trace(go.Scatter(
             x=df_candles.index,
@@ -352,18 +371,28 @@ with tab2:
                 ), row=1, col=1
             )
 
+        # Pas de layout van de fig aan
         fig.update_layout(
             title=f'Candlestick + Weerstand + Trades voor {selected_market} ({selected_interval})',
             yaxis_title='Prijs',
             xaxis_title='Tijd',
             xaxis_rangeslider_visible=False,
             template='plotly_dark',
-            height=900
+            # Zet de hoogte wat lager, bijvoorbeeld 700px
+            height=700,
+            # Zet ook een vaste breedte, bijv. 900px
+            width=900,
+            # Extra marge, zodat het niet strak op de rand zit
+            margin=dict(l=40, r=40, t=60, b=30)
         )
+
+        # Y-as labels (RSI en MACD)
         fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
         fig.update_yaxes(title_text="MACD", row=3, col=1)
 
-        st.plotly_chart(fig, use_container_width=True)
+        # Plotly chart niet meer full-width:
+        st.plotly_chart(fig, use_container_width=False)
+
         st.success("✅ Candlestick + Weerstand + Trades weergegeven.")
 
 # =========== TAB 3: Ticker Data ===========
@@ -424,18 +453,39 @@ with tab6:
     df_trades_tab6 = fetch_data_cached("trades", market=selected_market_trades, limit=100)
 
     if not df_trades_tab6.empty:
-        st.write("**Trades (head)**", df_trades_tab6.head())
+        # CHANGED: forceer kolommen naar numeriek vóór fillna
+        df_trades_tab6["trade_cost"] = pd.to_numeric(df_trades_tab6["trade_cost"], errors="coerce").fillna(0.0)
+        df_trades_tab6["pnl_eur"] = pd.to_numeric(df_trades_tab6["pnl_eur"], errors="coerce").fillna(0.0)
+        # Einde CHANGED
 
-        # Timestamps omzetten: ms -> datetime (UTC) -> Amsterdam
-        df_trades_tab6["timestamp"] = pd.to_datetime(df_trades_tab6["timestamp"], unit="ms", errors="coerce")
-        df_trades_tab6["timestamp"] = df_trades_tab6["timestamp"].dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam")
+        # Timestamps omzetten
+        df_trades_tab6["timestamp"] = pd.to_datetime(
+            df_trades_tab6["timestamp"], unit="ms", errors="coerce"
+        ).dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam")
 
-        df_trades_tab6["cost_eur"] = df_trades_tab6["cost_eur"].round(2)
+        # Eventueel .round(2) als je in het DataFrame zélf de waarden wilt afronden
+        df_trades_tab6["trade_cost"] = df_trades_tab6["trade_cost"].round(2)
         df_trades_tab6["pnl_eur"] = df_trades_tab6["pnl_eur"].round(2)
-        st.dataframe(df_trades_tab6.style.format({"cost_eur": "{:.2f}", "pnl_eur": "{:.2f}"}))
 
-        # Toon resultaat in een dataframe
-        df_trades_tab6["pnl_eur"] = df_trades_tab6["pnl_eur"].round(2)
-        st.dataframe(df_trades_tab6.style.format({"pnl_eur": "{:.2f}"}))
+        # Eén st.dataframe()–aanroep met styler-format
+        st.dataframe(
+            df_trades_tab6.style.format({
+                "trade_cost": "{:.2f}",
+                "pnl_eur": "{:.2f}"
+            })
+        )
     else:
-        st.warning(f"⚠️ Geen trades gevonden voor {selected_market_trades}.")
+        st.warning("Geen trades gevonden!")
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -14,8 +14,7 @@ from plotly.subplots import make_subplots
 from src.config.config import DB_FILE, DASHBOARD_LOG_FILE, PAIRS_CONFIG
 from src.logger.logger import setup_logger
 from src.indicator_analysis.indicators import IndicatorAnalysis, Market
-from main import db_manager  # Gebruik de globale instantie
-
+from src.main import db_manager
 
 # =========================================
 # 1) Streamlit basisconfig + log
@@ -43,7 +42,8 @@ def get_current_local_timestamp():
 load_dotenv()
 
 
-# db_manager.create_tables()
+# db_manager.create_tables()  # (optioneel)
+
 
 st.write(f"🔍 **Database pad:** {DB_FILE}")
 st.write(f"🔍 **Huidige werkdirectory:** {os.getcwd()}")
@@ -57,6 +57,19 @@ logger.info(f"sys.path: {sys.path}")
 # =========================================
 # 2) Hulpfuncties
 # =========================================
+
+def add_utc_datetime_column(df, ms_col="timestamp"):
+    """
+    Voeg in df een kolom 'datetime' toe, gebaseerd op ms_col (in milliseconden).
+    Zo zie je direct een leesbare UTC-tijd (YYYY-MM-DD HH:MM:SS).
+    """
+    if ms_col in df.columns:
+        df["datetime"] = df[ms_col].apply(
+            lambda x: datetime.fromtimestamp(x / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            if pd.notnull(x) else None
+        )
+    return df
+
 @st.cache_resource
 def load_config(config_path='config.yaml'):
     """Laad YAML-config"""
@@ -94,11 +107,17 @@ def show_tables():
 
 @st.cache_data
 def fetch_data_cached(table_name, market=None, interval=None, limit=100):
+    """
+    Haal data op via db_manager.fetch_data(...), en voeg
+    een extra kolom 'datetime' (UTC) toe als er een 'timestamp' in de data staat.
+    """
     logger.info(f"Ophalen data: Tabel={table_name}, Markt={market}, Interval={interval}, Limit={limit}")
     try:
         df = db_manager.fetch_data(table_name, limit=limit, market=market, interval=interval)
         if df is not None and not df.empty:
             logger.info(f"Data succesvol opgehaald (head):\n{df.head()}")
+            # === Punt (3): maak extra 'datetime' kolom in UTC ===
+            df = add_utc_datetime_column(df, ms_col="timestamp")
             return df
         else:
             st.warning(f"⚠️ Geen data beschikbaar voor {table_name} (market={market}, interval={interval}).")
@@ -125,9 +144,8 @@ def fetch_and_calculate_indicators(market="XRP-EUR", interval="1m", limit=100) -
         if df_indic.empty:
             return pd.DataFrame()
 
-        # timestamp -> datetime
+        # timestamp -> datetime (AMS)
         df_indic["timestamp"] = pd.to_datetime(df_indic["timestamp"], unit="ms", errors="coerce")
-        # Beschouw de timestamps als UTC => converteer naar Amsterdam
         df_indic["timestamp"] = df_indic["timestamp"].dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam")
 
         df_indic.set_index("timestamp", inplace=True, drop=True)
@@ -176,16 +194,12 @@ with tab2:
     else:
         st.write("📅 **Candles + indicatoren (head):**", df_candles.head())
 
-        # --- Stap A: Pivot-lijnen (daily/4h/1h)
-        #    Ter demo: we halen even 1d,4h,1h (klein limit), berekenen pivot en tekenen horizontale lijnen
         pivot_lines = []
-
 
         def fetch_pivot(market, interval):
             df_ = fetch_and_calculate_indicators(market, interval, 50)
             if df_.empty:
                 return None
-            # Eenvoudige pivot:
             high_ = df_['high'].max()
             low_ = df_['low'].min()
             close_ = df_['close'].iloc[-1]
@@ -194,7 +208,6 @@ with tab2:
             s1 = 2 * pivot - high_
             return {"pivot": pivot, "R1": r1, "S1": s1, "interval": interval}
 
-
         daily_pivot = fetch_pivot(selected_market, "1d")
         if daily_pivot: pivot_lines.append(daily_pivot)
         h4_pivot = fetch_pivot(selected_market, "4h")
@@ -202,32 +215,24 @@ with tab2:
         h1_pivot = fetch_pivot(selected_market, "1h")
         if h1_pivot: pivot_lines.append(h1_pivot)
 
-        # --- Stap B: Trades (Buy/Sell) ophalen ---
-        # We nemen hier aan dat er een 'trades' tabel is met kolommen: [timestamp, symbol, side, price].
+        # --- Stap B: Trades (Buy/Sell) ophalen
         df_trades = fetch_data_cached("trades", market=selected_market, interval=None, limit=200)
         if not df_trades.empty:
-            # Timestamps -> datetime(UTC)->AMS
             df_trades["timestamp"] = pd.to_datetime(df_trades["timestamp"], unit="ms", errors="coerce")
             df_trades["timestamp"] = df_trades["timestamp"].dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam")
-            # Filteren op alleen buys/sells (optioneel)
+
             buys = df_trades[df_trades["side"].str.upper() == "BUY"]
             sells = df_trades[df_trades["side"].str.upper() == "SELL"]
 
-            st.write("**[DEBUG] Candles time range:**",
-                     df_candles.index.min(), "->", df_candles.index.max())
-            if not df_trades.empty:
-                st.write("**[DEBUG] Trades time range:**",
-                         df_trades["timestamp"].min(), "->", df_trades["timestamp"].max())
+            st.write("**[DEBUG] Candles time range:**", df_candles.index.min(), "->", df_candles.index.max())
+            st.write("**[DEBUG] Trades time range:**", df_trades["timestamp"].min(), "->", df_trades["timestamp"].max())
         else:
             buys = pd.DataFrame()
             sells = pd.DataFrame()
 
-        # --- Stap C: Plotly chart ---
         fig = make_subplots(
-            rows=3, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.02,
-            row_heights=[0.5, 0.2, 0.3],
+            rows=3, cols=1, shared_xaxes=True,
+            vertical_spacing=0.02, row_heights=[0.5, 0.2, 0.3],
             specs=[
                 [{"type": "scatter"}],
                 [{"type": "scatter"}],
@@ -257,7 +262,7 @@ with tab2:
                 name='Line Chart'
             ), row=1, col=1)
 
-        # (2) Bollinger
+        # Bollinger
         fig.add_trace(go.Scatter(
             x=df_candles.index,
             y=df_candles.get('bollinger_upper', None),
@@ -272,7 +277,7 @@ with tab2:
             name='Boll.Lower',
             opacity=0.5
         ), row=1, col=1)
-        # (3) Moving average
+        # Moving average
         if "moving_average" in df_candles.columns:
             fig.add_trace(go.Scatter(
                 x=df_candles.index,
@@ -280,7 +285,8 @@ with tab2:
                 line=dict(color='orange', width=1),
                 name='MA'
             ), row=1, col=1)
-        # (4) RSI
+
+        # RSI
         if "rsi" in df_candles.columns:
             fig.add_trace(go.Scatter(
                 x=df_candles.index,
@@ -291,7 +297,8 @@ with tab2:
             # horizontale 70/30
             fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
             fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-        # (5) MACD
+
+        # MACD
         if "macd" in df_candles.columns:
             fig.add_trace(go.Scatter(
                 x=df_candles.index,
@@ -341,59 +348,45 @@ with tab2:
                 row=1, col=1
             )
 
-        # --- (7) Trades (Buy=groene up marker, Sell=rode down marker) ---
+        # Trades markers
         if not buys.empty:
             fig.add_trace(
                 go.Scatter(
                     x=buys["timestamp"],
                     y=buys["price"],
                     mode='markers',
-                    marker=dict(
-                        symbol='triangle-up',
-                        color='green',
-                        size=12
-                    ),
+                    marker=dict(symbol='triangle-up', color='green', size=12),
                     name='BUY'
                 ), row=1, col=1
             )
-
         if not sells.empty:
             fig.add_trace(
                 go.Scatter(
                     x=sells["timestamp"],
                     y=sells["price"],
                     mode='markers',
-                    marker=dict(
-                        symbol='triangle-down',
-                        color='red',
-                        size=12
-                    ),
+                    marker=dict(symbol='triangle-down', color='red', size=12),
                     name='SELL'
                 ), row=1, col=1
             )
 
-        # Pas de layout van de fig aan
+        # Plot layout
         fig.update_layout(
             title=f'Candlestick + Weerstand + Trades voor {selected_market} ({selected_interval})',
             yaxis_title='Prijs',
             xaxis_title='Tijd',
             xaxis_rangeslider_visible=False,
             template='plotly_dark',
-            # Zet de hoogte wat lager, bijvoorbeeld 700px
             height=700,
-            # Zet ook een vaste breedte, bijv. 900px
             width=900,
-            # Extra marge, zodat het niet strak op de rand zit
             margin=dict(l=40, r=40, t=60, b=30)
         )
 
-        # Y-as labels (RSI en MACD)
+        # RSI en MACD y-assen
         fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
         fig.update_yaxes(title_text="MACD", row=3, col=1)
 
-        # Plotly chart niet meer full-width:
         st.plotly_chart(fig, use_container_width=False)
-
         st.success("✅ Candlestick + Weerstand + Trades weergegeven.")
 
 # =========== TAB 3: Ticker Data ===========
@@ -437,38 +430,29 @@ with tab5:
         st.success("✅ Indicatoren data in tab5.")
         st.write("**Voorbeeld (head):**", df_5.head())
 
-        # Kleine plot
         if "close" in df_5.columns:
             st.line_chart(df_5["close"], use_container_width=True)
         if {"macd", "macd_signal"} <= set(df_5.columns):
             st.line_chart(df_5[["macd", "macd_signal"]], use_container_width=True)
 
-## Volledig nieuwe code voor tab6 “Trades”
+# =========== TAB 6: Trades ===========
 with tab6:
     st.header("💱 Trades (overzicht)")
-
-    # Markten hergebruiken we uit de bovenste `markets`-lijst
     selected_market_trades = st.selectbox("Selecteer Markt voor Trades", markets, index=0)
-
-    # We halen trades op uit de 'trades'-tabel
     df_trades_tab6 = fetch_data_cached("trades", market=selected_market_trades, limit=100)
 
     if not df_trades_tab6.empty:
-        # CHANGED: forceer kolommen naar numeriek vóór fillna
         df_trades_tab6["trade_cost"] = pd.to_numeric(df_trades_tab6["trade_cost"], errors="coerce").fillna(0.0)
         df_trades_tab6["pnl_eur"] = pd.to_numeric(df_trades_tab6["pnl_eur"], errors="coerce").fillna(0.0)
-        # Einde CHANGED
 
-        # Timestamps omzetten
+        # Timestamps -> Europe/Amsterdam
         df_trades_tab6["timestamp"] = pd.to_datetime(
             df_trades_tab6["timestamp"], unit="ms", errors="coerce"
         ).dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam")
 
-        # Eventueel .round(2) als je in het DataFrame zélf de waarden wilt afronden
         df_trades_tab6["trade_cost"] = df_trades_tab6["trade_cost"].round(2)
         df_trades_tab6["pnl_eur"] = df_trades_tab6["pnl_eur"].round(2)
 
-        # Eén st.dataframe()–aanroep met styler-format
         st.dataframe(
             df_trades_tab6.style.format({
                 "trade_cost": "{:.2f}",
@@ -477,16 +461,3 @@ with tab6:
         )
     else:
         st.warning("Geen trades gevonden!")
-
-
-
-
-
-
-
-
-
-
-
-
-

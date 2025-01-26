@@ -358,8 +358,14 @@ class PullbackAccumulateStrategy:
         if df.empty:
             return pd.DataFrame()
 
+        # (A) Drop 'datetime_utc' als die bestaat, zodat we maar 8 kolommen overhouden
+        if 'datetime_utc' in df.columns:
+            df.drop(columns='datetime_utc', inplace=True, errors='ignore')
+
+        # (B) Hernoem de (nu 8) kolommen
         df.columns = ['timestamp', 'market', 'interval', 'open', 'high', 'low', 'close', 'volume']
 
+        # Verder zoals je al had
         df = IndicatorAnalysis.calculate_indicators(df, rsi_window=self.rsi_window)
 
         macd_ind = MACD(
@@ -370,6 +376,7 @@ class PullbackAccumulateStrategy:
         )
         df['macd'] = macd_ind.macd()
         df['macd_signal'] = macd_ind.macd_signal()
+
         return df
 
     def _calculate_atr(self, df: pd.DataFrame, window=14) -> Optional[Decimal]:
@@ -988,6 +995,15 @@ class PullbackAccumulateStrategy:
                 "position_id": position_id,
                 "position_type": position_type
             }
+
+            # === Nieuw: bereken de ATR opnieuw voor main_timeframe ===
+            df_main = self._fetch_and_indicator(symbol, self.main_timeframe, limit=200)
+            atr_value = self._calculate_atr(df_main, self.atr_window)
+            if atr_value:
+                pos_data["atr"] = Decimal(str(atr_value))
+            else:
+                # Als nog niet genoeg data, laat 0.0 staan
+                pass
 
             self.open_positions[symbol] = pos_data
             self.logger.info(

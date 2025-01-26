@@ -499,19 +499,25 @@ class PullbackAccumulateStrategy:
     # ----------------------------------------------------------------
     def _open_position(self, symbol: str, side: str, current_price: Decimal,
                        atr_value: Decimal, extra_invest=False):
-        self.logger.info(f"[PullbackStrategy] OPEN => side={side}, {symbol}@{current_price}, extra_invest={extra_invest}")
+        """
+        Opent een nieuwe positie (long of short), slaat de trade op in de DB,
+        en voegt deze toe aan self.open_positions.
+        """
+        self.logger.info(
+            f"[PullbackStrategy] OPEN => side={side}, {symbol}@{current_price}, extra_invest={extra_invest}")
 
+        # 1) Bepaal EUR balance uit order_client (paper of real)
         eur_balance = Decimal("100")
         if self.order_client:
             bal = self.order_client.get_balance()
             eur_balance = Decimal(str(bal.get("EUR", "100")))
 
-        # check op current_price=0
+        # 2) Check op current_price=0 => skip
         if current_price is None or current_price <= 0:
             self.logger.warning(f"[PullbackStrategy] current_price={current_price} => skip open pos for {symbol}")
             return
 
-        # 3) portion
+        # 3) Bepaal hoeveel EUR we willen investeren
         pct = self.position_size_pct
         if extra_invest:
             pct = Decimal("0.10")
@@ -522,25 +528,26 @@ class PullbackAccumulateStrategy:
 
         amount = buy_eur / current_price
 
-        # 2) Bepaal position_id en position_type
+        # 4) Maak position_id en position_type
         position_id = f"{symbol}-{int(time.time())}"
         if side == "buy":
             position_type = "long"
         else:
             position_type = "short"
 
-        # 5) place order (via order_client)
+        # 5) Plaats (paper)order
         if self.order_client:
             self.order_client.place_order(side, symbol, float(amount), order_type="market")
             self.logger.info(
                 f"[LIVE/PAPER] {side.upper()} {symbol} => amt={amount:.4f}, price={current_price}, cost={buy_eur}"
             )
 
+        # Reken trade_cost en fees nu nog als 0.0 tot er fills zijn
         fees = 0.0
         pnl_eur = 0.0
         trade_cost = float(amount * current_price)
 
-        # in DB:
+        # 6) In DB opslaan (status='open')
         trade_data = {
             "symbol": symbol,
             "side": side,
@@ -556,21 +563,17 @@ class PullbackAccumulateStrategy:
         }
         self.db_manager.save_trade(trade_data)
 
-        # (NIEUW) Haal de net aangemaakte "id" op uit DB en bewaar hem in open_positions
-        new_trade_id = self.db_manager.cursor.lastrowid  # <=== toe te voegen
+        new_trade_id = self.db_manager.cursor.lastrowid
         self.logger.info(f"[PullbackStrategy] new trade row => trade_id={new_trade_id}")
 
-        # opslaan in de open_positions[symbol]-dict:
-        self.open_positions[symbol]["db_id"] = new_trade_id  # <=== toe te voegen
-
-        # In _open_position:
-        desired_amount = amount  # wat je “volledig” wilt kopen of shorten
+        # 7) Eerst self.open_positions[symbol] aanmaken ...
+        desired_amount = amount
         self.open_positions[symbol] = {
             "side": side,
-            "entry_price": current_price,  # Start je op basis van 1e fill?
+            "entry_price": current_price,
             "desired_amount": desired_amount,
-            "filled_amount": Decimal("0.0"),  # Nog niets echt gevuld
-            "amount": Decimal("0.0"),  # 'amount' staat pas op 0 tot we fills binnenkrijgen
+            "filled_amount": Decimal("0.0"),
+            "amount": Decimal("0.0"),
             "atr": atr_value,
             "tp1_done": False,
             "tp2_done": False,
@@ -579,6 +582,9 @@ class PullbackAccumulateStrategy:
             "position_id": position_id,
             "position_type": position_type
         }
+
+        # 8) ... dan de db_id toevoegen
+        self.open_positions[symbol]["db_id"] = new_trade_id
 
     def _manage_open_position(self, symbol: str, current_price: Decimal, atr_value: Decimal):
         if current_price is None or current_price <= 0:

@@ -15,6 +15,19 @@ cd ~/redbot
 ls -a
 git pull origin master
 
+# toegang tot .env in Pi
+cd ~/redbot
+nano .env
+
+# inhoud .env checken
+cat .env
+
+
+# Bopt kill dan moet je twee regels krijgen waarbij 1234 fictuef is
+redbot   5678  0.0  0.1  ... grep python # betekend dat die al gestopt is
+kill 1234 # pip staat hierboen achter de 0.1 op de ....
+
+
 
 # We gaan drie smaken onderscheiden:
 

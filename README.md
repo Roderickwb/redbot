@@ -12,7 +12,7 @@ ps aux | grep main.pycd
 
 # git pull Pi
 cd ~/redbot
-ls -la
+ls -a
 git pull origin master
 
 

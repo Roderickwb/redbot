@@ -5,7 +5,6 @@ import time
 import logging
 from threading import Thread
 
-
 from src.logger.logger import setup_logger
 from src.my_websocket.client import WebSocketClient
 from src.my_websocket.fake_client import FakeClient
@@ -14,24 +13,22 @@ from src.ml_engine.ml_engine import MLEngine
 from src.indicator_analysis.indicators import process_indicators
 from src.config.config import EXECUTOR_LOG_FILE, PAIRS_CONFIG
 
-
 class Executor:
     def __init__(
-            self,
-            db_manager,
-            use_websocket=True,
-            paper_trading=True,
-            api_key=None,  # <-- Toegevoegd: krijgt key van main.py
-            api_secret=None  # <-- Toegevoegd: krijgt secret van main.py
+        self,
+        db_manager,
+        use_websocket=True,
+        paper_trading=True,
+        api_key=None,
+        api_secret=None
     ):
         """
         :param db_manager: instance van DatabaseManager
-        :param use_websocket: True => Live marktdata via WebSocket
+        :param use_websocket: True => LIVE marktdata via WebSocket
         :param paper_trading: True => fake (paper) orders, False => echte orders
-        :param api_key: (optioneel) meegegeven vanuit main.py (geen fallback hier)
-        :param api_secret: (optioneel) meegegeven vanuit main.py (geen fallback hier)
+        :param api_key: doorgegeven vanuit main.py
+        :param api_secret: doorgegeven vanuit main.py
         """
-
         self.logger = setup_logger("executor", EXECUTOR_LOG_FILE, logging.DEBUG)
         self.logger.info("Executor init started.")
 
@@ -39,33 +36,30 @@ class Executor:
         self.use_websocket = use_websocket
         self.paper_trading = paper_trading
 
-        # 1) WebSocketClient voor LIVE data (alleen als use_websocket=True)
+        # 1) WebSocketClient voor LIVE data (als use_websocket=True)
         self.ws_client = None
         if self.use_websocket:
-            # Pak de WS_URL uit .env of default (je kunt dit ook 100% in main.py doen)
+            # Bijvoorbeeld via os.getenv of hard-coded
             ws_url = os.getenv("WS_URL", "wss://ws.bitvavo.com/v2/")
 
-            # -> Hier géén fallback meer. We vertrouwen dat main.py de keys doorgeeft.
+            # Maak de WebSocketClient aan, voor live data
             self.ws_client = WebSocketClient(
                 ws_url=ws_url,
                 db_manager=self.db_manager,
                 api_key=api_key,
                 api_secret=api_secret
             )
-            # We hebben voor "live koersen" ALTIJD de ws_client
+            # Data-client is dan de live WebSocket
             self.data_client = self.ws_client
             self.logger.info("WebSocketClient aangemaakt voor LIVE data.")
         else:
             self.data_client = None
 
-        # 2) Kies of we fake of real orders doen
+        # 2) Paper of Real orders
         if self.paper_trading:
             self.logger.info("Paper Trading actief => FakeClient voor orders.")
-            self.order_client = FakeClient(
-                pairs=PAIRS_CONFIG
-            )
+            self.order_client = FakeClient(pairs=PAIRS_CONFIG)
         else:
-            # Echte orders, en live data
             self.logger.info("Real Trading actief => WebSocketClient voor orders.")
             self.order_client = self.ws_client
 
@@ -86,20 +80,18 @@ class Executor:
             model_path="models/pullback_model.pkl"
         )
         self.pullback_strategy = PullbackAccumulateStrategy(
-            data_client=self.data_client,  # live data als WS actief is
-            order_client=self.order_client,  # fake of real orders
+            data_client=self.data_client,   # live data als WS actief is
+            order_client=self.order_client, # fake of real orders
             db_manager=self.db_manager,
             config_path="src/config/config.yaml"
         )
-        # Strategy kan ook ML-engine gebruiken om ml_signal=...
         self.pullback_strategy.set_ml_engine(self.ml_engine)
 
         self.logger.info("Executor init completed.")
 
     def run(self):
         """
-        De hoofd-loop van de Executor. Start evt. websocket en loopt elke 5s
-        door de events + strategie.
+        De hoofd-loop van de Executor: start evt. websocket en loop elke 5s.
         """
         self.logger.info("Executor.run() gestart.")
 
@@ -110,14 +102,13 @@ class Executor:
 
         try:
             loop_count = 0
-
             while True:
                 loop_count += 1
 
-                # === A) Verwerk alle events uit de queue
+                # A) verwerk events uit queue
                 self._process_ws_events()
 
-                # === B) Draai de Pullback-strategy op elk symbool
+                # B) Strategie op elk symbool
                 for symbol in self.config["pairs"]:
                     self.pullback_strategy.execute_strategy(symbol)
 
@@ -125,13 +116,14 @@ class Executor:
                 if loop_count % 720 == 0:
                     self._hourly_db_checks()
 
-                # === D) Slapen 5s, dan volgende loop
+                # D) Slaap 5s
                 time.sleep(5)
 
         except KeyboardInterrupt:
             self.logger.info("Bot is handmatig gestopt via Ctrl+C (Executor).")
         except Exception as e:
             self.logger.exception(f"Fout in Executor run-lus: {e}")
+
         finally:
             self.logger.info("Executor shut down.")
             if self.ws_client:
@@ -191,11 +183,11 @@ class Executor:
             asks_count = self.db_manager.get_table_count("orderbook_asks")
 
             self.logger.info(
-                f"[Hourly DB Checks] candles={candles_count}, ticker={ticker_count}, "
-                f"bids={bids_count}, asks={asks_count}"
+                f"[Hourly DB Checks] candles={candles_count}, "
+                f"ticker={ticker_count}, bids={bids_count}, asks={asks_count}"
             )
 
-            # Voorbeelden:
+            # Voorbeeld:
             # self.db_manager.prune_old_candles(days=30)
             # self.db_manager.connection.execute("VACUUM")
 
@@ -209,6 +201,10 @@ class Executor:
         Leeg de order_updates_queue van self.ws_client en verwerk
         order/fill events. Bij fill wordt ook de strategy-update aangeroepen.
         """
+        if not self.ws_client:
+            # Als self.ws_client=None => geen live data => skip
+            return
+
         import queue
         while True:
             try:
@@ -221,7 +217,7 @@ class Executor:
                 self.ws_client.handle_order_update(event_data)
             elif event_type == "fill":
                 self.ws_client.handle_fill_update(event_data)
-                # partial fill => update in strategy
+                # partial fill => update strategy
                 self.pullback_strategy.update_position_with_fill(event_data)
             else:
                 self.logger.warning(f"Ongeldig event in queue: {event_type}")

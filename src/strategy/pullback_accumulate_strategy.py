@@ -50,7 +50,7 @@ class PullbackAccumulateStrategy:
             self.strategy_config = PULLBACK_CONFIG
 
         # Logger
-        self.logger = setup_logger("pullback_strategy", PULLBACK_STRATEGY_LOG_FILE, logging.INFO) # kan weer naar DEBUG als ik info mis
+        self.logger = setup_logger("pullback_strategy", PULLBACK_STRATEGY_LOG_FILE, logging.DEBUG) # kan weer naar INFO als het goed gaat
         if config_path:
             self.logger.info("[PullbackAccumulateStrategy] init with config_path=%s", config_path)
         else:
@@ -353,31 +353,52 @@ class PullbackAccumulateStrategy:
     #   DATA & INDICATORS
     # ------------------------------------------------
     def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
-        market_obj = Market(symbol, self.db_manager)
-        df = market_obj.fetch_candles(interval=interval, limit=limit)
-        if df.empty:
+        try:
+            market_obj = Market(symbol, self.db_manager)
+            df = market_obj.fetch_candles(interval=interval, limit=limit)
+
+            # Debug: Controleer de opgehaalde data
+            if df.empty:
+                self.logger.warning(f"[DEBUG] Geen candles opgehaald voor {symbol} met interval={interval}.")
+                return pd.DataFrame()
+
+            self.logger.info(f"[DEBUG] Opgehaalde candles voor {symbol} ({interval}): {df.shape[0]} rijen")
+            self.logger.debug(f"[DEBUG] Eerste rijen:\n{df.head()}")
+
+            # Drop datetime_utc (als het bestaat)
+            if 'datetime_utc' in df.columns:
+                df.drop(columns='datetime_utc', inplace=True, errors='ignore')
+
+            # Hernoem de kolommen
+            df.columns = ['timestamp', 'market', 'interval', 'open', 'high', 'low', 'close', 'volume']
+            self.logger.debug(f"[DEBUG] Data na opschonen:\n{df.head()}")
+
+            # Controleer de kolom 'close' vóór indicatorberekeningen
+            self.logger.debug(f"[DEBUG] Close-prijzen vóór berekeningen:\n{df['close'].head(20)}")
+
+            # Indicatoren berekenen
+            df = IndicatorAnalysis.calculate_indicators(df, rsi_window=self.rsi_window)
+            self.logger.debug(f"[DEBUG] Data na RSI-berekening:\n{df[['timestamp', 'close', 'rsi']].head()}")
+
+            # Berekening van MACD
+            self.logger.debug("[DEBUG] Start MACD-berekening...")
+            macd_ind = MACD(
+                close=df['close'],
+                window_slow=self.macd_slow,
+                window_fast=self.macd_fast,
+                window_sign=self.macd_signal
+            )
+            df['macd'] = macd_ind.macd()
+            df['macd_signal'] = macd_ind.macd_signal()
+            self.logger.debug(
+                f"[DEBUG] Data na MACD-berekening:\n{df[['timestamp', 'close', 'macd', 'macd_signal']].head()}")
+
+            return df  # Zorg dat de return hier juist staat en alleen wordt uitgevoerd na succes.
+
+        except Exception as e:
+            # Vang fouten op en log deze
+            self.logger.error(f"[ERROR] _fetch_and_indicator faalde: {e}")
             return pd.DataFrame()
-
-        # (A) Drop 'datetime_utc' als die bestaat, zodat we maar 8 kolommen overhouden
-        if 'datetime_utc' in df.columns:
-            df.drop(columns='datetime_utc', inplace=True, errors='ignore')
-
-        # (B) Hernoem de (nu 8) kolommen
-        df.columns = ['timestamp', 'market', 'interval', 'open', 'high', 'low', 'close', 'volume']
-
-        # Verder zoals je al had
-        df = IndicatorAnalysis.calculate_indicators(df, rsi_window=self.rsi_window)
-
-        macd_ind = MACD(
-            close=df['close'],
-            window_slow=self.macd_slow,
-            window_fast=self.macd_fast,
-            window_sign=self.macd_signal
-        )
-        df['macd'] = macd_ind.macd()
-        df['macd_signal'] = macd_ind.macd_signal()
-
-        return df
 
     def _calculate_atr(self, df: pd.DataFrame, window=14) -> Optional[Decimal]:
         if len(df) < window:

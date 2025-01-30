@@ -73,7 +73,7 @@ pairs:
   - XRP-EUR
   - DOGE-EUR
   - SOL-EUR
-  # Extra coins
+   Extra coins
   - ADA-EUR
   - TRX-EUR
   - USDT-EUR
@@ -88,54 +88,25 @@ pairs:
   - UNI-EUR
   - ATOM-EUR
 
+#### BREAK_OUT STRATEGY ####
 
-
-
-
-#### MULTI_DIRECTION_STRATEGY ####
-
-multi_direction_strategy:
-  log_file: "multidir_strategy.log"         # Pad of bestandsnaam voor loggen
-
-  # Timeframes
+breakout_strategy:
+  log_file: "logs/breakout_strategy.log"
   daily_timeframe: "1d"
-  trend_timeframe: "4h"
-  entry_timeframe: "1h"
-
-  # RSI Thresholds
-  daily_bull_rsi: 60
-  daily_bear_rsi: 40
-  rsi_window: 14
-  rsi_bull_threshold: 55
-  rsi_bear_threshold: 45
-
-  # MACD
-  macd_fast: 12
-  macd_slow: 26
-  macd_signal: 9
-  macd_bull_threshold: 0
-  macd_bear_threshold: 0
-
-  # Pullback
-  pullback_threshold_pct: 0.5          # percentage
-  pullback_rolling_window: 20
-
-  # Depth Trend
-  use_depth_trend: true
-  depth_threshold_bull: 0.0
-  depth_threshold_bear: 0.0
-
-  # ATR & Money Management
+  main_timeframe: "4h"
+  lookback_candles: 20
+  breakout_buffer_pct: "0.5"
+  volume_threshold_factor: 1.2
+  rsi_bull_level: 55
+  rsi_bear_level: 45
   atr_window: 14
-  tp1_atr_mult: 1.0
-  tp2_atr_mult: 2.0
+  sl_atr_mult: 1.0
   trail_atr_mult: 1.0
-  position_size_pct: 0.2
-  initial_capital: 50
-  accumulate_threshold: 1.25
-  max_daily_loss_pct: 5.0
-
-  # Je kunt er meer aan toevoegen (stop_loss_pct, e.d.) indien gewenst
+  partial_tp_r: 1.0
+  partial_tp_pct: 0.25
+  position_size_pct: "0.10"
+  max_positions_equity_pct: "0.90"
+  initial_capital: "100"
 
 ### SCALPING STRATEGY ###
 scalping:
@@ -147,3 +118,22 @@ scalping:
   use_trailing_for_last25: true
   volatility_threshold: 0.0
   volume_factor: 0.0
+
+### KRAKEN / KRAKEK / KRAKEN / KRAKEN ###
+kraken:
+  pairs:
+    - BTC-EUR
+    #- ETH-EUR
+    - XRP-EUR
+    #- DOGE-EUR
+    #- ADA-EUR
+    #- SOL-EUR
+    #- TRX-EUR
+    #- USDT-EUR
+    #- LINK-EUR
+    #- ATOM-EUR
+    # ... tot 20 munten ...
+  intervals_realtime: [15]     # alleen 15m per pair => 20 subscripties < 25
+  intervals_poll: [60, 240, 1440]  # 1h, 4h, 1d => via REST
+  poll_interval_seconds: 300   # elke 5 minuten poll de grote intervals
+

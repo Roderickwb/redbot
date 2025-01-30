@@ -1,11 +1,10 @@
-# database_manager.py
+# src/database_manager/database_manager.py
 
 import sqlite3
 import pandas as pd
 import time
 import logging
-from datetime import datetime, timezone, timedelta
-from decimal import Decimal
+from datetime import datetime, timezone
 import threading
 
 from src.config.config import DB_FILE
@@ -20,7 +19,7 @@ class DatabaseManager:
     def __init__(self, db_path=DB_FILE):
         """
         Maakt verbinding met de SQLite–database en initialiseert de attributen.
-        Roep zelf init_db() aan als je alle tabellen wilt maken.
+        Roep zelf create_tables() aan als je alle tabellen wilt maken.
         """
         self.db_path = db_path
         logger.debug(f"DB_FILE in DatabaseManager: {self.db_path}")
@@ -34,21 +33,11 @@ class DatabaseManager:
             self._db_lock = threading.Lock()  # Lock voor concurrency
 
             logger.info(f"Verbonden met database: {self.db_path}")
-
-            # Niet automatisch self.create_tables() aanroepen, want we willen controle
             self.candle_buffer = []
             self.batch_size = 100
-
         except sqlite3.Error as e:
             logger.error(f"Fout bij verbinden met database: {e}")
             raise RuntimeError("Kan geen verbinding maken met de database.")
-
-    def init_db(self):
-        """
-        (optioneel) Maak alle tabellen aan als ze nog niet bestaan,
-        in dezelfde stijl als voorheen, maar nu handmatig oproepbaar.
-        """
-        self.create_tables()
 
     def connect(self):
         """Geeft de bestaande verbinding terug."""
@@ -63,8 +52,8 @@ class DatabaseManager:
             try:
                 logger.warning("[DatabaseManager] Destructor aangeroepen. Controleer waarom dit gebeurt!")
                 if self.connection:
-                    logger.info("Destructor aangeroepen: Sluiten van databaseverbinding.")
-                    self.flush_candles()  # Flush indien nodig
+                    logger.info("Destructor: Sluiten van databaseverbinding.")
+                    self.flush_candles()  # flush indien nodig
                     self.connection.commit()
                     self.connection.close()
                     logger.info("Databaseverbinding netjes afgesloten.")
@@ -123,51 +112,51 @@ class DatabaseManager:
             return 0
 
     # --------------------------------------------------------------------------
-    # Creëren van tabellen, incl. extra kolom "datetime_utc"
+    # Creëren/updaten tabellen
     # --------------------------------------------------------------------------
-    def create_ticker_table(self):
+
+    def create_tables(self):
+        """
+        Creëer alle benodigde tabellen en voer alter-statements uit (inclusief 'exchange' kolommen).
+        """
         try:
-            self.cursor.execute("""
-                CREATE TABLE IF NOT EXISTS ticker (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp INTEGER NOT NULL,
-                    datetime_utc TEXT,       -- extra kolom voor leesbare UTC
-                    market TEXT NOT NULL,
-                    best_bid REAL,
-                    best_ask REAL,
-                    spread REAL
-                )
-            """)
-            self.cursor.execute("PRAGMA table_info(ticker)")
-            columns = [column[1] for column in self.cursor.fetchall()]
-            logger.info(f"Aanwezige kolommen in ticker-tabel: {columns}")
+            self.create_candles_table()
+            self.create_ticker_table()
+            self.create_orderbook_tables()
+            self.create_indicators_table()
+            self.alter_indicators_table()
+            self.create_trades_table()
 
-            # Eventueel alter statements:
-            if 'datetime_utc' not in columns:
-                self.cursor.execute("ALTER TABLE ticker ADD COLUMN datetime_utc TEXT")
-            if 'best_bid' not in columns:
-                self.cursor.execute("ALTER TABLE ticker ADD COLUMN best_bid REAL")
-            if 'best_ask' not in columns:
-                self.cursor.execute("ALTER TABLE ticker ADD COLUMN best_ask REAL")
-            if 'spread' not in columns:
-                self.cursor.execute("ALTER TABLE ticker ADD COLUMN spread REAL")
+            # [CHANGED] zorg dat in alle tabellen 'exchange' kolom bestaat
+            self.add_exchange_column_if_missing("ticker")
+            self.add_exchange_column_if_missing("orderbook_bids")
+            self.add_exchange_column_if_missing("orderbook_asks")
+            self.add_exchange_column_if_missing("indicators")
+            self.add_exchange_column_if_missing("trades")
 
-            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_ticker_timestamp ON ticker (timestamp)")
-            self.connection.commit()
-            logger.info("Ticker table is klaar (incl. datetime_utc).")
-        except sqlite3.Error as e:
-            logger.error(f"Error creating/updating ticker table: {e}")
+            logger.info("Alle tabellen zijn succesvol aangemaakt of bijgewerkt (incl. exchange).")
+        except Exception as e:
+            logger.error(f"Error creating tables: {e}")
+
+    def add_exchange_column_if_missing(self, table_name):
+        """
+        [CHANGED] Hulpmethode om in elk van de tabellen 'exchange' toe te voegen indien nog niet aanwezig.
+        """
+        try:
+            rows = self.execute_query(f"PRAGMA table_info({table_name})")
+            existing_cols = [r[1] for r in rows]
+            if 'exchange' not in existing_cols:
+                self.execute_query(f"ALTER TABLE {table_name} ADD COLUMN exchange TEXT")
+                logger.info(f"Kolom 'exchange' toegevoegd aan {table_name}.")
+        except Exception as e:
+            logger.error(f"Fout bij toevoegen van exchange-kolom aan {table_name}: {e}")
 
     def create_candles_table(self):
-        """
-        Maakt de candles-tabel aan of werkt deze bij.
-        Nu met PRIMARY KEY (market, interval, timestamp), plus datetime_utc.
-        """
         try:
             self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS candles (
                     timestamp INTEGER NOT NULL,
-                    datetime_utc TEXT,   -- extra kolom
+                    datetime_utc TEXT,
                     market TEXT NOT NULL,
                     interval TEXT NOT NULL,
                     open REAL NOT NULL,
@@ -197,6 +186,36 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error dropping candles table: {e}")
 
+    def create_ticker_table(self):
+        try:
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ticker (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp INTEGER NOT NULL,
+                    datetime_utc TEXT,
+                    market TEXT NOT NULL,
+                    best_bid REAL,
+                    best_ask REAL,
+                    spread REAL
+                )
+            """)
+            self.cursor.execute("PRAGMA table_info(ticker)")
+            columns = [column[1] for column in self.cursor.fetchall()]
+            if 'datetime_utc' not in columns:
+                self.cursor.execute("ALTER TABLE ticker ADD COLUMN datetime_utc TEXT")
+            if 'best_bid' not in columns:
+                self.cursor.execute("ALTER TABLE ticker ADD COLUMN best_bid REAL")
+            if 'best_ask' not in columns:
+                self.cursor.execute("ALTER TABLE ticker ADD COLUMN best_ask REAL")
+            if 'spread' not in columns:
+                self.cursor.execute("ALTER TABLE ticker ADD COLUMN spread REAL")
+
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_ticker_timestamp ON ticker (timestamp)")
+            self.connection.commit()
+            logger.info("Ticker table is klaar (incl. datetime_utc).")
+        except sqlite3.Error as e:
+            logger.error(f"Error creating/updating ticker table: {e}")
+
     def create_orderbook_tables(self):
         try:
             # bids
@@ -204,7 +223,7 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS orderbook_bids (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER NOT NULL,
-                    datetime_utc TEXT,   -- extra kolom
+                    datetime_utc TEXT,
                     market TEXT NOT NULL,
                     bid_p REAL NOT NULL,
                     bid_q REAL NOT NULL
@@ -222,7 +241,7 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS orderbook_asks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER NOT NULL,
-                    datetime_utc TEXT,   -- extra kolom
+                    datetime_utc TEXT,
                     market TEXT NOT NULL,
                     ask_p REAL NOT NULL,
                     ask_q REAL NOT NULL
@@ -248,7 +267,7 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS indicators (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp INTEGER,
-                datetime_utc TEXT,   -- extra kolom
+                datetime_utc TEXT,
                 market TEXT,
                 interval TEXT,
                 rsi REAL,
@@ -317,8 +336,6 @@ class DatabaseManager:
 
             self.cursor.execute("PRAGMA table_info(trades)")
             columns = [col[1] for col in self.cursor.fetchall()]
-            logger.info(f"Kolommen in 'trades': {columns}")
-
             if 'datetime_utc' not in columns:
                 self.cursor.execute("ALTER TABLE trades ADD COLUMN datetime_utc TEXT")
             if 'position_id' not in columns:
@@ -336,54 +353,8 @@ class DatabaseManager:
 
             self.connection.commit()
             logger.info("Trades table is klaar (inclusief extra kolommen).")
-
         except Exception as e:
             logger.error(f"Fout bij create_trades_table: {e}")
-
-    def create_tables(self):
-        """
-        Creëer de benodigde tabellen en voer alter-statements uit.
-        """
-        try:
-            self.create_candles_table()
-            self.create_ticker_table()
-            self.create_orderbook_tables()
-            self.create_indicators_table()
-            self.alter_indicators_table()
-            self.create_trades_table()
-            logger.info("Alle tabellen zijn succesvol aangemaakt of bijgewerkt.")
-        except Exception as e:
-            logger.error(f"Error creating tables: {e}")
-
-    def alter_trades_table(self):
-        try:
-            self.cursor.execute("PRAGMA table_info(trades)")
-            existing_cols = [row[1] for row in self.cursor.fetchall()]
-
-            new_columns = [
-                ("position_id", "TEXT"),
-                ("position_type", "TEXT"),
-                ("status", "TEXT"),
-                ("pnl_eur", "REAL"),
-                ("fees", "REAL")
-            ]
-
-            for col_name, col_type in new_columns:
-                if col_name not in existing_cols:
-                    try:
-                        self.cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
-                        self.connection.commit()
-                        logger.info(f"Kolom '{col_name}' toegevoegd aan trades-tabel.")
-                    except sqlite3.OperationalError as e:
-                        if "duplicate column name" in str(e).lower():
-                            logger.info(f"Kolom {col_name} bestaat al, skip.")
-                        else:
-                            logger.error(f"Fout bij toevoegen van kolom {col_name}: {e}")
-                    except Exception as e:
-                        logger.error(f"Onverwachte fout bij alter_trades_table ({col_name}): {e}")
-
-        except Exception as e:
-            logger.error(f"Fout bij alter_trades_table: {e}")
 
     # --------------------------------------------------------------------------
     # Candle buffer / flush
@@ -391,7 +362,6 @@ class DatabaseManager:
     def _validate_and_buffer_candles(self, data):
         """
         Elke record is: (timestamp, market, interval, open, high, low, close, volume).
-        timestamp is ms.
         """
         try:
             valid_data = []
@@ -401,15 +371,14 @@ class DatabaseManager:
                     continue
 
                 timestamp, market, interval, open_, high, low, close, volume = record
-                # Houd alle isinstance-checks die je al had:
                 if (isinstance(timestamp, int)
-                        and isinstance(market, str)
-                        and isinstance(interval, str)
-                        and isinstance(open_, (int, float))
-                        and isinstance(high, (int, float))
-                        and isinstance(low, (int, float))
-                        and isinstance(close, (int, float))
-                        and isinstance(volume, (int, float))):
+                    and isinstance(market, str)
+                    and isinstance(interval, str)
+                    and isinstance(open_, (int, float))
+                    and isinstance(high, (int, float))
+                    and isinstance(low, (int, float))
+                    and isinstance(close, (int, float))
+                    and isinstance(volume, (int, float))):
                     if timestamp <= 0:
                         timestamp = get_current_utc_timestamp_ms()
                     valid_data.append((timestamp, market, interval, open_, high, low, close, volume))
@@ -438,14 +407,12 @@ class DatabaseManager:
         if not self.candle_buffer:
             return
         try:
-            # We bouwen een list of tuples, nu met extra param => datetime_utc = datetime(?/1000,'unixepoch')
-            # We vervormen elk tuple (ts, market, interval, open, high, low, close, volume)
             final_list = []
             for row in self.candle_buffer:
                 (ts, market, interval, open_, high, low, close, volume) = row
                 final_list.append((
                     ts,
-                    ts,  # voor datetime(?/1000,'unixepoch')
+                    ts,  # datetime(?/1000,'unixepoch')
                     market,
                     interval,
                     open_,
@@ -472,7 +439,7 @@ class DatabaseManager:
                     )
                 """, final_list)
 
-            logger.info(f"{len(self.candle_buffer)} candle records in één keer weggeschreven (incl. datetime_utc).")
+            logger.info(f"{len(self.candle_buffer)} candle records in één keer weggeschreven.")
             self.candle_buffer.clear()
         except Exception as e:
             logger.error(f"Fout bij flushen van candle_buffer: {e}")
@@ -492,28 +459,38 @@ class DatabaseManager:
     # save_ticker
     # --------------------------------------------------------------------------
     def save_ticker(self, data):
-        """Slaat de ticker-data op in de database met retry-mechanisme + datetime_utc."""
+        """
+        Verwacht data: {
+          'market': 'BTC-EUR',
+          'bestBid': ...,
+          'bestAsk': ...,
+          'exchange': 'Bitvavo' of 'Kraken' (optioneel, default 'Bitvavo')
+        }
+        """
         try:
             timestamp = get_current_utc_timestamp_ms()
             market = data['market']
             best_bid = data.get('bestBid', 0.0)
             best_ask = data.get('bestAsk', 0.0)
             spread = best_ask - best_bid
-            logger.info(f"Ticker data ontvangen voor opslag: {data}")
+
+            # [CHANGED] exchange uit data halen, default 'Bitvavo'
+            exchange = data.get('exchange', 'Bitvavo')
 
             query = """
                 INSERT INTO ticker
-                (timestamp, datetime_utc, market, best_bid, best_ask, spread)
+                (timestamp, datetime_utc, market, best_bid, best_ask, spread, exchange)
                 VALUES (
                   ?,
                   datetime(?/1000, 'unixepoch'),
                   ?,
                   ?,
                   ?,
+                  ?,
                   ?
                 )
             """
-            params = (timestamp, timestamp, market, best_bid, best_ask, spread)
+            params = (timestamp, timestamp, market, best_bid, best_ask, spread, exchange)
             self.execute_query(query, params)
             logger.info(f"Ticker data succesvol opgeslagen: {data}")
         except sqlite3.OperationalError as e:
@@ -525,41 +502,51 @@ class DatabaseManager:
     # save_orderbook
     # --------------------------------------------------------------------------
     def save_orderbook(self, data):
-        """Slaat orderbook data op (bids & asks) in DB, incl. datetime_utc."""
+        """
+        data: {
+           'market': 'BTC-EUR',
+           'bids': [...],
+           'asks': [...],
+           'exchange': 'Kraken' of 'Bitvavo' (optioneel, default 'Bitvavo')
+        }
+        """
         try:
             timestamp = get_current_utc_timestamp_ms()
             market = data['market']
             bids = data.get('bids', [])
             asks = data.get('asks', [])
+            exchange = data.get('exchange', 'Bitvavo')  # [CHANGED]
 
             for bid in bids:
                 query = """
                     INSERT INTO orderbook_bids
-                    (timestamp, datetime_utc, market, bid_p, bid_q)
+                    (timestamp, datetime_utc, market, bid_p, bid_q, exchange)
                     VALUES (
                       ?,
                       datetime(?/1000, 'unixepoch'),
                       ?,
                       ?,
+                      ?,
                       ?
                     )
                 """
-                params = (timestamp, timestamp, market, float(bid[0]), float(bid[1]))
+                params = (timestamp, timestamp, market, float(bid[0]), float(bid[1]), exchange)
                 self.execute_query(query, params)
 
             for ask in asks:
                 query = """
                     INSERT INTO orderbook_asks
-                    (timestamp, datetime_utc, market, ask_p, ask_q)
+                    (timestamp, datetime_utc, market, ask_p, ask_q, exchange)
                     VALUES (
                       ?,
                       datetime(?/1000, 'unixepoch'),
                       ?,
                       ?,
+                      ?,
                       ?
                     )
                 """
-                params = (timestamp, timestamp, market, float(ask[0]), float(ask[1]))
+                params = (timestamp, timestamp, market, float(ask[0]), float(ask[1]), exchange)
                 self.execute_query(query, params)
 
             logger.info("Orderbook data succesvol opgeslagen.")
@@ -573,18 +560,18 @@ class DatabaseManager:
     # --------------------------------------------------------------------------
     def save_indicators(self, df_with_indicators: pd.DataFrame):
         """
-        Sla de indicatoren uit df_with_indicators op in de tabel 'indicators',
-        incl. datetime_utc = datetime(timestamp/1000,'unixepoch').
+        Verwacht in df_with_indicators idealiter een kolom 'exchange' als je multi-exchange wilt.
         """
         insert_query = """
             INSERT OR REPLACE INTO indicators
             (timestamp, datetime_utc, market, interval,
              rsi, macd, macd_signal,
              bollinger_upper, bollinger_lower, moving_average,
-             ema_9, ema_21, atr14)
+             ema_9, ema_21, atr14, exchange)
             VALUES (
               ?,
               datetime(?/1000, 'unixepoch'),
+              ?,
               ?,
               ?,
               ?,
@@ -616,9 +603,12 @@ class DatabaseManager:
             ema_21 = row.get("ema_21", None)
             atr14 = row.get("atr14", None)
 
+            # [CHANGED] default 'Bitvavo', of pak row['exchange'] als die er is
+            exchange_val = row.get("exchange", "Bitvavo")
+
             rows_to_insert.append((
                 ts_val,
-                ts_val,  # voor datetime(?/1000,'unixepoch')
+                ts_val,
                 market_val,
                 interval_val,
                 rsi_val,
@@ -629,7 +619,8 @@ class DatabaseManager:
                 mov_avg,
                 ema_9,
                 ema_21,
-                atr14
+                atr14,
+                exchange_val
             ))
         if not rows_to_insert:
             logger.info("Geen indicator-rows om op te slaan.")
@@ -647,22 +638,23 @@ class DatabaseManager:
     # --------------------------------------------------------------------------
     def save_trade(self, trade_data: dict):
         """
-        Voorbeeld trade_data = {
+        Verwacht trade_data = {
           'timestamp': <ms>,
           'symbol': ...,
           'side': ...,
+          'exchange': 'Kraken' of 'Bitvavo' (optioneel),
           ...
         }
-        We slaan ook datetime_utc = datetime(timestamp/1000,'unixepoch').
         """
         try:
             query = """
                 INSERT INTO trades
                 (timestamp, datetime_utc, symbol, side, price, amount,
-                 position_id, position_type, status, pnl_eur, fees, trade_cost)
+                 position_id, position_type, status, pnl_eur, fees, trade_cost, exchange)
                 VALUES (
                   ?,
                   datetime(?/1000, 'unixepoch'),
+                  ?,
                   ?,
                   ?,
                   ?,
@@ -681,6 +673,7 @@ class DatabaseManager:
             pnl_eur = trade_data.get('pnl_eur', 0.0)
             fees = trade_data.get('fees', 0.0)
             trade_cost = trade_data.get('trade_cost', 0.0)
+            exchange_val = trade_data.get('exchange', 'Bitvavo')  # [CHANGED]
 
             params = (
                 trade_data['timestamp'],
@@ -694,7 +687,8 @@ class DatabaseManager:
                 status,
                 pnl_eur,
                 fees,
-                trade_cost
+                trade_cost,
+                exchange_val
             )
             self.execute_query(query, params)
             logger.info(f"Trade data succesvol opgeslagen: {trade_data}")
@@ -703,10 +697,6 @@ class DatabaseManager:
             logger.error(f"Onverwachte fout bij opslaan van trade data: {e}")
 
     def update_trade(self, trade_id: int, updates: dict):
-        """
-        Wijzig kolommen in trades na partial close of exit.
-        vb. updates = {"status": "closed", "pnl_eur": 12.34}
-        """
         try:
             set_clauses = []
             params = []
@@ -751,9 +741,9 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Fout bij prunen van oude candles: {e}")
 
-    def fetch_data(self, table_name, limit=100, market=None, interval=None):
+    def fetch_data(self, table_name, limit=100, market=None, interval=None, exchange=None):
         """
-        Haal data op uit de DB (candles, ticker, orderbook, trades, enz.).
+        [CHANGED] exchange toegevoegd als extra filter.
         """
         try:
             params = []
@@ -770,7 +760,8 @@ class DatabaseManager:
                         high,
                         low,
                         close,
-                        volume
+                        volume,
+                        exchange
                     FROM candles
                 """
             elif table_name == "ticker":
@@ -782,17 +773,21 @@ class DatabaseManager:
                         market,
                         best_bid,
                         best_ask,
-                        spread
+                        spread,
+                        exchange
                     FROM ticker
                 """
             elif table_name in ["orderbook_bids", "orderbook_asks"]:
+                # bid_p, bid_q of ask_p, ask_q
+                col_p = "bid_p, bid_q" if table_name == "orderbook_bids" else "ask_p, ask_q"
                 base_query = f"""
                     SELECT
                         id,
                         timestamp,
                         datetime_utc,
                         market,
-                        {'bid_p, bid_q' if table_name=='orderbook_bids' else 'ask_p, ask_q'}
+                        {col_p},
+                        exchange
                     FROM {table_name}
                 """
             elif table_name == "indicators":
@@ -811,7 +806,8 @@ class DatabaseManager:
                         moving_average,
                         ema_9,
                         ema_21,
-                        atr14
+                        atr14,
+                        exchange
                     FROM indicators
                 """
             elif table_name == "trades":
@@ -829,7 +825,8 @@ class DatabaseManager:
                         status,
                         pnl_eur,
                         fees,
-                        trade_cost
+                        trade_cost,
+                        exchange
                     FROM trades
                 """
             else:
@@ -844,16 +841,40 @@ class DatabaseManager:
                 if interval:
                     conditions.append("interval = ?")
                     params.append(interval)
-            elif table_name == "ticker" and market:
-                conditions.append("market = ?")
-                params.append(market)
-            elif table_name in ["orderbook_bids", "orderbook_asks"] and market:
-                conditions.append("market = ?")
-                params.append(market)
-            elif table_name == "trades" and market:
-                conditions.append("symbol = ?")
-                params.append(market)
-            # indicators: (optioneel) filteren op market, interval, etc.
+                if exchange:
+                    conditions.append("exchange = ?")
+                    params.append(exchange)
+            elif table_name == "ticker":
+                if market:
+                    conditions.append("market = ?")
+                    params.append(market)
+                if exchange:
+                    conditions.append("exchange = ?")
+                    params.append(exchange)
+            elif table_name in ["orderbook_bids", "orderbook_asks"]:
+                if market:
+                    conditions.append("market = ?")
+                    params.append(market)
+                if exchange:
+                    conditions.append("exchange = ?")
+                    params.append(exchange)
+            elif table_name == "trades":
+                if market:
+                    conditions.append("symbol = ?")
+                    params.append(market)
+                if exchange:
+                    conditions.append("exchange = ?")
+                    params.append(exchange)
+            elif table_name == "indicators":
+                if market:
+                    conditions.append("market = ?")
+                    params.append(market)
+                if interval:
+                    conditions.append("interval = ?")
+                    params.append(interval)
+                if exchange:
+                    conditions.append("exchange = ?")
+                    params.append(exchange)
 
             if conditions:
                 base_query += " WHERE " + " AND ".join(conditions)
@@ -889,13 +910,30 @@ class DatabaseManager:
             self.connection.close()
             logger.info("Database verbinding gesloten.")
 
-    def get_candlesticks(self, market, interval="1m", limit=100):
-        df = self.fetch_data("candles", limit=limit, market=market, interval=interval)
-        logger.debug(f"Ontvangen candlestick-data:\n{df.head()}")
-        return df
+    # [CHANGED] Nieuw argument exchange=None
+    def get_candlesticks(self, market, interval="1m", limit=100, exchange=None):
+        """
+        Haal candles op uit de database, met optioneel filter op exchange.
+        """
+        try:
+            df = self.fetch_data(
+                "candles",
+                limit=limit,
+                market=market,
+                interval=interval,
+                exchange=exchange
+            )
+            logger.debug(f"[DEBUG] Opgehaalde candles: {df.shape[0]} rijen")
+            if not df.empty:
+                df_to_log = df[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+                logger.debug(f"[DEBUG] Eerste rijen van opgehaalde data:\n{df_to_log.head()}")
+            return df
+        except Exception as e:
+            logger.error(f"[ERROR] Fout bij ophalen van candles voor {market} ({interval}): {e}")
+            return pd.DataFrame()
 
-    def get_ticker(self, market: str):
-        df = self.fetch_data("ticker", market=market, limit=1)
+    def get_ticker(self, market: str, exchange=None):
+        df = self.fetch_data("ticker", market=market, limit=1, exchange=exchange)
         if not df.empty:
             return df.iloc[0].to_dict()
         return {}
@@ -904,7 +942,7 @@ class DatabaseManager:
         query = """
             SELECT
                 symbol, side, amount, price,
-                position_id, position_type, status
+                position_id, position_type, status, exchange
             FROM trades
             WHERE status = 'open'
         """
@@ -912,16 +950,16 @@ class DatabaseManager:
         if not rows:
             return []
 
-        columns = ["symbol", "side", "amount", "price", "position_id", "position_type", "status"]
+        columns = ["symbol", "side", "amount", "price", "position_id", "position_type", "status", "exchange"]
         results = []
         for row in rows:
             rowdict = dict(zip(columns, row))
             results.append(rowdict)
         return results
 
-    def get_orderbook_snapshot(self, market: str):
-        df_bids = self.fetch_data("orderbook_bids", market=market, limit=50)
-        df_asks = self.fetch_data("orderbook_asks", market=market, limit=50)
+    def get_orderbook_snapshot(self, market: str, exchange=None):
+        df_bids = self.fetch_data("orderbook_bids", market=market, limit=50, exchange=exchange)
+        df_asks = self.fetch_data("orderbook_asks", market=market, limit=50, exchange=exchange)
 
         bids_list = df_bids[['bid_p', 'bid_q']].values.tolist() if not df_bids.empty else []
         asks_list = df_asks[['ask_p', 'ask_q']].values.tolist() if not df_asks.empty else []

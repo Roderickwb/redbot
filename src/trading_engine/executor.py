@@ -8,10 +8,17 @@ from threading import Thread
 from src.logger.logger import setup_logger
 from src.my_websocket.client import WebSocketClient
 from src.my_websocket.fake_client import FakeClient
+
+# Strategy modules
 from src.strategy.pullback_accumulate_strategy import PullbackAccumulateStrategy
+from src.strategy.breakout_strategy import BreakoutStrategy
+
 from src.ml_engine.ml_engine import MLEngine
 from src.indicator_analysis.indicators import process_indicators
 from src.config.config import EXECUTOR_LOG_FILE, PAIRS_CONFIG
+
+from src.exchange.kraken.kraken_mixed_client import KrakenMixedClient
+
 
 class Executor:
     def __init__(
@@ -20,14 +27,21 @@ class Executor:
         use_websocket=True,
         paper_trading=True,
         api_key=None,
-        api_secret=None
+        api_secret=None,
+        ### (NIEUW) extra params:
+        use_kraken=True,
+        kraken_paper=True,
+        yaml_config=None
     ):
         """
         :param db_manager: instance van DatabaseManager
-        :param use_websocket: True => LIVE marktdata via WebSocket
-        :param paper_trading: True => fake (paper) orders, False => echte orders
-        :param api_key: doorgegeven vanuit main.py
-        :param api_secret: doorgegeven vanuit main.py
+        :param use_websocket: True => LIVE marktdata via WebSocket (Bitvavo)
+        :param paper_trading: True => fake (paper) orders, False => echte orders (Bitvavo)
+        :param api_key: voor Bitvavo
+        :param api_secret: voor Bitvavo
+        :param use_kraken: of je óók Kraken-data wilt
+        :param kraken_paper: of je Kraken in paper-mode (fake orders) wilt
+        :param yaml_config: dict gelezen uit config.yaml (optioneel)
         """
         self.logger = setup_logger("executor", EXECUTOR_LOG_FILE, logging.DEBUG)
         self.logger.info("Executor init started.")
@@ -35,35 +49,79 @@ class Executor:
         self.db_manager = db_manager
         self.use_websocket = use_websocket
         self.paper_trading = paper_trading
+        self.api_key = api_key
+        self.api_secret = api_secret
 
-        # 1) WebSocketClient voor LIVE data (als use_websocket=True)
+        ### (NIEUW) Opslaan van use_kraken en kraken_paper
+        self.use_kraken = use_kraken
+        self.kraken_paper = kraken_paper
+
+        ### (NIEUW) Lees YAML-sectie “kraken” (pairs, intervals) als beschikbaar
+        self.yaml_config = yaml_config or {}
+        kraken_cfg = self.yaml_config.get("kraken", {})
+        # Voorbeeld:
+        # kraken_cfg = {
+        #   "pairs": ["BTC-EUR","ETH-EUR",...],
+        #   "intervals_realtime": [15],
+        #   "intervals_poll": [60,240,1440],
+        #   "poll_interval_seconds": 300
+        # }
+
+        # =============== 1) Bitvavo data client ===============
         self.ws_client = None
         if self.use_websocket:
-            # Bijvoorbeeld via os.getenv of hard-coded
             ws_url = os.getenv("WS_URL", "wss://ws.bitvavo.com/v2/")
-
-            # Maak de WebSocketClient aan, voor live data
             self.ws_client = WebSocketClient(
                 ws_url=ws_url,
                 db_manager=self.db_manager,
-                api_key=api_key,
-                api_secret=api_secret
+                api_key=self.api_key,
+                api_secret=self.api_secret
             )
-            # Data-client is dan de live WebSocket
             self.data_client = self.ws_client
-            self.logger.info("WebSocketClient aangemaakt voor LIVE data.")
+            self.logger.info("WebSocketClient (Bitvavo) aangemaakt voor LIVE data.")
         else:
             self.data_client = None
 
-        # 2) Paper of Real orders
+        # =============== 2) Bitvavo orders (paper of real) ===============
         if self.paper_trading:
-            self.logger.info("Paper Trading actief => FakeClient voor orders.")
+            self.logger.info("Paper Trading actief => FakeClient voor orders (Bitvavo).")
             self.order_client = FakeClient(pairs=PAIRS_CONFIG)
         else:
-            self.logger.info("Real Trading actief => WebSocketClient voor orders.")
+            self.logger.info("Real Trading actief => WebSocketClient (Bitvavo) voor orders.")
             self.order_client = self.ws_client
 
-        # 3) Interne config
+        # =============== 3) Kraken data client ===============
+        self.kraken_data_client = None
+        self.kraken_order_client = None
+
+        if self.use_kraken:
+            # Lees pairs & intervals uit config
+            kraken_pairs = kraken_cfg.get("pairs", ["BTC-EUR","ETH-EUR"])
+            intervals_realtime = kraken_cfg.get("intervals_realtime",[15])
+            intervals_poll = kraken_cfg.get("intervals_poll",[60,240,1440])
+            poll_interval_s = kraken_cfg.get("poll_interval_seconds",300)
+
+            self.logger.info("Kraken MixedClient init => pairs=%s realtime=%s poll=%s poll_int=%ds",
+                             kraken_pairs, intervals_realtime, intervals_poll, poll_interval_s)
+
+            # Maak KrakenMixedClient
+            self.kraken_data_client = KrakenMixedClient(
+                db_manager=self.db_manager,
+                pairs=kraken_pairs,
+                intervals_realtime=intervals_realtime,
+                intervals_poll=intervals_poll,
+                poll_interval_seconds=poll_interval_s
+            )
+
+            # (NIEUW) orders op Kraken => paper of real?
+            if self.kraken_paper:
+                self.logger.info("Kraken in paper-mode => FakeClient (no real orders).")
+                self.kraken_order_client = FakeClient(pairs=kraken_pairs)
+            else:
+                self.logger.info("Kraken real trading => hier zou je KrakenPrivateClient doen.")
+                # self.kraken_order_client = KrakenPrivateClient(...)
+
+        # =============== 4) Interne config ===============
         self.config = {
             "pairs": PAIRS_CONFIG,
             "partial_sell_threshold": 0.02,
@@ -74,77 +132,108 @@ class Executor:
             "second_profit_threshold": 1.05
         }
 
-        # 4) ML-engine en Pullback-strategy
+        # =============== 5) ML-engine en strategieën ===============
         self.ml_engine = MLEngine(
             db_manager=self.db_manager,
             model_path="models/pullback_model.pkl"
         )
+        # PullbackAccumulateStrategy (Bitvavo)
         self.pullback_strategy = PullbackAccumulateStrategy(
-            data_client=self.data_client,   # live data als WS actief is
-            order_client=self.order_client, # fake of real orders
+            data_client=self.data_client,   # (Bitvavo-livestream)
+            order_client=self.order_client, # (Bitvavo) paper/real
+            db_manager=self.db_manager,
+            config_path="src/config/config.yaml"
+        )
+        # BreakoutStrategy (Bitvavo) - als je hem óók op Bitvavo wil laten lopen
+        self.breakout_strategy = BreakoutStrategy(
+            client=self.order_client,
             db_manager=self.db_manager,
             config_path="src/config/config.yaml"
         )
         self.pullback_strategy.set_ml_engine(self.ml_engine)
 
+        # [CHANGED] - Aparte BreakoutStrategy voor Kraken:
+        self.breakout_strategy_kraken = None
+        if self.kraken_order_client:
+            self.breakout_strategy_kraken = BreakoutStrategy(
+                client=self.kraken_order_client,    # Fake of real
+                db_manager=self.db_manager,
+                config_path="src/config/config.yaml"
+            )
+
         self.logger.info("Executor init completed.")
+        self.logger.info(
+            f"Executor => use_websocket={use_websocket}, paper_trading={paper_trading}, "
+            f"use_kraken={use_kraken}, kraken_paper={kraken_paper}"
+        )
 
     def run(self):
         """
-        De hoofd-loop van de Executor: start evt. websocket en loop elke 5s.
+        De hoofd-loop van de Executor: start evt. websocket (Bitvavo)
+        + start evt. KrakenMixedClient, en loop elke 5s.
         """
         self.logger.info("Executor.run() gestart.")
 
-        # Start evt. websocket
+        # Bitvavo start
         if self.use_websocket and self.ws_client:
             self.ws_client.start_websocket()
-            self.logger.info("WebSocket client thread gestart (LIVE MODE).")
+            self.logger.info("Bitvavo WebSocket client thread gestart (LIVE MODE).")
+
+        # Kraken start
+        if self.use_kraken and self.kraken_data_client:
+            self.logger.info("KrakenMixedClient start => WS(15m) + poll(1h,4h,1d?).")
+            self.kraken_data_client.start()
 
         try:
             loop_count = 0
             while True:
                 loop_count += 1
 
-                # A) verwerk events uit queue
+                # A) Verwerk events uit queue (Bitvavo orders/fills)
                 self._process_ws_events()
 
-                # B) Strategie op elk symbool
+                # B) Pullback-strategy op Bitvavo:
                 for symbol in self.config["pairs"]:
                     self.pullback_strategy.execute_strategy(symbol)
 
-                # === C) DB-checks 1× per uur (720 * 5s = 3600s)
+                # C) Breakout-strategy op Bitvavo (optioneel):
+                for symbol in self.config["pairs"]:
+                    self.breakout_strategy.execute_strategy(symbol)
+
+                # [CHANGED] D) Breakout-strategy op Kraken-data (optioneel):
+                if self.breakout_strategy_kraken:
+                    # Voor nu even dezelfde symbol-lijst, of wat je wilt
+                    for symbol in ["BTC-EUR", "ETH-EUR"]:
+                        # Je moet in de BreakoutStrategy zélf zorgen dat hij
+                        # db_manager.get_candlesticks(..., exchange="Kraken") gebruikt
+                        self.breakout_strategy_kraken.execute_strategy(symbol)
+
+                # E) DB-checks 1× per uur (720 * 5s = 3600s)
                 if loop_count % 720 == 0:
                     self._hourly_db_checks()
 
-                # D) Slaap 5s
                 time.sleep(5)
 
         except KeyboardInterrupt:
             self.logger.info("Bot is handmatig gestopt via Ctrl+C (Executor).")
         except Exception as e:
             self.logger.exception(f"Fout in Executor run-lus: {e}")
-
         finally:
             self.logger.info("Executor shut down.")
             if self.ws_client:
-                self.logger.info("Stop WebSocket in finally (Executor).")
+                self.logger.info("Stop WebSocket (Bitvavo) in finally (Executor).")
                 self.ws_client.stop_websocket()
 
+            if self.kraken_data_client:
+                self.logger.info("Stop KrakenMixedClient in finally => WS + poll.")
+                self.kraken_data_client.stop()
+
     def _indicator_analysis_thread(self):
-        """
-        (Optioneel) Elke minuut indicatoren berekenen in aparte thread.
-        """
         while True:
             process_indicators(self.db_manager)
             time.sleep(60)
 
     def run_daily_tasks(self):
-        """
-        1) ML-training
-        2) Model laden
-        3) Scenario-tests
-        4) YAML overschrijven
-        """
         self.logger.info("run_daily_tasks() gestart.")
 
         # 1) Train model
@@ -170,10 +259,6 @@ class Executor:
         self.logger.info("run_daily_tasks() voltooid.")
 
     def _hourly_db_checks(self):
-        """
-        Draait 1x per ~uur in de run()-loop (loop_count % 720 == 0).
-        Hier kun je database-tellingen doen, opschonen, vacuum, etc.
-        """
         self.logger.info("[Hourly DB Checks] Starten van DB-checks...")
 
         try:
@@ -186,11 +271,6 @@ class Executor:
                 f"[Hourly DB Checks] candles={candles_count}, "
                 f"ticker={ticker_count}, bids={bids_count}, asks={asks_count}"
             )
-
-            # Voorbeeld:
-            # self.db_manager.prune_old_candles(days=30)
-            # self.db_manager.connection.execute("VACUUM")
-
         except Exception as e:
             self.logger.error(f"[Hourly DB Checks] Fout bij DB-check: {e}")
 
@@ -198,8 +278,8 @@ class Executor:
 
     def _process_ws_events(self):
         """
-        Leeg de order_updates_queue van self.ws_client en verwerk
-        order/fill events. Bij fill wordt ook de strategy-update aangeroepen.
+        Leeg de order_updates_queue van self.ws_client (Bitvavo) en verwerk
+        order/fill events. Bij fill => update strategy.
         """
         if not self.ws_client:
             # Als self.ws_client=None => geen live data => skip
@@ -217,7 +297,6 @@ class Executor:
                 self.ws_client.handle_order_update(event_data)
             elif event_type == "fill":
                 self.ws_client.handle_fill_update(event_data)
-                # partial fill => update strategy
                 self.pullback_strategy.update_position_with_fill(event_data)
             else:
                 self.logger.warning(f"Ongeldig event in queue: {event_type}")

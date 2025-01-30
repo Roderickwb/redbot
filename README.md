@@ -7,6 +7,12 @@ python -m src.main
 cd ~/redbot/logs
 tail -f naammodule.log
 
+# streamlit starten
+cd ~/redbot
+source venv/bin/activate
+streamlit run src/dashboard/dashboard.py
+
+
 # check of bot nog draait
 ps aux | grep main.pycd 
 
@@ -23,7 +29,7 @@ nano .env
 cat .env
 
 
-# Bopt kill dan moet je twee regels krijgen waarbij 1234 fictuef is
+# Bot kill dan moet je twee regels krijgen waarbij 1234 fictuef is
 redbot   5678  0.0  0.1  ... grep python # betekend dat die al gestopt is
 kill 1234 # pip staat hierboen achter de 0.1 op de ....
 

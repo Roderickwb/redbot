@@ -44,12 +44,25 @@ class Market:
 class IndicatorAnalysis:
     @staticmethod
     def calculate_rsi(df, window=14):
-        """Bereken de Relative Strength Index (RSI)."""
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
+        try:
+            delta = df["close"].diff()
+            if delta.empty:
+                raise ValueError("Delta is leeg. Controleer de input DataFrame.")
+            print(f"[DEBUG] Delta: {delta.head()}")
+
+            gain = delta.where(delta > 0, 0).rolling(window=window).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+
+            # Debug: Controleer gain en loss
+            print(f"[DEBUG] Gain (eerste 5): {gain.head()}")
+            print(f"[DEBUG] Loss (eerste 5): {loss.head()}")
+
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            return rsi
+        except Exception as e:
+            print(f"[ERROR] RSI-berekening faalde: {e}")
+            raise
 
     @staticmethod
     def calculate_moving_average(df, window=20):
@@ -63,7 +76,10 @@ class IndicatorAnalysis:
         rolling_std = df['close'].rolling(window=window).std()
         upper_band = rolling_mean + (rolling_std * num_std_dev)
         lower_band = rolling_mean - (rolling_std * num_std_dev)
-        return upper_band, lower_band
+        return {
+            "bb_upper": upper_band,
+            "bb_lower": lower_band
+        }
 
     @staticmethod
     def calculate_macd(df, fast_period=12, slow_period=26, signal_period=9):

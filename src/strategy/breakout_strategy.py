@@ -3,6 +3,7 @@ import pandas as pd
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Optional
+from datetime import datetime, timedelta, timezone
 
 # TA-bibliotheken
 from ta.volatility import AverageTrueRange
@@ -11,6 +12,14 @@ from ta.momentum import RSIIndicator
 # Lokale imports
 from src.logger.logger import setup_logger
 from src.indicator_analysis.indicators import Market, IndicatorAnalysis
+
+def is_candle_closed(candle_timestamp_ms: int, interval_hours: float) -> bool:
+    """
+    Bepaalt of een candle (gebaseerd op de starttijd in ms) volledig is afgesloten.
+    De candle wordt geacht afgesloten als het huidige UTC-tijdstip ≥ candle start + interval.
+    """
+    candle_end = datetime.fromtimestamp(candle_timestamp_ms / 1000, tz=timezone.utc) + timedelta(hours=interval_hours)
+    return datetime.now(timezone.utc) >= candle_end
 
 class BreakoutStrategy:
     """
@@ -36,7 +45,7 @@ class BreakoutStrategy:
         else:
             self.strategy_config = {}
 
-        # Defaults
+        # Defaults (gebruik de waarden uit de config, of stel een standaard in)
         self.log_file = self.strategy_config.get("log_file", "logs/breakout_strategy.log")
         self.daily_timeframe = self.strategy_config.get("daily_timeframe", "1d")
         self.main_timeframe = self.strategy_config.get("main_timeframe", "4h")
@@ -84,14 +93,21 @@ class BreakoutStrategy:
         trend = self._check_daily_rsi(symbol)
         if trend == "neutral":
             self.logger.info(f"[Breakout] Trend = neutral => geen trades ({symbol})")
-            # (Wil je open positie managen ondanks neutral? Zet dat hier)
             return
 
-        # 2) Detect breakout
+        # 2) Detect breakout (gebaseerd op de laatst volledig afgesloten 4h candle)
         breakout_signal = self._detect_breakout(symbol, trend)
         if breakout_signal["breakout_detected"]:
+            self.logger.info(
+                f"[Breakout] {symbol} => breakout => side={breakout_signal['side']}, "
+                f"price (last closed 4h candle)={breakout_signal['price']}, ATR={breakout_signal['atr']}, "
+                f"limit_price={breakout_signal['limit_price']}"
+            )
             if symbol not in self.open_positions:
                 self._open_position(symbol, breakout_signal)
+        else:
+            # [CHANGED] - Log waarom geen breakout
+            self.logger.info(f"[Breakout] {symbol} => geen breakout detected => skip")
 
         # 3) Manage open posities
         if symbol in self.open_positions:
@@ -100,21 +116,38 @@ class BreakoutStrategy:
     def _check_daily_rsi(self, symbol: str) -> str:
         df_daily = self._fetch_and_indicator(symbol, self.daily_timeframe, limit=60)
         if df_daily.empty:
+            self.logger.debug(f"[Breakout] {symbol} => geen daily data => neutral")
             return "neutral"
 
         latest_rsi = df_daily["rsi"].iloc[-1]
-        self.logger.info(f"[Breakout] {symbol} daily RSI={latest_rsi:.2f}")
+        # [CHANGED] - Log de RSI en de thresholds
+        self.logger.info(f"[Breakout] {symbol} daily RSI={latest_rsi:.2f} (bull={self.rsi_bull_level}, bear={self.rsi_bear_level})")
         if latest_rsi >= self.rsi_bull_level:
+            self.logger.debug(f"[Breakout] {symbol} => RSI >= bull_level => bull trend")
             return "bull"
         elif latest_rsi <= self.rsi_bear_level:
+            self.logger.debug(f"[Breakout] {symbol} => RSI <= bear_level => bear trend")
             return "bear"
         else:
             return "neutral"
 
     def _detect_breakout(self, symbol: str, trend: str) -> dict:
         df_4h = self._fetch_and_indicator(symbol, self.main_timeframe, limit=200)
+        # Zorg ervoor dat de data in oplopende volgorde staat (oudste eerst)
+        df_4h.sort_values("timestamp", inplace=True)
         if len(df_4h) < self.lookback_candles:
+            self.logger.debug(f"[Breakout] {symbol} => {len(df_4h)} candles < lookback={self.lookback_candles} => skip breakout check")
             return {"breakout_detected": False}
+
+        # Bepaal het interval in uren (bijv. "4h" → 4)
+        if self.main_timeframe.endswith("h"):
+            interval_hours = int(self.main_timeframe[:-1])
+        elif self.main_timeframe.endswith("d"):
+            interval_hours = int(self.main_timeframe[:-1]) * 24
+        elif self.main_timeframe.endswith("m"):
+            interval_hours = int(self.main_timeframe[:-1]) / 60
+        else:
+            interval_hours = 4  # standaardwaarde
 
         recent_slice = df_4h.iloc[-self.lookback_candles:]
         hh = Decimal(str(recent_slice["high"].max()))
@@ -127,42 +160,52 @@ class BreakoutStrategy:
         else:  # bear
             breakout_limit = ll if ll > lower_bb else lower_bb
 
-        last_close = Decimal(str(df_4h["close"].iloc[-1]))
+        # Gebruik de laatst beschikbare candle, maar controleer eerst of deze volledig is afgesloten
+        last_candle_ts = int(df_4h["timestamp"].iloc[-1])
+        if not is_candle_closed(last_candle_ts, interval_hours):
+            self.logger.debug(f"[Breakout] {symbol} => Laatste candle (ts={last_candle_ts}) niet volledig afgesloten; gebruik de penultimate candle.")
+            if len(df_4h) >= 2:
+                last_4h_close = Decimal(str(df_4h["close"].iloc[-2]))
+            else:
+                last_4h_close = Decimal(str(df_4h["close"].iloc[-1]))
+        else:
+            last_4h_close = Decimal(str(df_4h["close"].iloc[-1]))
+
+        # Haal de actuele prijs op (alleen voor logging; de strategie gebruikt de candle-close)
+        current_price = self._get_latest_price(symbol)
+        price_diff = current_price - last_4h_close
+        self.logger.debug(f"[Breakout] {symbol} => last_4h_close={last_4h_close}, current_price={current_price} (diff={price_diff})")
+
         last_volume = Decimal(str(df_4h["volume"].iloc[-1]))
         avg_volume = Decimal(str(df_4h["volume"].tail(20).mean()))
+        self.logger.debug(f"[Breakout] {symbol} => last_volume={last_volume}, avg_volume={avg_volume}")
 
         buffer_decimal = self.breakout_buffer_pct / Decimal("100")
         atr_val = self._calculate_atr(df_4h, self.atr_window)
         if not atr_val or atr_val <= 0:
+            self.logger.debug(f"[Breakout] {symbol} => ATR=0 => skip breakout")
             return {"breakout_detected": False}
 
         if trend == "bull":
             required_price = breakout_limit * (Decimal("1") + buffer_decimal)
-            if last_close > required_price:
+            self.logger.debug(f"[Breakout] {symbol} (bull) => breakout_limit={breakout_limit}, required_price={required_price}, using last_4h_close={last_4h_close}")
+            if last_4h_close > required_price:
                 if last_volume > (avg_volume * Decimal(str(self.volume_threshold_factor))):
-                    return {
-                        "breakout_detected": True,
-                        "side": "buy",
-                        "price": last_close,
-                        "atr": atr_val,
-                        "limit_price": breakout_limit
-                    }
+                    return {"breakout_detected": True, "side": "buy", "price": last_4h_close, "atr": atr_val, "limit_price": breakout_limit}
+                else:
+                    self.logger.debug(f"[Breakout] {symbol} => volume check fail: {last_volume} <= {avg_volume} * factor")
         else:  # bear
             required_price = breakout_limit * (Decimal("1") - buffer_decimal)
-            if last_close < required_price:
+            self.logger.debug(f"[Breakout] {symbol} (bear) => breakout_limit={breakout_limit}, required_price={required_price}, using last_4h_close={last_4h_close}")
+            if last_4h_close < required_price:
                 if last_volume > (avg_volume * Decimal(str(self.volume_threshold_factor))):
-                    return {
-                        "breakout_detected": True,
-                        "side": "sell",
-                        "price": last_close,
-                        "atr": atr_val,
-                        "limit_price": breakout_limit
-                    }
-
+                    return {"breakout_detected": True, "side": "sell", "price": last_4h_close, "atr": atr_val, "limit_price": breakout_limit}
+                else:
+                    self.logger.debug(f"[Breakout] {symbol} => volume check fail: {last_volume} <= {avg_volume} * factor")
         return {"breakout_detected": False}
 
     def _open_position(self, symbol: str, breakout_signal: dict):
-        side = breakout_signal["side"]  # "buy"/"sell"
+        side = breakout_signal["side"]
         price = breakout_signal["price"]
         atr_val = breakout_signal["atr"]
 
@@ -180,6 +223,10 @@ class BreakoutStrategy:
         if amount <= 0:
             self.logger.warning(f"[Breakout] {symbol} => amount <= 0 => skip")
             return
+
+        self.logger.info(
+            f"[Breakout] _open_position => side={side}, price={price}, invest={trade_capital:.2f} EUR => amount={amount:.4f}"
+        )
 
         if self.client:
             self.client.place_order(side, symbol, float(amount), order_type="market")
@@ -220,7 +267,10 @@ class BreakoutStrategy:
         if current_price <= 0:
             return
 
-        # stop-loss check
+        # [CHANGED] - Extra debug
+        self.logger.debug(f"[Breakout-manage] symbol={symbol}, side={side}, entry={entry}, curr={current_price}, SL={sl_price}")
+
+        # Stop-loss check
         if side == "buy":
             if current_price <= sl_price:
                 self.logger.info(f"[Breakout] SL geraakt => close LONG {symbol}")
@@ -232,24 +282,26 @@ class BreakoutStrategy:
                 self._close_position(symbol)
                 return
 
-        # partial TP bij 1R
+        # Partial TP bij 1R
         if not pos["tp1_done"]:
             if side == "buy":
                 risk = entry - sl_price
                 tp1 = entry + risk
+                self.logger.debug(f"[Breakout-manage] {symbol} => LONG risk={risk:.4f}, tp1={tp1:.4f}")
                 if current_price >= tp1:
-                    self.logger.info(f"[Breakout] {symbol} => 1R target => take partial LONG")
+                    self.logger.info(f"[Breakout] {symbol} => 1R target => take partial LONG => {pos['partial_qty']:.4f}")
                     self._take_partial_profit(symbol, pos["partial_qty"], "sell")
                     pos["tp1_done"] = True
             else:
                 risk = sl_price - entry
                 tp1 = entry - risk
+                self.logger.debug(f"[Breakout-manage] {symbol} => SHORT risk={risk:.4f}, tp1={tp1:.4f}")
                 if current_price <= tp1:
-                    self.logger.info(f"[Breakout] {symbol} => 1R target => take partial SHORT")
+                    self.logger.info(f"[Breakout] {symbol} => 1R target => take partial SHORT => {pos['partial_qty']:.4f}")
                     self._take_partial_profit(symbol, pos["partial_qty"], "buy")
                     pos["tp1_done"] = True
 
-        # trailing stop
+        # Trailing stop
         atr_val = pos["atr"]
         trail_dist = atr_val * self.trail_atr_mult
         if side == "buy":
@@ -257,15 +309,17 @@ class BreakoutStrategy:
                 pos["highest_price"] = current_price
             new_sl = pos["highest_price"] - trail_dist
             if new_sl > pos["stop_loss"]:
+                old_sl = pos["stop_loss"]
                 pos["stop_loss"] = new_sl
-                self.logger.info(f"[Breakout] {symbol} => update trailing SL => {new_sl:.2f}")
+                self.logger.info(f"[Breakout] {symbol} => update trailing SL => old={old_sl:.2f}, new={new_sl:.2f}")
         else:
             if current_price < pos["lowest_price"]:
                 pos["lowest_price"] = current_price
             new_sl = pos["lowest_price"] + trail_dist
             if new_sl < pos["stop_loss"]:
+                old_sl = pos["stop_loss"]
                 pos["stop_loss"] = new_sl
-                self.logger.info(f"[Breakout] {symbol} => update trailing SL => {new_sl:.2f}")
+                self.logger.info(f"[Breakout] {symbol} => update trailing SL => old={old_sl:.2f}, new={new_sl:.2f}")
 
     def _close_position(self, symbol: str):
         pos = self.open_positions.get(symbol)
@@ -312,41 +366,36 @@ class BreakoutStrategy:
             del self.open_positions[symbol]
 
     def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
-        """
-        Past op: we weten dat in de DB-tabel 'candles' 9 kolommen staan
-        (timestamp, datetime_utc, market, interval, open, high, low, close, volume).
-        We droppen 'datetime_utc' zodat we uiteindelijk 8 columns houden.
-        """
         market_obj = Market(symbol, self.db_manager)
         df = market_obj.fetch_candles(interval=interval, limit=limit)
         if df.empty:
             return pd.DataFrame()
 
-        # 1) Zorg dat we alle 9 kolommen benoemen
-        #    Let op de volgorde moet overeenkomen met wat 'fetch_data' in DB-manager doet
-        #    => SELECT DISTINCT timestamp, datetime_utc, market, interval, open, high, low, close, volume
+        # Verwacht de kolommen: timestamp, datetime_utc, market, interval, open, high, low, close, volume, exchange
         df.columns = [
-            "timestamp",
-            "datetime_utc",
-            "market",
-            "interval",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
+            "timestamp", "datetime_utc", "market", "interval",
+            "open", "high", "low", "close", "volume", "exchange"
         ]
-        # 2) Drop de kolom die we niet willen gebruiken
-        df.drop(columns=["datetime_utc"], inplace=True)
+        # Verwijder overbodige kolommen en hernoem
+        df.drop(columns=["datetime_utc", "exchange"], inplace=True, errors="ignore")
+        df.columns = ["timestamp", "market", "interval", "open", "high", "low", "close", "volume"]
 
-        # 3) Rename de overgebleven 8 kolommen zodat de rest van de code klopt
-        df.columns = ["timestamp","market","interval","open","high","low","close","volume"]
+        # **Nieuw:** Sorteer de DataFrame in oplopende volgorde op timestamp.
+        # Hierdoor is df.iloc[-1] de meest recente volledig afgesloten candle.
+        df.sort_values(by="timestamp", inplace=True)
 
-        # Verder: RSI, Bollinger, etc.
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = df[col].astype(float, errors="ignore")
+
+        # Zorg dat de DataFrame gesorteerd is op timestamp (oplopend)
+        df.sort_values("timestamp", inplace=True)
+
+        # Bereken indicatoren
         df = IndicatorAnalysis.calculate_indicators(df, rsi_window=14)
         bb = IndicatorAnalysis.calculate_bollinger_bands(df, window=20, num_std_dev=2)
         df["bb_upper"] = bb["bb_upper"]
         df["bb_lower"] = bb["bb_lower"]
+
         return df
 
     def _calculate_atr(self, df: pd.DataFrame, window: int) -> Optional[Decimal]:
@@ -364,7 +413,7 @@ class BreakoutStrategy:
         if not self.client:
             return self.initial_capital
 
-        bal = self.client.get_balance()  # dict => { "EUR": val }
+        bal = self.client.get_balance()
         eur_balance = Decimal(str(bal.get("EUR", "0")))
 
         total_positions = Decimal("0")
@@ -387,8 +436,7 @@ class BreakoutStrategy:
             best_ask = Decimal(str(ticker_data.get("bestAsk", 0)))
             if best_bid > 0 and best_ask > 0:
                 return (best_bid + best_ask) / Decimal("2")
-
-        # fallback: 1m close
+        # Fallback: 1m candle close
         df_1m = self._fetch_and_indicator(symbol, "1m", limit=1)
         if not df_1m.empty:
             last_close = df_1m["close"].iloc[-1]
@@ -400,6 +448,4 @@ class BreakoutStrategy:
         eur_balance = self._get_eur_balance()
         invested = total_equity - eur_balance
         ratio = invested / total_equity if total_equity > 0 else Decimal("0")
-        if ratio >= self.max_positions_equity_pct:
-            return False
-        return True
+        return ratio < self.max_positions_equity_pct

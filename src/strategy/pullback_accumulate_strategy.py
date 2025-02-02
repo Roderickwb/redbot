@@ -5,6 +5,7 @@ import time
 from typing import Optional
 from decimal import Decimal, InvalidOperation
 from collections import deque
+from datetime import datetime, timedelta, timezone
 
 # TA-bibliotheken
 from ta.volatility import AverageTrueRange
@@ -26,6 +27,38 @@ def load_config(path: str) -> dict:
         data = yaml.safe_load(f)
     print("[DEBUG] In load_config =>", data)
     return data
+
+
+# NIEUW: Helper-functie om te controleren of een candle afgesloten is.
+def is_candle_closed(last_candle_ms: int, timeframe: str) -> bool:
+    """
+    Berekent of de candle die eindigt op last_candle_ms al volledig afgesloten is.
+    Hierbij gaan we ervan uit dat de timeframe als volgt kan worden opgegeven:
+      - '5m'   : 5 minuten
+      - '15m'  : 15 minuten
+      - '1h'   : 60 minuten, etc.
+    """
+    # Zet de timeframe om in milliseconden
+    unit = timeframe[-1]
+    try:
+        value = int(timeframe[:-1])
+    except ValueError:
+        # Als de parsing mislukt, gaan we ervan uit dat de candle niet afgesloten is
+        return False
+
+    if unit == "m":
+        duration_ms = value * 60 * 1000
+    elif unit == "h":
+        duration_ms = value * 60 * 60 * 1000
+    elif unit == "d":
+        duration_ms = value * 24 * 60 * 60 * 1000
+    else:
+        # Onbekende tijdseenheid
+        duration_ms = 0
+
+    current_ms = int(time.time() * 1000)
+    # Een candle is afgesloten als de huidige tijd (in ms) groter is dan het eindtijdstip van de candle.
+    return current_ms >= (last_candle_ms + duration_ms)
 
 
 class PullbackAccumulateStrategy:
@@ -50,7 +83,7 @@ class PullbackAccumulateStrategy:
             self.strategy_config = PULLBACK_CONFIG
 
         # Logger
-        self.logger = setup_logger("pullback_strategy", PULLBACK_STRATEGY_LOG_FILE, logging.DEBUG) # kan weer naar INFO als het goed gaat
+        self.logger = setup_logger("pullback_strategy", PULLBACK_STRATEGY_LOG_FILE, logging.INFO)  # kan weer naar DEBUG indien nodig
         if config_path:
             self.logger.info("[PullbackAccumulateStrategy] init with config_path=%s", config_path)
         else:
@@ -108,13 +141,6 @@ class PullbackAccumulateStrategy:
         self.ml_model_enabled = bool(self.strategy_config.get("ml_model_enabled", False))
         self.ml_model_path = self.strategy_config.get("ml_model_path", "models/pullback_model.pkl")
         self.ml_engine = None
-
-        # Logger
-        self.logger = setup_logger("pullback_strategy", self.log_file, logging.DEBUG)
-        if config_path:
-            self.logger.info("[PullbackAccumulateStrategy] init with config_path=%s", config_path)
-        else:
-            self.logger.info("[PullbackAccumulateStrategy] init (no config_path)")
 
         # Posities & vlag
         self.open_positions = {}
@@ -193,24 +219,49 @@ class PullbackAccumulateStrategy:
             self.logger.info(f"[Debug-ATR] {symbol}: ATR({self.atr_window}) = {atr_value}")
 
         # (4) Pullback => 15m
+
+        # Stel standaardwaarden in voor de pullback-variabelen
+        rsi_val = 50.0  # standaard RSI-waarde
+        macd_signal_score = 0  # standaard MACD-score
         current_ws_price = Decimal("0")
+
         df_entry = self._fetch_and_indicator(symbol, self.entry_timeframe, limit=100)
         if not df_entry.empty:
+            # Zorg dat de data oplopend gesorteerd is op index
+            df_entry.sort_index(inplace=True)
+            last_timestamp = df_entry.index[-1]
+
+            # Controleer of last_timestamp een pd.Timestamp is, anders ga je ervan uit dat het al in milliseconden is
+            if isinstance(last_timestamp, pd.Timestamp):
+                last_candle_ms = int(last_timestamp.timestamp() * 1000)
+            else:
+                last_candle_ms = int(last_timestamp)
+
+            # Controleer of de laatste candle volledig is afgesloten
+            if not is_candle_closed(last_candle_ms, self.entry_timeframe):
+                self.logger.debug(
+                    f"[Pullback] {symbol}: Laatste {self.entry_timeframe} candle is nog niet afgesloten; gebruik penultimate candle.")
+                if len(df_entry) >= 2:
+                    used_entry = df_entry.iloc[-2]
+                else:
+                    used_entry = df_entry.iloc[-1]
+            else:
+                used_entry = df_entry.iloc[-1]
+
+            # Haal de RSI en MACD-waarden op uit de DataFrame (of eventueel uit 'used_entry' als dat gewenst is)
             rsi_val = df_entry["rsi"].iloc[-1]
             macd_signal_score = self._check_macd(df_entry)
 
-            # CHANGED/ADDED: Candle-close als backup
-            candle_close_price = Decimal(str(df_entry["close"].iloc[-1]))
+            # Haal de candle-close op als fallback-prijs
+            candle_close_price = Decimal(str(used_entry["close"]))
 
-            # CHANGED/ADDED: Live WebSocket-prijs
+            # Haal de live WS-prijs op
             ws_price = self._get_ws_price(symbol)
-
-            # Log beide
             self.logger.info(
-                f"[Debug-15m] symbol={symbol}, last_close(15m)={candle_close_price}, ws_price={ws_price}"
+                f"[Debug-15m] {symbol}: last_close(15m)={candle_close_price}, ws_price={ws_price}"
             )
 
-            # CHANGED: Gebruik primair ws_price, fallback = candle_close
+            # Gebruik primair de WS-prijs, fallback naar candle_close
             if ws_price > 0:
                 current_price = ws_price
             else:
@@ -218,8 +269,7 @@ class PullbackAccumulateStrategy:
 
             pullback_detected = self._detect_pullback(df_entry, current_price, direction)
         else:
-            rsi_val = 50
-            macd_signal_score = 0
+            # Als df_entry leeg is, blijven de standaardwaarden behouden
             current_price = Decimal("0")
             pullback_detected = False
 
@@ -246,7 +296,7 @@ class PullbackAccumulateStrategy:
             f"rsi_val={rsi_val:.2f}, macd_signal_score={macd_signal_score}, ml_signal={ml_signal}, depth_score={depth_score:.2f}"
         )
 
-        # CHANGED: Hier is current_price nu (live) = ws_price of fallback
+        # CHANGED: Gebruik current_price (live) = ws_price of fallback
         if pullback_detected and not has_position:
             if direction == "bull":
                 self.logger.info(
@@ -281,7 +331,7 @@ class PullbackAccumulateStrategy:
                         self.invested_extra = True
 
         elif has_position:
-            # CHANGED: Geef nu dezelfde current_price door
+            # CHANGED: Geef dezelfde current_price door
             self._manage_open_position(symbol, current_price, atr_value)
 
     # ------------------------------------------------
@@ -357,7 +407,6 @@ class PullbackAccumulateStrategy:
             market_obj = Market(symbol, self.db_manager)
             df = market_obj.fetch_candles(interval=interval, limit=limit)
 
-            # Debug: Controleer de opgehaalde data
             if df.empty:
                 self.logger.warning(f"[DEBUG] Geen candles opgehaald voor {symbol} met interval={interval}.")
                 return pd.DataFrame()
@@ -365,16 +414,23 @@ class PullbackAccumulateStrategy:
             self.logger.info(f"[DEBUG] Opgehaalde candles voor {symbol} ({interval}): {df.shape[0]} rijen")
             self.logger.debug(f"[DEBUG] Eerste rijen:\n{df.head()}")
 
-            # Drop datetime_utc (als het bestaat)
-            if 'datetime_utc' in df.columns:
-                df.drop(columns='datetime_utc', inplace=True, errors='ignore')
+            # [CHANGED] - Print kolommen voor drop
+            self.logger.debug(f"[DEBUG] Voor drop => df.columns={df.columns}")
 
-            # Hernoem de kolommen
+            # [CHANGED] - Drop 'datetime_utc' en 'exchange' (als ze bestaan)
+            for col in ['datetime_utc', 'exchange']:
+                if col in df.columns:
+                    df.drop(columns=col, inplace=True, errors='ignore')
+
+            # [CHANGED] - Nu rename je precies 8 kolommen
             df.columns = ['timestamp', 'market', 'interval', 'open', 'high', 'low', 'close', 'volume']
-            self.logger.debug(f"[DEBUG] Data na opschonen:\n{df.head()}")
 
-            # Controleer de kolom 'close' vóór indicatorberekeningen
-            self.logger.debug(f"[DEBUG] Close-prijzen vóór berekeningen:\n{df['close'].head(20)}")
+            # [CHANGED] - Optioneel: cast numeric kolommen naar float
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = df[col].astype(float, errors="ignore")
+
+            self.logger.debug(f"[DEBUG] Data na opschonen:\n{df.head()}")
+            self.logger.debug(f"[DEBUG] Close-prijzen vóór indicatorberekeningen:\n{df['close'].head(20)}")
 
             # Indicatoren berekenen
             df = IndicatorAnalysis.calculate_indicators(df, rsi_window=self.rsi_window)
@@ -391,12 +447,12 @@ class PullbackAccumulateStrategy:
             df['macd'] = macd_ind.macd()
             df['macd_signal'] = macd_ind.macd_signal()
             self.logger.debug(
-                f"[DEBUG] Data na MACD-berekening:\n{df[['timestamp', 'close', 'macd', 'macd_signal']].head()}")
+                f"[DEBUG] Data na MACD-berekening:\n{df[['timestamp', 'close', 'macd', 'macd_signal']].head()}"
+            )
 
-            return df  # Zorg dat de return hier juist staat en alleen wordt uitgevoerd na succes.
+            return df
 
         except Exception as e:
-            # Vang fouten op en log deze
             self.logger.error(f"[ERROR] _fetch_and_indicator faalde: {e}")
             return pd.DataFrame()
 
@@ -515,17 +571,25 @@ class PullbackAccumulateStrategy:
         ]
         return self.ml_engine.predict_signal(features)
 
-    # ----------------------------------------------------------------
+    # ------------------------------------------------
     #   Open/Manage pos
-    # ----------------------------------------------------------------
+    # ------------------------------------------------
     def _open_position(self, symbol: str, side: str, current_price: Decimal,
                        atr_value: Decimal, extra_invest=False):
         """
         Opent een nieuwe positie (long of short), slaat de trade op in de DB,
         en voegt deze toe aan self.open_positions.
         """
+        # [CHANGED] 1) Check if position already exists
+        if symbol in self.open_positions:
+            self.logger.warning(
+                f"[PullbackStrategy] Already have an open position for {symbol}, skip opening a new one."
+            )
+            return
+
         self.logger.info(
-            f"[PullbackStrategy] OPEN => side={side}, {symbol}@{current_price}, extra_invest={extra_invest}")
+            f"[PullbackStrategy] OPEN => side={side}, {symbol}@{current_price}, extra_invest={extra_invest}"
+        )
 
         # 1) Bepaal EUR balance uit order_client (paper of real)
         eur_balance = Decimal("100")
@@ -884,9 +948,9 @@ class PullbackAccumulateStrategy:
 
             del self.open_positions[symbol]
 
-    # ----------------------------------------------------------------
+    # ------------------------------------------------
     #   Hulp: equity, ws price
-    # ----------------------------------------------------------------
+    # ------------------------------------------------
     def _get_equity_estimate(self) -> Decimal:
         if not self.order_client:
             return self.initial_capital
@@ -967,9 +1031,7 @@ class PullbackAccumulateStrategy:
             if old_filled == 0:
                 pos["entry_price"] = fill_price
             else:
-                pos["entry_price"] = (
-                                             (old_price * old_filled) + (fill_price * fill_amt)
-                                     ) / new_filled
+                pos["entry_price"] = ((old_price * old_filled) + (fill_price * fill_amt)) / new_filled
 
         # === 2) Update filled_amount & actual 'amount' ===
         pos["filled_amount"] = new_filled
@@ -986,8 +1048,7 @@ class PullbackAccumulateStrategy:
             )
         else:
             self.logger.info(
-                f"[update_position_with_fill] {symbol}: partial fill => {pos['filled_amount']}/{desired} "
-                f"@ last fill price={fill_price}"
+                f"[update_position_with_fill] {symbol}: partial fill => {pos['filled_amount']}/{desired} @ last fill price={fill_price}"
             )
 
     def _load_open_positions_from_db(self):
@@ -1034,5 +1095,5 @@ class PullbackAccumulateStrategy:
 
             self.open_positions[symbol] = pos_data
             self.logger.info(
-                f"[PullbackStrategy] Hersteld open pos in memory => {symbol}, side={side}, amt={amount}, entry={entry_price}")
-
+                f"[PullbackStrategy] Hersteld open pos in memory => {symbol}, side={side}, amt={amount}, entry={entry_price}"
+            )

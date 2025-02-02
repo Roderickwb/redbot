@@ -1,68 +1,105 @@
 import os
 import json
 import logging
-from logging.handlers import RotatingFileHandler
+from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
+
 
 ################################################################################
-# Database logger
+# JSONFormatter
 ################################################################################
-def setup_database_logger(logfile="database_manager.log", level=logging.DEBUG):
+class JSONFormatter(logging.Formatter):
+    """Custom JSON formatter voor gestructureerde logging."""
+
+    def format(self, record):
+        log_record = {
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "name": record.name,
+            "message": record.getMessage()
+        }
+        if record.exc_info:
+            log_record["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_record)
+
+
+################################################################################
+# Hoofd setup_logger (RotatingFileHandler, optioneel JSON-format)
+################################################################################
+def setup_logger(name,
+                 log_file,
+                 level=logging.DEBUG,  # Default: DEBUG
+                 max_bytes=5_000_000,  # 5 MB standaard (pas dit aan indien nodig)
+                 backup_count=5,
+                 use_json=False):
     """
-    Deze logger is bedoeld voor database_manager.
-    Schrijft naar een file én de console, op DEBUG-level.
+    Stel een logger in met een RotatingFileHandler en optioneel JSON-formatting.
+
+    :param name: Naam van de logger.
+    :param log_file: Pad naar het logbestand.
+    :param level: Logging level (default: DEBUG).
+    :param max_bytes: Maximum aantal bytes voor rotatie (default: 5 MB).
+    :param backup_count: Aantal backup-bestanden.
+    :param use_json: Indien True, wordt JSONFormatter gebruikt; anders gewone tekst.
+    :return: De geconfigureerde logger.
     """
-    logger = logging.getLogger("database_manager")
+    logger = logging.getLogger(name)
     logger.setLevel(level)
 
-    # Zorg dat de directory bestaat
-    log_dir = os.path.dirname(logfile)
-    if log_dir and not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+    # Voeg handlers alleen toe als deze nog niet bestaan
+    if not logger.handlers:
+        # Zorg dat de directory voor het logbestand bestaat
+        log_dir = os.path.dirname(log_file)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir)
 
-    fh = logging.FileHandler(logfile, mode='a', encoding='utf-8')
-    fh.setLevel(level)
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
+        # Kies de formatter: JSON of plain text
+        if use_json:
+            formatter = JSONFormatter()
+        else:
+            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 
-    # Console output
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+        # Standaard: RotatingFileHandler op grootte
+        file_handler = RotatingFileHandler(
+            filename=log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            delay=True,  # Bestandsopening uitgesteld tot eerste log
+            encoding="utf-8"
+        )
+        file_handler.setLevel(level)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+        # Voorkom dubbele logs via root logger
+        logger.propagate = False
 
     return logger
 
 
 ################################################################################
-# Hoofd setup_logger (RotatingFileHandler, JSON-optie)
+# WebSocket-logger met TimedRotatingFileHandler
 ################################################################################
-def setup_logger(
-    name,
-    log_file,
-    level=logging.DEBUG,  # default op DEBUG
-    max_bytes=5_000_000,
-    backup_count=5,
-    use_json=False
-):
+def setup_websocket_logger(log_file="logs/websocket_client.log",
+                           level=logging.DEBUG,
+                           when="midnight",
+                           interval=1,
+                           backup_count=5,
+                           use_json=False):
     """
-    Setup logger with rotating file handler and optional JSON formatting.
-
-    :param name: Logger name.
-    :param log_file: Path to the log file.
-    :param level: Logging level (default: DEBUG).
-    :param max_bytes: Max size in bytes before rotation (default: 5MB).
-    :param backup_count: # backups
-    :param use_json: True => JSONFormatter, else plain text
+    Logger voor WebSocket, die 1x per dag roteert (default 'midnight').
+    Je kunt 'when' ook instellen op 'H' (elk uur) of 'S' (elke seconde) etc.
     """
+    name = "websocket_client"
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
-    # Check if the logger has handlers; only add if none
     if not logger.handlers:
-        # Ensure directory
         log_dir = os.path.dirname(log_file)
         if log_dir and not os.path.exists(log_dir):
             os.makedirs(log_dir)
@@ -72,10 +109,13 @@ def setup_logger(
         else:
             formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 
-        file_handler = RotatingFileHandler(
+        # TimedRotatingFileHandler i.p.v. size-based RotatingFileHandler
+        file_handler = TimedRotatingFileHandler(
             filename=log_file,
-            maxBytes=max_bytes,
+            when=when,       # default 'midnight': roteer 1x per dag
+            interval=interval,
             backupCount=backup_count,
+            encoding='utf-8',
             delay=True
         )
         file_handler.setLevel(level)
@@ -87,22 +127,65 @@ def setup_logger(
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
+        # Voorkom dat logs ook nog eens naar de root logger gaan
+        logger.propagate = False
+
     return logger
 
 
 ################################################################################
-# (NIEUW) setup_kraken_logger
+# Specifieke logger voor de database
 ################################################################################
-def setup_kraken_logger(
-    logfile="logs/kraken_client.log",
-    level=logging.DEBUG,
-    max_bytes=5_000_000,
-    backup_count=5,
-    use_json=False
-):
+def setup_database_logger(logfile="database_manager.log", level=logging.DEBUG):
     """
-    Shortcut om snel een 'kraken_client' logger te maken,
-    als je in kraken.py of kraken_mixed_client.py een dedicated log wil.
+    Deze logger is bedoeld voor de database_manager.
+    (RotatingFileHandler gebaseerd op 10 MB).
+    """
+    # Zorg dat de directory bestaat
+    log_dir = os.path.dirname(logfile)
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
+    logger = logging.getLogger("database_manager")
+    logger.setLevel(level)
+
+    # Check of er al handlers bestaan
+    if not logger.handlers:
+        # RotatingFileHandler: 10 MB limiet, 5 backups
+        fh = RotatingFileHandler(
+            logfile,
+            mode='a',
+            maxBytes=10 * 1024 * 1024,  # 10 MB
+            backupCount=5,
+            encoding='utf-8',
+            delay=True
+        )
+        fh.setLevel(level)
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+
+        # Console output toevoegen
+        ch = logging.StreamHandler()
+        ch.setLevel(level)
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+
+        logger.propagate = False
+
+    return logger
+
+
+################################################################################
+# Specifieke logger voor Kraken
+################################################################################
+def setup_kraken_logger(logfile="logs/kraken_client.log",
+                        level=logging.DEBUG,
+                        max_bytes=5_000_000,
+                        backup_count=5,
+                        use_json=False):
+    """
+    Snel een dedicated 'kraken_client' logger maken.
     """
     return setup_logger(
         name="kraken_client",
@@ -115,24 +198,7 @@ def setup_kraken_logger(
 
 
 ################################################################################
-# JSONFormatter
-################################################################################
-class JSONFormatter(logging.Formatter):
-    """Custom JSON formatter for structured logging."""
-    def format(self, record):
-        log_record = {
-            "timestamp": self.formatTime(record),
-            "level": record.levelname,
-            "message": record.getMessage(),
-            "name": record.name
-        }
-        if record.exc_info:
-            log_record["exception"] = self.formatException(record.exc_info)
-        return json.dumps(log_record)
-
-
-################################################################################
-# Helpers for specific log messages
+# Overige hulpfuncties (ongewijzigd)
 ################################################################################
 def log_trade(logger, action, market, price, quantity, success=True):
     if success:
@@ -140,40 +206,50 @@ def log_trade(logger, action, market, price, quantity, success=True):
     else:
         logger.error(f"Fout bij {action} op {market} voor prijs {price} met hoeveelheid {quantity}.")
 
+
 def log_error(logger, error_message):
     logger.error(f"Fout opgetreden: {error_message}")
+
 
 def log_exception(logger, exception):
     logger.exception(f"Onverwachte uitzondering: {exception}")
 
+
 def log_strategy_decision(logger, decision, reason):
     logger.info(f"Strategiebeslissing: {decision}. Reden: {reason}")
+
 
 def log_account_balance(logger, balance):
     logger.info(f"Huidige accountbalans: {balance}")
 
+
 def log_startup(logger):
     logger.info("Trading bot is gestart.")
+
 
 def log_shutdown(logger):
     logger.info("Trading bot is gestopt.")
 
+
 def log_config(logger, config):
     logger.info(f"Configuratie-instellingen: {config}")
+
 
 def log_api_request(logger, api_endpoint, params):
     logger.info(f"API-aanroep naar {api_endpoint} met parameters: {params}")
 
 
 ################################################################################
-# Test if called directly
+# Test als direct uitgevoerd
 ################################################################################
 if __name__ == "__main__":
-    test_log_file = "logs/test_logger.log"
-    test_logger = setup_logger("test_logger", test_log_file, level=logging.DEBUG)
-    test_logger.info("Dit is een INFO bericht.")
-    test_logger.debug("Dit is een DEBUG bericht.")
-    test_logger.error("Dit is een ERROR bericht.")
-    test_logger.warning("Dit is een WARNING bericht.")
-    test_logger.debug(f"Test logger setup succesvol. Logbestand: {test_log_file}")
-    test_logger.debug("Logger is klaar voor gebruik.")
+    # Test: TimedRotatingFileHandler voor de WS-logger
+    ws_logger = setup_websocket_logger(
+        log_file="logs/websocket_client.log",
+        level=logging.DEBUG,
+        when="midnight",
+        interval=1,
+        backup_count=5,
+        use_json=False
+    )
+    ws_logger.info("Dit is een test-INFO voor de websocket-logger (met TimedRotatingFileHandler).")

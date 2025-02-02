@@ -1,3 +1,7 @@
+# ============================================================
+# src/my_websocket/client.py
+# ============================================================
+
 import queue
 import pandas as pd
 import websocket
@@ -7,26 +11,60 @@ import hashlib
 import time
 import threading
 from decimal import Decimal
+from datetime import datetime, timedelta, timezone
 
-from src.logger.logger import setup_logger, log_error
+# LET OP: We import nu specifically setup_websocket_logger in plaats van setup_logger
+from src.logger.logger import setup_websocket_logger, log_error
 from src.indicator_analysis.indicators import IndicatorAnalysis
 from src.config.config import WEBSOCKET_LOG_FILE, PAIRS_CONFIG, PULLBACK_CONFIG
 from python_bitvavo_api.bitvavo import Bitvavo
 
-# Globale logger-instance
-main_logger = setup_logger('websocket_client', WEBSOCKET_LOG_FILE)
+import requests
+import logging
+
+# Globale logger-instance: gebruik TimedRotatingFileHandler
+main_logger = setup_websocket_logger(
+    log_file=WEBSOCKET_LOG_FILE,
+    level=10,          # 10 = logging.DEBUG
+    when="midnight",   # roteer 1x per dag
+    interval=1,
+    backup_count=5,
+    use_json=False
+)
 main_logger.info("WebSocket-client gestart.")
+
+
+def interval_str_to_minutes(interval_str: str) -> int:
+    """Zet een interval-string (zoals '1m', '5m', '1h', '4h', '1d') om in aantal minuten."""
+    if interval_str.endswith('m'):
+        return int(interval_str[:-1])
+    elif interval_str.endswith('h'):
+        return int(interval_str[:-1]) * 60
+    elif interval_str.endswith('d'):
+        return int(interval_str[:-1]) * 1440
+    else:
+        # Fallback: probeer als integer te interpreteren
+        try:
+            return int(interval_str)
+        except ValueError:
+            return 0
+
+
+def is_candle_closed(candle_timestamp_ms: int, interval_str: str) -> bool:
+    """
+    Bepaalt of een candle volledig is afgesloten.
+    """
+    interval_minutes = interval_str_to_minutes(interval_str)
+    if interval_minutes <= 0:
+        # Onbekend interval, ga uit van gesloten (voor veiligheid)
+        return True
+    candle_start = datetime.fromtimestamp(candle_timestamp_ms / 1000, tz=timezone.utc)
+    candle_end = candle_start + timedelta(minutes=interval_minutes)
+    return datetime.now(timezone.utc) >= candle_end
 
 
 class WebSocketClient:
     def __init__(self, ws_url, db_manager, api_key, api_secret):
-        ...
-
-        self.logger = main_logger  # bijvoorbeeld
-        self.logger.debug(f"[INIT] api_key='{api_key}' (len={len(api_key)})")
-        self.logger.debug(f"[INIT] api_secret='{api_secret}' (len={len(api_secret)})")
-        ...
-
         """
         WebSocketClient - Beheert WebSocket-verbindingen en interactie met Bitvavo.
         """
@@ -35,8 +73,9 @@ class WebSocketClient:
         self.api_key = api_key
         self.api_secret = api_secret
 
-        # Interne logger voor deze class (verwijst naar dezelfde file)
-        self.logger = main_logger
+        self.logger = main_logger  # TimeRotatingFileHandler logger
+        self.logger.debug(f"[INIT] api_key='{api_key}' (len={len(api_key)})")
+        self.logger.debug(f"[INIT] api_secret='{api_secret}' (len={len(api_secret)})")
 
         # Initialiseer Bitvavo (REST + WS)
         self.bitvavo = Bitvavo({
@@ -51,9 +90,7 @@ class WebSocketClient:
         self.latest_update_timestamps = {}
 
         self.ws = None
-
         self.order_updates_queue = queue.Queue()
-
         self.calls_this_minute = 0
         self.last_reset_ts = time.time()
         self.limit_per_minute = 100
@@ -103,10 +140,10 @@ class WebSocketClient:
         self._check_rate_limit()
         self._increment_call()
         self.logger.info(f"Simuleer place_order({side}, {symbol}, {amount}) (Geen echte call)")
-        # Dus geen bitvavo.placeOrder(...)
+        # Geen echte order-executie in paper mode
 
     # -------------------------------------------------------------
-    # REST-fallback (prijs opvragen)
+    # REST-fallback (prijs opvragen) met safe_get
     # -------------------------------------------------------------
     def _fetch_rest_price(self, symbol: str) -> Decimal:
         with self.fallback_lock:
@@ -114,10 +151,7 @@ class WebSocketClient:
             cached_entry = self.fallback_price_cache.get(symbol, None)
             if cached_entry is not None:
                 if not isinstance(cached_entry, tuple) or len(cached_entry) != 2:
-                    self.logger.error(
-                        f"[BUG] fallback_price_cache[{symbol}] bevat: {cached_entry} "
-                        f"(type={type(cached_entry)})"
-                    )
+                    self.logger.error(f"[BUG] fallback_price_cache[{symbol}] bevat: {cached_entry}")
                     del self.fallback_price_cache[symbol]
                     return Decimal("0")
 
@@ -129,28 +163,40 @@ class WebSocketClient:
             self._check_rate_limit()
             self._increment_call()
 
-            tickers = self.bitvavo.tickerPrice({"market": symbol})
-            self.logger.debug(f"[REST-Fallback RAW] {symbol} => {tickers}")
-
-            if isinstance(tickers, dict) and "error" in tickers:
-                self.logger.error(f"[REST-Fallback] Bitvavo error: {tickers}")
+            # safe_get ipv direct requests
+            url = f"https://api.bitvavo.com/v2/ticker/price?market={symbol}"
+            resp = safe_get(url, max_retries=3, sleep_seconds=2)
+            if not resp:
+                self.logger.error(f"[REST-Fallback] Kan {symbol} niet ophalen na 3 retries.")
                 return Decimal("0")
 
-            elif isinstance(tickers, dict) and "price" in tickers:
-                rest_str_price = tickers["price"]
+            try:
+                data = resp.json()
+            except Exception as e:
+                self.logger.error(f"[REST-Fallback] JSON decode error => {e}")
+                return Decimal("0")
+
+            self.logger.debug(f"[REST-Fallback RAW] {symbol} => {data}")
+
+            if isinstance(data, dict) and "error" in data:
+                self.logger.error(f"[REST-Fallback] Bitvavo error: {data}")
+                return Decimal("0")
+
+            elif isinstance(data, dict) and "price" in data:
+                rest_str_price = data["price"]
                 rest_price = Decimal(str(rest_str_price))
                 self.fallback_price_cache[symbol] = (rest_price, now_ts)
                 self.logger.debug(f"[REST-Fallback] {symbol} => {rest_price} (single dict from REST)")
                 return rest_price
 
-            elif isinstance(tickers, list) and len(tickers) > 0 and "price" in tickers[0]:
-                rest_str_price = tickers[0]["price"]
+            elif isinstance(data, list) and len(data) > 0 and "price" in data[0]:
+                rest_str_price = data[0]["price"]
                 rest_price = Decimal(str(rest_str_price))
                 self.fallback_price_cache[symbol] = (rest_price, now_ts)
                 self.logger.debug(f"[REST-Fallback] {symbol} => {rest_price} (list of tickers)")
                 return rest_price
             else:
-                self.logger.warning(f"[REST-Fallback] Onverwachte return tickerPrice({symbol}): {tickers}")
+                self.logger.warning(f"[REST-Fallback] Onverwachte return tickerPrice({symbol}): {data}")
                 return Decimal("0")
 
     # -------------------------------------------------------------
@@ -185,7 +231,7 @@ class WebSocketClient:
 
         # 3) HMAC-SHA256
         raw_hmac = hmac.new(secret_bytes, message, hashlib.sha256)
-        return raw_hmac.hexdigest()  # hex-string als resultaat
+        return raw_hmac.hexdigest()
 
     def on_message(self, ws, message):
         try:
@@ -203,7 +249,7 @@ class WebSocketClient:
         # Auth bevestigd?
         if data.get("event") == "authenticate" and data.get("authenticated") is True:
             self.logger.info("Authenticatie succesvol.")
-            self.subscribe_to_channels(ws)  # direct ALLE channels
+            self.subscribe_to_channels(ws)
             return
 
         event_type = data.get("event")
@@ -241,27 +287,11 @@ class WebSocketClient:
         subscribe_payload = {
             "action": "subscribe",
             "channels": [
-                {
-                    "name": "candles",
-                    "interval": ["1m", "5m", "15m", "1h", "4h", "1d"],
-                    "markets": self.markets
-                },
-                {
-                    "name": "trades",
-                    "markets": self.markets
-                },
-                {
-                    "name": "ticker",
-                    "markets": self.markets
-                },
-                {
-                    "name": "book",
-                    "markets": self.markets
-                },
-                {
-                    "name": "account",
-                    "markets": self.markets
-                }
+                {"name": "candles", "interval": ["1m", "5m", "15m", "1h", "4h", "1d"], "markets": self.markets},
+                {"name": "trades", "markets": self.markets},
+                {"name": "ticker", "markets": self.markets},
+                {"name": "book", "markets": self.markets},
+                {"name": "account", "markets": self.markets}
             ]
         }
 
@@ -294,14 +324,9 @@ class WebSocketClient:
         if price_float > 0:
             self.latest_prices[market_symbol] = price_float
             self.latest_update_timestamps[market_symbol] = now_ts
-            self.logger.debug(
-                f"[Trades] {market_symbol} => last trade price={price_float}, "
-                f"total trades in event={len(trades_array)}"
-            )
+            self.logger.debug(f"[Trades] {market_symbol} => last trade price={price_float}, total trades={len(trades_array)}")
         else:
-            self.logger.debug(
-                f"[Trades] {market_symbol} => ongeldige price in {last_trade}"
-            )
+            self.logger.debug(f"[Trades] {market_symbol} => ongeldige price in {last_trade}")
 
     def process_candle_data(self, data):
         try:
@@ -323,8 +348,14 @@ class WebSocketClient:
             self.logger.info(f"df_with_indicators shape: {df_with_indicators.shape}")
 
             for _, row in df_with_indicators.iterrows():
+                # Bepaal de timestamp als integer in ms
+                ts_ms = int(row["timestamp"].timestamp() * 1000)
+                # Controleer of de candle gesloten is (voor de gegeven interval)
+                if not is_candle_closed(ts_ms, interval):
+                    self.logger.debug(f"Candle voor {market} ts={ts_ms}, interval={interval} nog niet gesloten.")
+                    continue
                 formatted_candle = (
-                    int(row["timestamp"].timestamp() * 1000),
+                    ts_ms,
                     market,
                     interval,
                     float(row["open"]),
@@ -333,23 +364,17 @@ class WebSocketClient:
                     float(row["close"]),
                     float(row["volume"])
                 )
-                self.logger.info(
-                    f"DEBUG Candle => ts={formatted_candle[0]}, "
-                    f"market={formatted_candle[1]}, interval={formatted_candle[2]}, "
-                    f"open={formatted_candle[3]}, close={formatted_candle[6]}"
-                )
+                self.logger.info(f"DEBUG Candle => ts={formatted_candle[0]}, market={formatted_candle[1]}, interval={formatted_candle[2]}, open={formatted_candle[3]}, close={formatted_candle[6]}")
                 self.db_manager.save_candles([formatted_candle])
                 df_test = self.db_manager.fetch_data("candles", limit=10, market=market, interval=interval)
                 self.logger.info(f"Na insert -> fetch {market}, {interval}, got {len(df_test)} records")
 
+            # Sla indicatoren op
             df_with_indicators["market"] = market
             df_with_indicators["interval"] = interval
             self.db_manager.save_indicators(df_with_indicators)
+            self.logger.info(f"{len(df_with_indicators)} candles verwerkt voor {market}-{interval}.")
 
-            self.logger.info(
-                f"{len(df_with_indicators)} candles verwerkt voor {market}-{interval}. "
-                f"Voorbeeld: {df_with_indicators.head(1).to_dict('records')}"
-            )
         except Exception as e:
             self.logger.error(f"Fout bij verwerken van candle-data: {e}")
 
@@ -438,7 +463,7 @@ class WebSocketClient:
         auth_payload = {
             "action": "authenticate",
             "key": self.api_key,
-            "signature": sig_value,  # hier maak je gebruik van sig_value
+            "signature": sig_value,
             "timestamp": timestamp,
             "window": 10000
         }
@@ -497,11 +522,7 @@ class WebSocketClient:
                 "timestamp": int(time.time() * 1000)
             }
             self.db_manager.save_order(order_row)
-
-            self.logger.info(
-                f"[_handle_order_update] order {order_id} => status={status}, "
-                f"filled={filled_amount}/{amount}"
-            )
+            self.logger.info(f"[_handle_order_update] order {order_id} => status={status}, filled={filled_amount}/{amount}")
         except Exception as e:
             self.logger.error(f"Fout in _handle_order_update: {e}")
 
@@ -526,9 +547,30 @@ class WebSocketClient:
                 "timestamp": int(time.time() * 1000)
             }
             self.db_manager.save_fill(fill_row)
-
-            self.logger.info(
-                f"[_handle_fill_update] fill => amt={fill_amount} @ price={fill_price}, fee={fee_amount}"
-            )
+            self.logger.info(f"[_handle_fill_update] fill => amt={fill_amount} @ price={fill_price}, fee={fee_amount}")
         except Exception as e:
             self.logger.error(f"Fout in _handle_fill_update: {e}")
+
+
+def safe_get(url, params=None, max_retries=3, sleep_seconds=1):
+    """
+    Voer een GET-request uit met retries bij ConnectionError.
+    """
+    attempts = 0
+    while attempts < max_retries:
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            return resp
+        except requests.exceptions.ConnectionError as ce:
+            main_logger.warning(f"[safe_get] ConnectionError => {ce}, retry {attempts+1}/{max_retries}...")
+            time.sleep(sleep_seconds)
+            attempts += 1
+        except requests.exceptions.HTTPError as he:
+            main_logger.warning(f"[safe_get] HTTPError => {he}.")
+            return None
+        except Exception as ex:
+            main_logger.error(f"[safe_get] Onverwachte fout => {ex}")
+            return None
+    main_logger.error(f"[safe_get] Max retries={max_retries} overschreden => None.")
+    return None

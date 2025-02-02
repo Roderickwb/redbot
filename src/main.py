@@ -4,81 +4,105 @@ import logging
 import os
 from python_bitvavo_api.bitvavo import Bitvavo
 from dotenv import load_dotenv
+import yaml
+from datetime import datetime, timedelta, timezone
 
 # Lokale imports
-from src.config.config import DB_FILE, MAIN_LOG_FILE
+# Let op: we importeren direct config_logger niet - we vertrouwen op de logger uit config of elders
+from src.config.config import DB_FILE, MAIN_LOG_FILE, yaml_config
 from src.logger.logger import setup_logger, setup_database_logger
+
 from src.database_manager.database_manager import DatabaseManager
 from src.trading_engine.executor import Executor
 
+# Stel de "main" logger in (RotatingFileHandler via setup_logger)
 logger = setup_logger(name="main", log_file=MAIN_LOG_FILE, level=logging.DEBUG)
+logger.info("Main logger geconfigureerd.")
 
-# Globale DatabaseManager, zodat bijv. dashboard.py 'm kan importeren
+# Globale DatabaseManager
 db_manager = DatabaseManager(db_path=DB_FILE)
+
+# Start de flush-timer: dit zorgt ervoor dat de candle-buffer elke 5 seconden wordt geleegd
+db_manager.start_flush_timer(5)  # Flush elke 5 seconden
+
 
 def main():
     """
     Hoofdscript dat:
-      - .env leest (ENVIRONMENT, API_KEY, API_SECRET, KRAKEN_ENV)
-      - USE_WEBSOCKET en PAPER_TRADING bepaalt o.b.v. ENVIRONMENT
-      - USE_KRAKEN en KRAKEN_PAPER bepaalt o.b.v. KRAKEN_ENV
-      - Tabellen aanmaakt
-      - Executor start
+      1) .env leest (ENVIRONMENT, BITVAVO_API_KEY, KRAKEN_API_KEY, etc.)
+      2) Bepaalt of we Bitvavo WebSocket/paper mode gebruiken
+      3) Bepaalt of we Kraken-data gebruiken (paper/real/off)
+      4) Leest config.yaml in
+      5) Maakt DB-tabellen aan
+      6) Start de Executor (die zowel Bitvavo als Kraken kan doen)
     """
-    # 1) Lees .env voor ENVIRONMENT, API_KEY, API_SECRET, en evt. KRAKEN_ENV
+    # === Stap 1) .env inlezen ===
     load_dotenv()
-    # Debug-print direct daarna:
-    print("[DEBUG] In main, BITVAVO_API_KEY =", os.getenv("BITVAVO_API_KEY"))
-    print("[DEBUG] In main, BITVAVO_API_SECRET =", os.getenv("BITVAVO_API_SECRET"))
 
-    # ### (NIEUW/GEWIJZIGD) Bepaal environment-mode (Bitvavo)
-    ENVIRONMENT = os.getenv("ENVIRONMENT", "paper")
+    # Debugprint om te checken (console)
+    print("[DEBUG] BITVAVO_API_KEY =", os.getenv("BITVAVO_API_KEY"))
+    print("[DEBUG] BITVAVO_API_SECRET =", os.getenv("BITVAVO_API_SECRET"))
+    print("[DEBUG] KRAKEN_API_KEY =", os.getenv("KRAKEN_API_KEY"))
+    print("[DEBUG] KRAKEN_API_SECRET =", os.getenv("KRAKEN_API_SECRET"))
+
+    # === Bepaal environment (Bitvavo) ===
+    ENVIRONMENT = os.getenv("ENVIRONMENT", "paper").lower()
     if ENVIRONMENT == "production":
         USE_WEBSOCKET = True
         PAPER_TRADING = False
     elif ENVIRONMENT == "paper":
         USE_WEBSOCKET = True
         PAPER_TRADING = True
-    else:  # development
+    else:  # bijvoorbeeld "development"
         USE_WEBSOCKET = False
         PAPER_TRADING = True
 
-    # ### (NIEUW/GEWIJZIGD) KRAKEN_ENV lezen
-    KRAKEN_ENV = os.getenv("KRAKEN_ENV", "off")  # default => geen kraken
-    if KRAKEN_ENV.lower() == "paper":
+    # === Bepaal KRAKEN_ENV (paper/real/off) ===
+    KRAKEN_ENV = os.getenv("KRAKEN_ENV", "off").lower()
+    if KRAKEN_ENV == "paper":
         USE_KRAKEN = True
         KRAKEN_PAPER = True
-    elif KRAKEN_ENV.lower() == "real":
+    elif KRAKEN_ENV == "real":
         USE_KRAKEN = True
         KRAKEN_PAPER = False
     else:
         USE_KRAKEN = False
         KRAKEN_PAPER = False
 
-    # Haal API-key en secret uit .env (Bitvavo)
-    API_KEY = os.getenv("BITVAVO_API_KEY")
-    API_SECRET = os.getenv("BITVAVO_API_SECRET")
-    if not API_KEY or not API_SECRET:
-        logger.warning("API_KEY/API_SECRET niet gevonden in .env (of leeg).")
+    # === Stap 2) config.yaml inlezen ===
+    # je hebt config.yaml al ingelezen als yaml_config in config.py
+    logger.debug("config.yaml is al ingelezen via config.py.")
+    logger.debug(f"Inhoud van yaml_config: {yaml_config}")
 
-    # 2) Setup Database logger
+    # === Stap 3) Haal API-keys uit .env (zowel Bitvavo als Kraken) ===
+    BITVAVO_API_KEY = os.getenv("BITVAVO_API_KEY", "")
+    BITVAVO_API_SECRET = os.getenv("BITVAVO_API_SECRET", "")
+
+    # Kraken keys
+    KRAKEN_API_KEY = os.getenv("KRAKEN_API_KEY", "")
+    KRAKEN_API_SECRET = os.getenv("KRAKEN_API_SECRET", "")
+
+    if not BITVAVO_API_KEY or not BITVAVO_API_SECRET:
+        logger.warning("BITVAVO_API_KEY / BITVAVO_API_SECRET niet gevonden in .env (of leeg).")
+
+    # === Optional: logger voor DB queries ===
     database_logger = setup_database_logger(
         logfile="logs/database_manager.log",
         level=logging.DEBUG
     )
 
-    # [CHANGED] - create_tables() zorgt dat in alle tabellen de 'exchange' kolom nu bestaat.
+    # === Stap 4) Maak tabellen aan ===
     db_manager.create_tables()
     logger.info("Database-tables ensured/created.")
 
-    # 4) Log info over modus
+    # === Samenvattende log ===
     logger.info(f"ENVIRONMENT={ENVIRONMENT}, USE_WEBSOCKET={USE_WEBSOCKET}, PAPER_TRADING={PAPER_TRADING}")
     logger.info(f"KRAKEN_ENV={KRAKEN_ENV}, USE_KRAKEN={USE_KRAKEN}, KRAKEN_PAPER={KRAKEN_PAPER}")
 
     if USE_WEBSOCKET:
-        logger.info("LIVE WEBSOCKET mode ingeschakeld (voor Bitvavo).")
+        logger.info("LIVE WEBSOCKET mode ingeschakeld (Bitvavo).")
     else:
-        logger.info("WEBSOCKET uitgeschakeld (ontwikkeling/paper) voor Bitvavo.")
+        logger.info("WEBSOCKET uitgeschakeld (dev/paper) voor Bitvavo.")
 
     if PAPER_TRADING:
         logger.info("PAPER TRADING mode (fake orders) voor Bitvavo.")
@@ -87,56 +111,65 @@ def main():
 
     if USE_KRAKEN:
         if KRAKEN_PAPER:
-            logger.info("Kraken => PAPER mode (fake orders), wel live data (OHLC).")
+            logger.info("Kraken => PAPER mode (fake orders), wel live data.")
         else:
-            logger.info("Kraken => REAL trading (nog niet geïmplementeerd?), wel live data.")
+            logger.info("Kraken => REAL trading, wel live data.")
     else:
         logger.info("Kraken uitgeschakeld (KRAKEN_ENV=off).")
 
-    # 5) (optioneel) Bitvavo REST
+    # Als je op Bitvavo-niveau direct iets met REST wilt doen:
     bitvavo = Bitvavo({
-        'APIKEY': API_KEY,
-        'APISECRET': API_SECRET
+        'APIKEY': BITVAVO_API_KEY,
+        'APISECRET': BITVAVO_API_SECRET
     })
 
-    # 6) Maak een Executor aan en start
+    # === STAP: update yaml_config met je Kraken keys, zodat Executor deze vindt ===
+    if "kraken" not in yaml_config:
+        yaml_config["kraken"] = {}
+    yaml_config["kraken"]["apiKey"] = KRAKEN_API_KEY
+    yaml_config["kraken"]["apiSecret"] = KRAKEN_API_SECRET
+
+    # Extra logging: toon de volledige Kraken-configuratie
+    logger.debug(f"Kraken-configuratie in main.py: {yaml_config.get('kraken', {})}")
+
+    # === Stap 5) Maak Executor aan ===
     executor = Executor(
         db_manager=db_manager,
         use_websocket=USE_WEBSOCKET,
         paper_trading=PAPER_TRADING,
-        api_key=API_KEY,
-        api_secret=API_SECRET,
-        ### (NIEUW/GEWIJZIGD) => geef hier Kraken-flags door
+        api_key=BITVAVO_API_KEY,
+        api_secret=BITVAVO_API_SECRET,
         use_kraken=USE_KRAKEN,
-        kraken_paper=KRAKEN_PAPER
+        kraken_paper=KRAKEN_PAPER,
+        yaml_config=yaml_config  # Belangrijk: geef de volledige config door
     )
 
+    # === Stap 6) run daily tasks + hoofd-loop ===
     try:
         # Eventueel daily tasks (ML training, etc.)
         executor.run_daily_tasks()
 
         # hoofd-loop
         executor.run()
-
     except KeyboardInterrupt:
         logger.info("Bot handmatig gestopt (CTRL+C).")
     except Exception as e:
         logger.exception(f"Fout in executor.run(): {e}")
     finally:
         logger.info("Bot wordt afgesloten (main).")
-
-        # DB-check: zie hoevel data erin zit
+        # DB-check
         try:
             candles_count = db_manager.get_table_count("candles")
             ticker_count = db_manager.get_table_count("ticker")
             bids_count = db_manager.get_table_count("orderbook_bids")
             asks_count = db_manager.get_table_count("orderbook_asks")
             logger.info(
-                f"Data in DB -> Candles: {candles_count}, "
-                f"Ticker: {ticker_count}, Bids: {bids_count}, Asks: {asks_count}"
+                f"Data in DB => Candles={candles_count}, Ticker={ticker_count}, "
+                f"Bids={bids_count}, Asks={asks_count}"
             )
-        except Exception as e:
-            logger.error(f"Fout bij controleren van data in DB: {e}")
+        except Exception as ex:
+            logger.error(f"Fout bij controleren DB-data: {ex}")
+
 
 if __name__ == "__main__":
     logger.info(f"Start main script, PID={os.getpid()}")

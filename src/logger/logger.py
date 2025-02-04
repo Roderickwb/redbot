@@ -1,8 +1,8 @@
 import os
 import json
 import logging
-from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
-
+from logging.handlers import RotatingFileHandler  # TimedRotatingFileHandler laten we erin, eventueel nog gebruikt?
+# from logging.handlers import TimedRotatingFileHandler # <--- Niet meer nodig voor websocket-logger
 
 ################################################################################
 # JSONFormatter
@@ -83,23 +83,28 @@ def setup_logger(name,
 
 
 ################################################################################
-# WebSocket-logger met TimedRotatingFileHandler
+# WebSocket-logger ZONDER TimedRotatingFileHandler
 ################################################################################
 def setup_websocket_logger(log_file="logs/websocket_client.log",
                            level=logging.DEBUG,
+                           # De volgende argumenten houden we voor compatibiliteit,
+                           # maar we negeren ze, zodat we geen rename-problemen krijgen.
                            when="midnight",
                            interval=1,
                            backup_count=5,
                            use_json=False):
     """
-    Logger voor WebSocket, die 1x per dag roteert (default 'midnight').
-    Je kunt 'when' ook instellen op 'H' (elk uur) of 'S' (elke seconde) etc.
+    Logger voor WebSocket. Oorspronkelijk met TimedRotatingFileHandler,
+    maar nu vervangen door een simpele FileHandler om WinError 32 te voorkomen.
+    Er vindt dus geen automatische rotatie meer plaats.
     """
     name = "websocket_client"
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
+    # Alleen filehandler + console, zonder tijd-gebaseerde rotatie:
     if not logger.handlers:
+        # Zorg dat de directory bestaat
         log_dir = os.path.dirname(log_file)
         if log_dir and not os.path.exists(log_dir):
             os.makedirs(log_dir)
@@ -109,14 +114,11 @@ def setup_websocket_logger(log_file="logs/websocket_client.log",
         else:
             formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 
-        # TimedRotatingFileHandler i.p.v. size-based RotatingFileHandler
-        file_handler = TimedRotatingFileHandler(
+        # Gewone FileHandler i.p.v. TimedRotatingFileHandler
+        file_handler = logging.FileHandler(
             filename=log_file,
-            when=when,       # default 'midnight': roteer 1x per dag
-            interval=interval,
-            backupCount=backup_count,
-            encoding='utf-8',
-            delay=True
+            mode='a',  # Append-mode
+            encoding='utf-8'
         )
         file_handler.setLevel(level)
         file_handler.setFormatter(formatter)
@@ -127,7 +129,7 @@ def setup_websocket_logger(log_file="logs/websocket_client.log",
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
-        # Voorkom dat logs ook nog eens naar de root logger gaan
+        # Geen propagation naar root, zodat we geen dubbele logs krijgen
         logger.propagate = False
 
     return logger
@@ -243,13 +245,24 @@ def log_api_request(logger, api_endpoint, params):
 # Test als direct uitgevoerd
 ################################################################################
 if __name__ == "__main__":
-    # Test: TimedRotatingFileHandler voor de WS-logger
+    # Test: WebSocket-logger zonder rotatie (en dus geen WinError 32).
     ws_logger = setup_websocket_logger(
         log_file="logs/websocket_client.log",
         level=logging.DEBUG,
-        when="midnight",
-        interval=1,
+        when="midnight",  # Wordt nu genegeerd
+        interval=1,       # Genegeerd
+        backup_count=5,   # Genegeerd
+        use_json=False
+    )
+    ws_logger.info("Dit is een test-INFO voor de websocket-logger (ZONDER TimedRotatingFileHandler).")
+
+    # Test: hoofd-logger (met rotating op 5 MB)
+    main_log = setup_logger(
+        name="main",
+        log_file="logs/main.log",
+        level=logging.DEBUG,
+        max_bytes=5_000_000,
         backup_count=5,
         use_json=False
     )
-    ws_logger.info("Dit is een test-INFO voor de websocket-logger (met TimedRotatingFileHandler).")
+    main_log.info("Dit is een test-INFO voor de hoofd-logger (met size-based rotatie).")

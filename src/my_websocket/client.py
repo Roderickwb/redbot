@@ -1,5 +1,5 @@
 # ============================================================
-# src/my_websocket/client.py
+# src/my_websocket/client.py (Bitvavo-only variant)
 # ============================================================
 
 import queue
@@ -13,16 +13,20 @@ import threading
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 
-# LET OP: We import nu specifically setup_websocket_logger in plaats van setup_logger
 from src.logger.logger import setup_websocket_logger, log_error
 from src.indicator_analysis.indicators import IndicatorAnalysis
-from src.config.config import WEBSOCKET_LOG_FILE, PAIRS_CONFIG, PULLBACK_CONFIG
+from src.config.config import WEBSOCKET_LOG_FILE, PULLBACK_CONFIG, yaml_config
+# We import yaml_config and get the 'bitvavo' sub-dict
+# so we can read "pairs" for markets:
+
 from python_bitvavo_api.bitvavo import Bitvavo
 
 import requests
 import logging
 
-# Globale logger-instance: gebruik TimedRotatingFileHandler
+###############################################################################
+# Globale logger-instance: TimedRotatingFileHandler
+###############################################################################
 main_logger = setup_websocket_logger(
     log_file=WEBSOCKET_LOG_FILE,
     level=10,          # 10 = logging.DEBUG
@@ -56,17 +60,20 @@ def is_candle_closed(candle_timestamp_ms: int, interval_str: str) -> bool:
     """
     interval_minutes = interval_str_to_minutes(interval_str)
     if interval_minutes <= 0:
-        # Onbekend interval, ga uit van gesloten (voor veiligheid)
+        # Onbekend interval => ga uit van gesloten
         return True
     candle_start = datetime.fromtimestamp(candle_timestamp_ms / 1000, tz=timezone.utc)
     candle_end = candle_start + timedelta(minutes=interval_minutes)
     return datetime.now(timezone.utc) >= candle_end
 
 
+###############################################################################
+# WebSocketClient
+###############################################################################
 class WebSocketClient:
     def __init__(self, ws_url, db_manager, api_key, api_secret):
         """
-        WebSocketClient - Beheert WebSocket-verbindingen en interactie met Bitvavo.
+        Client voor Bitvavo WebSocket + REST fallback
         """
         self.ws_url = ws_url
         self.db_manager = db_manager
@@ -77,7 +84,13 @@ class WebSocketClient:
         self.logger.debug(f"[INIT] api_key='{api_key}' (len={len(api_key)})")
         self.logger.debug(f"[INIT] api_secret='{api_secret}' (len={len(api_secret)})")
 
-        # Initialiseer Bitvavo (REST + WS)
+        # Laad bitvavo-config, bv. "pairs": ["BTC-EUR","ETH-EUR"] etc.
+        bitvavo_cfg = yaml_config.get("bitvavo", {})
+        self.markets = bitvavo_cfg.get("pairs", [])
+
+        self.logger.info(f"[WebSocketClient] Using dynamic markets: {self.markets}")
+
+        # Maak Bitvavo-instance (REST + WS)
         self.bitvavo = Bitvavo({
             'APIKEY': self.api_key,
             'APISECRET': self.api_secret,
@@ -86,11 +99,15 @@ class WebSocketClient:
             'ACCESSWINDOW': 10000
         })
 
+        # Houd WS-prijzen bij + timestamps
         self.latest_prices = {}
         self.latest_update_timestamps = {}
 
+        # WebSocket-attributen
         self.ws = None
         self.order_updates_queue = queue.Queue()
+
+        # Rate-limit attributen
         self.calls_this_minute = 0
         self.last_reset_ts = time.time()
         self.limit_per_minute = 100
@@ -98,9 +115,6 @@ class WebSocketClient:
         self.subscribed = False
         self.running = False
         self._thread = None
-
-        self.markets = PAIRS_CONFIG
-        self.logger.info(f"[WebSocketClient] Using dynamic markets: {self.markets}")
 
         # Lock + cache voor REST fallback
         self.fallback_lock = threading.Lock()
@@ -122,9 +136,12 @@ class WebSocketClient:
         self.calls_this_minute += 1
 
     # -------------------------------------------------------------
-    # REST-calls (voor PAPER)
+    # REST-calls (PAPER-mode)
     # -------------------------------------------------------------
     def get_balance(self):
+        """
+        In paper-mode doen we geen echte call, maar simuleren we.
+        """
         self._check_rate_limit()
         self._increment_call()
         # Fake / paper logic
@@ -146,6 +163,10 @@ class WebSocketClient:
     # REST-fallback (prijs opvragen) met safe_get
     # -------------------------------------------------------------
     def _fetch_rest_price(self, symbol: str) -> Decimal:
+        """
+        Vraagt de tickerPrice op via GET en parse 'price' als Decimal.
+        Gebruikt safe_get() met retries.
+        """
         with self.fallback_lock:
             now_ts = time.time()
             cached_entry = self.fallback_price_cache.get(symbol, None)
@@ -154,9 +175,9 @@ class WebSocketClient:
                     self.logger.error(f"[BUG] fallback_price_cache[{symbol}] bevat: {cached_entry}")
                     del self.fallback_price_cache[symbol]
                     return Decimal("0")
-
                 (cached_price, cached_ts) = cached_entry
                 if (now_ts - cached_ts) < 2:
+                    # Gebruik cache
                     self.logger.debug(f"[REST-Fallback] Gebruik cache voor {symbol} => {cached_price}")
                     return cached_price
 
@@ -203,6 +224,9 @@ class WebSocketClient:
     # get_price_with_fallback
     # -------------------------------------------------------------
     def get_price_with_fallback(self, symbol: str, max_age=10) -> Decimal:
+        """
+        Check WS-price age, anders fallback.
+        """
         now_ts = time.time()
         last_price = self.latest_prices.get(symbol, 0.0)
         last_ts = self.latest_update_timestamps.get(symbol, 0.0)
@@ -213,26 +237,29 @@ class WebSocketClient:
 
         self.logger.warning(f"[WebSocketClient] {symbol} => WS price is {age:.1f}s oud => fallback to REST")
         rest_price = self._fetch_rest_price(symbol)
+
+        # Na fallback => update timestamp
+        if rest_price > 0:
+            self.latest_prices[symbol] = float(rest_price)
+            self.latest_update_timestamps[symbol] = now_ts
+
         return rest_price if rest_price > 0 else Decimal("0")
 
     # -------------------------------------------------------------
-    # WebSocket
+    # WebSocket signing
     # -------------------------------------------------------------
     def generate_signature(self, timestamp, method, endpoint):
         """
-        Generate the HMAC-SHA256 signature needed for Bitvavo WS/REST auth.
-        Met 'bytes.fromhex(...)' omdat de secret in hex is.
+        HMAC-SHA256 over f"{timestamp}{method}{endpoint}", met secret als utf-8
         """
-        # 1) Bouw de sign-string
         message = f"{timestamp}{method}{endpoint}".encode('utf-8')
-
-        # 2) Zet je 128-char hexsecret om in ruwe bytes
-        secret_bytes = bytes.fromhex(self.api_secret)
-
-        # 3) HMAC-SHA256
+        secret_bytes = self.api_secret.encode('utf-8')
         raw_hmac = hmac.new(secret_bytes, message, hashlib.sha256)
         return raw_hmac.hexdigest()
 
+    # -------------------------------------------------------------
+    # WebSocket Handlers
+    # -------------------------------------------------------------
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
@@ -254,7 +281,7 @@ class WebSocketClient:
 
         event_type = data.get("event")
 
-        # Order/fill events
+        # Order/fill
         if event_type == "order":
             self.logger.info("Eigen order geüpdatet => in queue")
             self.order_updates_queue.put(data)
@@ -284,6 +311,7 @@ class WebSocketClient:
             return
         self.subscribed = True
 
+        # Stel de 'markets' in en abonneer
         subscribe_payload = {
             "action": "subscribe",
             "channels": [
@@ -303,32 +331,69 @@ class WebSocketClient:
     # process_* - datahandlers
     # -------------------------------------------------------------
     def process_trade_data(self, data):
+        """
+        Verwerkt een 'trade'-event van Bitvavo.
+          - Soms stuurt Bitvavo een 'trades' array (oude of andere beurzen-stijl).
+          - Soms stuurt Bitvavo direct { 'price','amount','timestamp','side' } etc. zonder 'trades' array.
+
+        Voor beide gevallen updaten we self.latest_prices en self.latest_update_timestamps,
+        en loggen de 'laatste' of 'single' trade.
+        """
         market_symbol = data.get("market")
-        trades_array = data.get("trades", [])
         if not market_symbol:
             self.logger.debug("[Trades] Geen market_symbol in trade-event.")
             return
-        if not trades_array:
-            self.logger.debug(f"[Trades] wel event maar geen trades[] voor {market_symbol}.")
-            return
 
-        last_trade = trades_array[-1]
-        now_ts = time.time()
+        # 1) Check of er een 'trades' array in data zit
+        if "trades" in data:
+            trades_array = data.get("trades", [])
+            if not trades_array:
+                self.logger.debug(f"[Trades] wel event maar geen trades[] voor {market_symbol}.")
+                return
 
-        price_str = last_trade.get("price", "0")
-        try:
-            price_float = float(price_str)
-        except ValueError:
-            price_float = 0.0
+            last_trade = trades_array[-1]
+            now_ts = time.time()
 
-        if price_float > 0:
-            self.latest_prices[market_symbol] = price_float
-            self.latest_update_timestamps[market_symbol] = now_ts
-            self.logger.debug(f"[Trades] {market_symbol} => last trade price={price_float}, total trades={len(trades_array)}")
+            price_str = last_trade.get("price", "0")
+            try:
+                price_float = float(price_str)
+            except ValueError:
+                price_float = 0.0
+
+            if price_float > 0:
+                self.latest_prices[market_symbol] = price_float
+                self.latest_update_timestamps[market_symbol] = now_ts
+                self.logger.debug(
+                    f"[Trades] {market_symbol} => last trade price={price_float}, total trades={len(trades_array)}"
+                )
+            else:
+                self.logger.debug(f"[Trades] {market_symbol} => ongeldige price in {last_trade}")
+
         else:
-            self.logger.debug(f"[Trades] {market_symbol} => ongeldige price in {last_trade}")
+            # 2) Bitvavo stuurt soms 'amount','price','timestamp','side' direct in data
+            now_ts = time.time()
+
+            price_str = data.get("price", "0")
+            try:
+                price_float = float(price_str)
+            except ValueError:
+                price_float = 0.0
+
+            if price_float > 0:
+                self.latest_prices[market_symbol] = price_float
+                self.latest_update_timestamps[market_symbol] = now_ts
+                self.logger.debug(
+                    f"[Trades] {market_symbol} => single trade price={price_float}, "
+                    f"id={data.get('id', '')}, side={data.get('side', 'unknown')}"
+                )
+            else:
+                self.logger.debug(f"[Trades] {market_symbol} => ongeldige price in single trade => {data}")
 
     def process_candle_data(self, data):
+        """
+        AANPASSING: i.p.v. opslaan in "candles" => "candles_bitvavo".
+                    i.p.v. save_indicators(...) => save_indicators_bitvavo(...).
+        """
         try:
             market = data.get("market")
             interval = data.get("interval")
@@ -348,12 +413,13 @@ class WebSocketClient:
             self.logger.info(f"df_with_indicators shape: {df_with_indicators.shape}")
 
             for _, row in df_with_indicators.iterrows():
-                # Bepaal de timestamp als integer in ms
+                # Bepaal ts_ms
                 ts_ms = int(row["timestamp"].timestamp() * 1000)
-                # Controleer of de candle gesloten is (voor de gegeven interval)
+                # Check of candle closed
                 if not is_candle_closed(ts_ms, interval):
                     self.logger.debug(f"Candle voor {market} ts={ts_ms}, interval={interval} nog niet gesloten.")
                     continue
+
                 formatted_candle = (
                     ts_ms,
                     market,
@@ -364,15 +430,24 @@ class WebSocketClient:
                     float(row["close"]),
                     float(row["volume"])
                 )
-                self.logger.info(f"DEBUG Candle => ts={formatted_candle[0]}, market={formatted_candle[1]}, interval={formatted_candle[2]}, open={formatted_candle[3]}, close={formatted_candle[6]}")
-                self.db_manager.save_candles([formatted_candle])
-                df_test = self.db_manager.fetch_data("candles", limit=10, market=market, interval=interval)
+                # Vroeger => self.db_manager.save_candles([formatted_candle])
+                self.db_manager.save_candles_bitvavo([formatted_candle])  # <--- AANPASSING
+
+                self.logger.info(
+                    f"DEBUG Candle => ts={formatted_candle[0]}, market={formatted_candle[1]}, "
+                    f"interval={formatted_candle[2]}, open={formatted_candle[3]}, close={formatted_candle[6]}"
+                )
+
+                # Vroeger => df_test = self.db_manager.fetch_data("candles", ...)
+                df_test = self.db_manager.fetch_data("candles_bitvavo", limit=10, market=market, interval=interval)
                 self.logger.info(f"Na insert -> fetch {market}, {interval}, got {len(df_test)} records")
 
-            # Sla indicatoren op
+            # Indicators opslaan
             df_with_indicators["market"] = market
             df_with_indicators["interval"] = interval
-            self.db_manager.save_indicators(df_with_indicators)
+            # Vroeger => self.db_manager.save_indicators(df_with_indicators)
+            self.db_manager.save_indicators_bitvavo(df_with_indicators)  # <--- AANPASSING
+
             self.logger.info(f"{len(df_with_indicators)} candles verwerkt voor {market}-{interval}.")
 
         except Exception as e:
@@ -382,9 +457,11 @@ class WebSocketClient:
     # process_ticker_data
     # -------------------------------------------------------------
     def process_ticker_data(self, data):
+        """
+        AANPASSING: i.p.v. save_ticker(...) => save_ticker_bitvavo(...)
+        """
         try:
             self.logger.info(f"Ontvangen ticker-data: {data}")
-
             best_bid = float(data.get("bestBid", 0))
             best_ask = float(data.get("bestAsk", 0))
             spread = best_ask - best_bid if best_bid and best_ask else 0.0
@@ -393,26 +470,31 @@ class WebSocketClient:
                 'market': data.get("market"),
                 'bestBid': best_bid,
                 'bestAsk': best_ask,
-                'spread': spread
+                'spread': spread,
+                'exchange': 'Bitvavo'
             }
-            self.db_manager.save_ticker(ticker_data)
+            # Vroeger => self.db_manager.save_ticker(ticker_data)
+            self.db_manager.save_ticker_bitvavo(ticker_data)  # <--- AANPASSING
+
             self.logger.info(f"Ticker verwerkt (DB): {ticker_data}")
 
         except Exception as e:
             log_error(self.logger, f"Fout bij verwerken van ticker-data: {e}")
 
-    # -------------------------------------------------------------
-    # process_orderbook_data
-    # -------------------------------------------------------------
     def process_orderbook_data(self, data):
+        """
+        AANPASSING: i.p.v. save_orderbook(...) => save_orderbook_bitvavo(...)
+        """
         try:
             orderbook_data = {
                 'market': data.get("market"),
                 'bids': data.get("bids", []),
-                'asks': data.get("asks", [])
+                'asks': data.get("asks", []),
+                'exchange': 'Bitvavo'
             }
             self.logger.info(f"Orderbook ontvangen: {orderbook_data}")
-            self.db_manager.save_orderbook(orderbook_data)
+            # Vroeger => self.db_manager.save_orderbook(orderbook_data)
+            self.db_manager.save_orderbook_bitvavo(orderbook_data)  # <--- AANPASSING
         except Exception as e:
             self.logger.error(f"Fout bij verwerken van orderbook-data: {e}")
 
@@ -420,6 +502,10 @@ class WebSocketClient:
     # START/STOP
     # -------------------------------------------------------------
     def start_websocket(self):
+        """
+        Start de WebSocket-client in een aparte thread. Als hij verbroken wordt,
+        herstart hij na 5s (tenzij self.running=False).
+        """
         self.running = True
 
         def _run_forever():
@@ -454,7 +540,7 @@ class WebSocketClient:
         self.logger.info(f"[DEBUG] Key={self.api_key}, len={len(self.api_key)}")
         self.logger.info(f"[DEBUG] Secret start= {self.api_secret[:10]}..., len={len(self.api_secret)}")
 
-        # Onmiddellijk authenticate:
+        # Authenticatie
         timestamp = int(time.time() * 1000)
         method = "GET"
         endpoint = "/v2/websocket"
@@ -485,6 +571,9 @@ class WebSocketClient:
         main_logger.warning(f"WebSocket-verbinding gesloten. status_code={close_status_code}, msg={close_msg}")
 
     def stop_websocket(self):
+        """
+        Stop de WebSocket-loop en thread.
+        """
         self.logger.info("Stop websocket aangevraagd.")
         self.running = False
         if self.ws:
@@ -521,6 +610,8 @@ class WebSocketClient:
                 "price": float(price),
                 "timestamp": int(time.time() * 1000)
             }
+            # (Je kunt bv. self.db_manager.save_order_bitvavo(order_row) gebruiken
+            #  als je aparte bitvavo-order table hebt.)
             self.db_manager.save_order(order_row)
             self.logger.info(f"[_handle_order_update] order {order_id} => status={status}, filled={filled_amount}/{amount}")
         except Exception as e:
@@ -546,6 +637,7 @@ class WebSocketClient:
                 "fee_amount": float(fee_amount),
                 "timestamp": int(time.time() * 1000)
             }
+            # of self.db_manager.save_fill_bitvavo(fill_row) als aparte 'fills_bitvavo'
             self.db_manager.save_fill(fill_row)
             self.logger.info(f"[_handle_fill_update] fill => amt={fill_amount} @ price={fill_price}, fee={fee_amount}")
         except Exception as e:

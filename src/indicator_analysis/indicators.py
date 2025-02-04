@@ -6,6 +6,9 @@ import logging
 import pandas as pd
 import streamlit as st  # Indien je Streamlit gebruikt
 
+# [# NEW] import time voor is_candle_closed
+import time
+
 from src.config.config import DB_FILE  # (eventueel gebruikt in tests)
 from datetime import datetime, timedelta, timezone
 
@@ -25,6 +28,44 @@ if not logger.handlers:
     logger.addHandler(ch)
 
 logger.debug("Imports voltooid in indicators.py.")
+
+
+# ============================================================
+# [# NEW] Hulpfunctie om te checken of een candle met starttijd
+# candle_timestamp_ms al 'definitief' is afgesloten op basis
+# van interval_str (zoals '5m','15m','1h','4h','1d').
+# ============================================================
+def is_candle_closed(candle_timestamp_ms: int, interval_str: str) -> bool:
+    """
+    Checkt of de candle (die begon op candle_timestamp_ms) is afgelopen
+    volgens het interval_str. Bijvoorbeeld:
+     - '5m' => 5 minuten
+     - '15m' => 15 minuten
+     - '4h' => 4 uur
+    Return True als (nu >= candle_start + intervalduur).
+    """
+    now_ms = int(time.time() * 1000)
+    unit = interval_str[-1].lower()  # m/h/d ...
+    val_str = interval_str[:-1]
+    try:
+        val = int(val_str)
+    except ValueError:
+        # Onbekende interval => ga uit van false
+        logger.warning(f"[is_candle_closed] interval onparset: {interval_str}")
+        return False
+
+    if unit == 'm':
+        duration_ms = val * 60_000
+    elif unit == 'h':
+        duration_ms = val * 60 * 60_000
+    elif unit == 'd':
+        duration_ms = val * 24 * 60 * 60_000
+    else:
+        logger.warning(f"[is_candle_closed] Onbekend unit={unit} in {interval_str}")
+        duration_ms = 0
+
+    candle_end = candle_timestamp_ms + duration_ms
+    return now_ms >= candle_end
 
 
 # ============================================================

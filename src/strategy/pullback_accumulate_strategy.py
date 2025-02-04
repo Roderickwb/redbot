@@ -15,6 +15,7 @@ from ta.trend import MACD
 from src.config.config import PULLBACK_STRATEGY_LOG_FILE, PULLBACK_CONFIG, load_config_file
 from src.logger.logger import setup_logger
 from src.indicator_analysis.indicators import Market, IndicatorAnalysis
+from src.meltdown_manager.meltdown_manager import MeltdownManager
 
 try:
     import joblib
@@ -67,6 +68,7 @@ class PullbackAccumulateStrategy:
     ---------------------------------------------------------
      - self.data_client => om de laatste koersen te zien (bv. .latest_prices)
      - self.order_client => om orders te plaatsen en get_balance() te doen
+     - (Nu Bitvavo-only)
     """
 
     # CHANGED: constructor heeft data_client en order_client
@@ -88,6 +90,11 @@ class PullbackAccumulateStrategy:
             self.logger.info("[PullbackAccumulateStrategy] init with config_path=%s", config_path)
         else:
             self.logger.info("[PullbackAccumulateStrategy] init (no config_path)")
+
+        # Laden config, bv. meltdown_cfg = full_config.get("meltdown_manager", {})
+        meltdown_cfg = self.strategy_config.get("meltdown_manager", {})
+        self.meltdown_manager = MeltdownManager(meltdown_cfg, db_manager=db_manager, logger=self.logger)
+        self.initial_capital = Decimal(str(self.strategy_config.get("initial_capital", "100")))
 
         # -----------------------------------
         # Hier de rest van je config uit YAML
@@ -181,6 +188,16 @@ class PullbackAccumulateStrategy:
          5) Depth Trend
          6) Manage / open pos
         """
+        """
+        1) meltdown-check
+        2) normal logic
+        """
+
+        meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
+        if meltdown_active:
+            self.logger.warning(f"[Pullback] meltdown => skip new trades for {symbol}.")
+            return
+
         self.logger.info(f"[PullbackStrategy] Start for {symbol}")
 
         # (1) fail-safes
@@ -403,40 +420,48 @@ class PullbackAccumulateStrategy:
     #   DATA & INDICATORS
     # ------------------------------------------------
     def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
+        """
+        BITVAVO-ONLY AANPASSING:
+        i.p.v. Market(...).fetch_candles(...) -> we gebruiken direct self.db_manager.fetch_data("candles_bitvavo", ...).
+        Verder ongewijzigd.
+        """
         try:
-            market_obj = Market(symbol, self.db_manager)
-            df = market_obj.fetch_candles(interval=interval, limit=limit)
-
+            # i.p.v. market_obj=Market(symbol, self.db_manager) => direct DB call
+            df = self.db_manager.fetch_data(
+                table_name="candles_bitvavo",
+                limit=limit,
+                market=symbol,
+                interval=interval
+            )
             if df.empty:
-                self.logger.warning(f"[DEBUG] Geen candles opgehaald voor {symbol} met interval={interval}.")
+                self.logger.warning(f"[DEBUG] Geen candles opgehaald uit 'candles_bitvavo' voor {symbol} ({interval}).")
                 return pd.DataFrame()
 
             self.logger.info(f"[DEBUG] Opgehaalde candles voor {symbol} ({interval}): {df.shape[0]} rijen")
             self.logger.debug(f"[DEBUG] Eerste rijen:\n{df.head()}")
 
-            # [CHANGED] - Print kolommen voor drop
-            self.logger.debug(f"[DEBUG] Voor drop => df.columns={df.columns}")
-
-            # [CHANGED] - Drop 'datetime_utc' en 'exchange' (als ze bestaan)
+            # Drop 'datetime_utc' en 'exchange' (als ze bestaan)
             for col in ['datetime_utc', 'exchange']:
                 if col in df.columns:
                     df.drop(columns=col, inplace=True, errors='ignore')
 
-            # [CHANGED] - Nu rename je precies 8 kolommen
+            # We verwachten kolommen: timestamp, market, interval, open, high, low, close, volume
+            # (als je fetch_data columns=[timestamp, datetime_utc, market, interval, open, high, low, close, volume, exchange], rename net als voorheen):
+            # => pas rename toe als je code dat deed
+            # We doen wat je oorspronkelijk deed:
             df.columns = ['timestamp', 'market', 'interval', 'open', 'high', 'low', 'close', 'volume']
 
-            # [CHANGED] - Optioneel: cast numeric kolommen naar float
             for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = df[col].astype(float, errors="ignore")
 
             self.logger.debug(f"[DEBUG] Data na opschonen:\n{df.head()}")
             self.logger.debug(f"[DEBUG] Close-prijzen vóór indicatorberekeningen:\n{df['close'].head(20)}")
 
-            # Indicatoren berekenen
+            # Indicatoren
+            df.sort_values(by="timestamp", inplace=True)
             df = IndicatorAnalysis.calculate_indicators(df, rsi_window=self.rsi_window)
-            self.logger.debug(f"[DEBUG] Data na RSI-berekening:\n{df[['timestamp', 'close', 'rsi']].head()}")
 
-            # Berekening van MACD
+            # MACD
             self.logger.debug("[DEBUG] Start MACD-berekening...")
             macd_ind = MACD(
                 close=df['close'],
@@ -446,9 +471,11 @@ class PullbackAccumulateStrategy:
             )
             df['macd'] = macd_ind.macd()
             df['macd_signal'] = macd_ind.macd_signal()
-            self.logger.debug(
-                f"[DEBUG] Data na MACD-berekening:\n{df[['timestamp', 'close', 'macd', 'macd_signal']].head()}"
-            )
+
+            # Bollinger
+            bb = IndicatorAnalysis.calculate_bollinger_bands(df, window=20, num_std_dev=2)
+            df["bb_upper"] = bb["bb_upper"]
+            df["bb_lower"] = bb["bb_lower"]
 
             return df
 
@@ -465,6 +492,8 @@ class PullbackAccumulateStrategy:
         )
         series_atr = atr_obj.average_true_range()
         last_atr = series_atr.iloc[-1]
+        if pd.isna(last_atr):
+            return None
         return Decimal(str(last_atr))
 
     def _calculate_pivot_points(self, df_h4: pd.DataFrame) -> dict:
@@ -559,8 +588,7 @@ class PullbackAccumulateStrategy:
         self.logger.info("[PullbackAccumulateStrategy] ML-engine is succesvol gezet.")
 
     def _ml_predict_signal(self, df: pd.DataFrame) -> int:
-        # 1) Check of ML aanstaat en of ml_engine gezet is
-        if not self.ml_model_enabled or self.ml_engine is None:
+        if not self.ml_model_enabled or self.ml_engine is None or df.empty:
             return 0
         last_row = df.iloc[-1]
         features = [
@@ -966,17 +994,30 @@ class PullbackAccumulateStrategy:
         return eur_balance + total_pos_value
 
     def _get_latest_price(self, symbol: str) -> Decimal:
-        """Valt terug op DB (ticker of 1m candle)."""
-        ticker_data = self.db_manager.get_ticker(symbol)
-        if ticker_data:
-            best_bid = Decimal(str(ticker_data.get("bestBid", 0)))
-            best_ask = Decimal(str(ticker_data.get("bestAsk", 0)))
+        """
+        AANPASSING: i.p.v. self.db_manager.get_ticker(symbol) => BITVAVO => fetch_data("ticker_bitvavo", ...)
+        """
+        # i.p.v. 'get_ticker(symbol)', we doen direct bitvavo's 'ticker_bitvavo'.
+        df_ticker = self.db_manager.fetch_data(
+            table_name="ticker_bitvavo",
+            limit=1,
+            market=symbol
+        )
+        if not df_ticker.empty:
+            best_bid = df_ticker["best_bid"].iloc[0] if "best_bid" in df_ticker.columns else 0
+            best_ask = df_ticker["best_ask"].iloc[0] if "best_ask" in df_ticker.columns else 0
             if best_bid > 0 and best_ask > 0:
-                return (best_bid + best_ask) / Decimal("2")
+                return (Decimal(str(best_bid)) + Decimal(str(best_ask))) / Decimal("2")
 
-        df_1m = self._fetch_and_indicator(symbol, "1m", limit=1)
-        if not df_1m.empty:
-            last_close = df_1m["close"].iloc[-1]
+        # Fallback => 1m in 'candles_bitvavo'
+        df_1m = self.db_manager.fetch_data(
+            table_name="candles_bitvavo",
+            limit=1,
+            market=symbol,
+            interval="1m"
+        )
+        if not df_1m.empty and "close" in df_1m.columns:
+            last_close = df_1m["close"].iloc[0]
             return Decimal(str(last_close))
 
         return Decimal("0")

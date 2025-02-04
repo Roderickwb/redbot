@@ -5,8 +5,9 @@ from typing import Dict
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
+from src.meltdown_manager.meltdown_manager import MeltdownManager
 
-
+from src.logger.logger import setup_logger
 class KrakenAltcoinScannerStrategy:
     """
     Small/Mid-cap Altcoin Momentum/Rotation Strategy (Scanner) – voor Kraken
@@ -38,6 +39,16 @@ class KrakenAltcoinScannerStrategy:
         self.enabled = bool(config.get("enabled", True))
         self.log_file = config.get("log_file", "logs/altcoin_scanner_strategy.log")
 
+        if logger:
+            self.logger = logger
+        else:
+            self.logger = self._setup_logger("kraken_altcoin_scanner", self.log_file)
+
+        # (2) Haal meltdown-config op
+        meltdown_cfg = config.get("meltdown_manager", {})
+        # (3) Maak de meltdown_manager met self.logger
+        self.meltdown_manager = MeltdownManager(meltdown_cfg, db_manager=db_manager, logger=self.logger)
+
         # Welke coins uitsluiten
         self.exclude_symbols = config.get("exclude_symbols", [])
         # timeframe om te scannen
@@ -60,16 +71,14 @@ class KrakenAltcoinScannerStrategy:
         self.partial_tp_enabled = bool(config.get("partial_tp_enabled", False))
         self.partial_tp_pct = Decimal(str(config.get("partial_tp_pct", 0.25)))
 
-        if logger:
-            self.logger = logger
-        else:
-            self.logger = self._setup_logger("kraken_altcoin_scanner", self.log_file)
+
 
         # open_positions => { "DOGE-EUR": {...}, ... }
         self.open_positions = {}
 
         # initieel kapitaal (indien client=None => paper)
-        self.initial_capital = Decimal("1000")
+        # [CHANGED] lees uit YAML (default=100):
+        self.initial_capital = Decimal(str(config.get("initial_capital", "100")))
 
         self.logger.info("[KrakenAltcoinScanner] init met config OK.")
 
@@ -93,6 +102,11 @@ class KrakenAltcoinScannerStrategy:
     # Hoofd-functie => elke X minuten aanroepen
     # =================================================
     def execute_strategy(self):
+        meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=None)
+        if meltdown_active:
+            self.logger.warning("[AltcoinScanner] meltdown => skip scanning & close pos.")
+            return
+
         if not self.enabled:
             self.logger.info("[KrakenAltcoinScanner] Strategy disabled => skip.")
             return
@@ -178,8 +192,8 @@ class KrakenAltcoinScannerStrategy:
             self.logger.info(f"[Paper] BUY {symbol}, amt={amt:.4f} @ ~{current_price:.4f}")
 
         # Simple SL/TP
-        sl_price = current_price * (Decimal("1") - (self.sl_pct/Decimal("100")))
-        tp_price = current_price * (Decimal("1") + (self.tp_pct/Decimal("100")))
+        sl_price = current_price * (Decimal("1") - (self.sl_pct / Decimal("100")))
+        tp_price = current_price * (Decimal("1") + (self.tp_pct / Decimal("100")))
 
         self.open_positions[symbol] = {
             "side": "buy",
@@ -235,7 +249,7 @@ class KrakenAltcoinScannerStrategy:
             if curr_price > pos["highest_price"]:
                 pos["highest_price"] = curr_price
             # trailing SL = highest_price * (1 - trailing%/100)
-            trail_sl = pos["highest_price"] * (Decimal("1") - (self.trailing_pct/Decimal("100")))
+            trail_sl = pos["highest_price"] * (Decimal("1") - (self.trailing_pct / Decimal("100")))
             if trail_sl > pos["stop_loss"]:
                 old_sl = pos["stop_loss"]
                 pos["stop_loss"] = trail_sl
@@ -245,7 +259,7 @@ class KrakenAltcoinScannerStrategy:
     # Close positie
     # =================================================
     def _close_position(self, symbol: str):
-        pos = self.open_positions.get(symbol)
+        pos = self.open_positions.pop(symbol, None)
         if not pos:
             return
         amt = pos["amount"]
@@ -255,7 +269,6 @@ class KrakenAltcoinScannerStrategy:
         else:
             self.logger.info(f"[Paper] CLOSE LONG => SELL {symbol} amt={amt:.4f}")
 
-        del self.open_positions[symbol]
         self.logger.info(f"[Scanner] Positie {symbol} volledig gesloten.")
 
     # =================================================
@@ -263,32 +276,40 @@ class KrakenAltcoinScannerStrategy:
     # =================================================
     def _fetch_candles(self, symbol: str, interval: str, limit=50) -> pd.DataFrame:
         """
-        Haal candles van de DB. Zorg dat 'get_candlesticks' data van Kraken opvraagt.
+        Haalt candles exclusief uit Kraken, bijv. 'candles_kraken', door
+        db_manager-functie get_candlesticks(..., exchange="Kraken").
         Retouneert een df met kolommen: "timestamp","market","interval","open","high","low","close","volume"
         """
-        # Voorbeeld:
-        df = self.db_manager.get_candlesticks(symbol, interval=interval, limit=limit, exchange="Kraken")
+        df = self.db_manager.get_candlesticks(
+            market=symbol,
+            interval=interval,
+            limit=limit,
+            exchange="Kraken"  # <--- Hier kraken-only
+        )
         if df.empty:
             return df
-        # Zorg dat kolommen kloppen
-        df = df.sort_values("timestamp")
-        df = df[["timestamp","market","interval","open","high","low","close","volume"]].copy()
-        return df
+
+        df.sort_values("timestamp", inplace=True)
+        needed_cols = ["timestamp","market","interval","open","high","low","close","volume"]
+        return df[needed_cols].copy() if all(c in df.columns for c in df.columns) else df
 
     def _get_latest_price(self, symbol: str) -> Decimal:
         """
-        Eenvoudige 'ticker' fallback: bestBid/bestAsk of 1m candle
+        Eenvoudige 'ticker' fallback => get_ticker(..., exchange="Kraken") of 1m candle
         """
-        tk = self.db_manager.get_ticker(symbol, exchange="Kraken")
+        tk = self.db_manager.get_ticker(market=symbol, exchange="Kraken")
         if tk:
+            # In je DB-lagen: best_bid => tk["best_bid"], best_ask => tk["best_ask"] (als kolommen)
             best_bid = Decimal(str(tk.get("best_bid", 0)))
             best_ask = Decimal(str(tk.get("best_ask", 0)))
-            if best_bid>0 and best_ask>0:
-                return (best_bid+best_ask)/Decimal("2")
+            if best_bid > 0 and best_ask > 0:
+                return (best_bid + best_ask) / Decimal("2")
+
         # fallback => 1m candle
         cdf = self._fetch_candles(symbol, "1m", limit=1)
         if not cdf.empty:
-            return Decimal(str(cdf["close"].iloc[-1]))
+            close_val = cdf["close"].iloc[-1]
+            return Decimal(str(close_val))
         return Decimal("0")
 
     def _get_eur_balance(self) -> Decimal:
@@ -314,6 +335,4 @@ class KrakenAltcoinScannerStrategy:
         eur_bal = self._get_eur_balance()
         invested = total_eq - eur_bal
         ratio = invested / total_eq if total_eq>0 else Decimal("0")
-        if ratio >= self.max_positions_equity_pct:
-            return False
-        return True
+        return ratio < self.max_positions_equity_pct

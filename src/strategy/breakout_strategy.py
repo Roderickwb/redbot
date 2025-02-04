@@ -11,7 +11,9 @@ from ta.momentum import RSIIndicator
 
 # Lokale imports
 from src.logger.logger import setup_logger
-from src.indicator_analysis.indicators import Market, IndicatorAnalysis
+# We halen NIET 'Market' binnen, want je hebt geen Market-class
+from src.indicator_analysis.indicators import IndicatorAnalysis
+from src.meltdown_manager.meltdown_manager import MeltdownManager
 
 def is_candle_closed(candle_timestamp_ms: int, interval_hours: float) -> bool:
     """
@@ -35,6 +37,7 @@ class BreakoutStrategy:
     """
 
     def __init__(self, client, db_manager, config_path=None):
+
         self.client = client
         self.db_manager = db_manager
 
@@ -44,6 +47,10 @@ class BreakoutStrategy:
             self.strategy_config = full_config.get("breakout_strategy", {})
         else:
             self.strategy_config = {}
+
+        self.logger = setup_logger("breakout_strategy", "logs/breakout_strategy.log", logging.DEBUG)
+        meltdown_cfg = self.strategy_config.get("meltdown_manager", {})
+        self.meltdown_manager = MeltdownManager(meltdown_cfg, db_manager=self.db_manager, logger=self.logger)
 
         # Defaults (gebruik de waarden uit de config, of stel een standaard in)
         self.log_file = self.strategy_config.get("log_file", "logs/breakout_strategy.log")
@@ -82,12 +89,21 @@ class BreakoutStrategy:
         return data
 
     def execute_strategy(self, symbol: str):
+        meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
+        if meltdown_active:
+            self.logger.info("[Breakout] meltdown => skip trades & close pos.")
+            return
         """
         1) Check daily RSI-filter
         2) Check breakout op 4h
         3) Open/Manage posities
         """
         self.logger.info(f"[BreakoutStrategy] Start for {symbol}")
+
+        meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
+        if meltdown_active:
+            self.logger.info("[Breakout] meltdown => skip trades.")
+            return
 
         # 1) Trend via daily RSI
         trend = self._check_daily_rsi(symbol)
@@ -366,37 +382,81 @@ class BreakoutStrategy:
             del self.open_positions[symbol]
 
     def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
-        market_obj = Market(symbol, self.db_manager)
-        df = market_obj.fetch_candles(interval=interval, limit=limit)
+        """
+        Haalt de candles uit 'candles_kraken' via db_manager.fetch_data("candles_kraken", ...).
+        Daarna berekent het RSI en Bollinger, net als je oorspronkelijke code.
+        Dit is i.p.v. de (niet-bestaande) Market-class.
+        """
+        # 1) Query de 'candles_kraken' tabel
+        df = self.db_manager.fetch_data(
+            table_name="candles_kraken",
+            limit=limit,
+            market=symbol,
+            interval=interval,
+            exchange=None  # Of je laat 'exchange=Kraken' weg, want we filteren al op 'candles_kraken'
+        )
+
         if df.empty:
             return pd.DataFrame()
 
-        # Verwacht de kolommen: timestamp, datetime_utc, market, interval, open, high, low, close, volume, exchange
-        df.columns = [
-            "timestamp", "datetime_utc", "market", "interval",
-            "open", "high", "low", "close", "volume", "exchange"
-        ]
-        # Verwijder overbodige kolommen en hernoem
-        df.drop(columns=["datetime_utc", "exchange"], inplace=True, errors="ignore")
-        df.columns = ["timestamp", "market", "interval", "open", "high", "low", "close", "volume"]
+        # We verwachten kolommen:
+        # timestamp, datetime_utc, market, interval, open, high, low, close, volume, exchange(?)
+        # In 'candles_kraken' heb je misschien wel/niet 'exchange' kolom, maar we laten het zoals is:
+        # Hernoem en sorteer net als je deed in je code
+        # (let op, fetch_data() geeft misschien al columns=[...], check wat je db_manager.fetch_data() doet)
 
-        # **Nieuw:** Sorteer de DataFrame in oplopende volgorde op timestamp.
-        # Hierdoor is df.iloc[-1] de meest recente volledig afgesloten candle.
+        # Voor de zekerheid even checken of df de kolommen heeft die we nodig hebben:
+        needed_cols = ["timestamp","market","interval","open","high","low","close","volume"]
+        existing_cols = df.columns.tolist()
+        for col in needed_cols:
+            if col not in existing_cols:
+                self.logger.debug(f"[Breakout] {symbol} => kolom {col} niet in df.columns => might cause issues")
+
+        # Sorteer oplopend
         df.sort_values(by="timestamp", inplace=True)
 
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = df[col].astype(float, errors="ignore")
+        # Cast numeric
+        for col in ["open","high","low","close","volume"]:
+            if col in df.columns:
+                df[col] = df[col].astype(float, errors="ignore")
 
-        # Zorg dat de DataFrame gesorteerd is op timestamp (oplopend)
-        df.sort_values("timestamp", inplace=True)
-
-        # Bereken indicatoren
+        # Indicator berekening
         df = IndicatorAnalysis.calculate_indicators(df, rsi_window=14)
         bb = IndicatorAnalysis.calculate_bollinger_bands(df, window=20, num_std_dev=2)
         df["bb_upper"] = bb["bb_upper"]
         df["bb_lower"] = bb["bb_lower"]
 
         return df
+
+    def _get_latest_price(self, symbol: str) -> Decimal:
+        """
+        Haalt de recentste prijs uit 'ticker_kraken' d.m.v. db_manager.fetch_data("ticker_kraken", ...).
+        Fallback => 1m-candle in 'candles_kraken'.
+        """
+        df_ticker = self.db_manager.fetch_data(
+            table_name="ticker_kraken",
+            limit=1,
+            market=symbol
+            # exchange=... (kun je doen of laten, want we filteren op de 'ticker_kraken' tabel)
+        )
+        if not df_ticker.empty:
+            best_bid = df_ticker["best_bid"].iloc[0] if "best_bid" in df_ticker.columns else 0
+            best_ask = df_ticker["best_ask"].iloc[0] if "best_ask" in df_ticker.columns else 0
+            if best_bid>0 and best_ask>0:
+                return Decimal(str((best_bid+best_ask)/2))
+
+        # Fallback => 1m in 'candles_kraken'
+        df_1m = self.db_manager.fetch_data(
+            table_name="candles_kraken",
+            limit=1,
+            market=symbol,
+            interval="1m"
+        )
+        if not df_1m.empty and "close" in df_1m.columns:
+            last_close = df_1m["close"].iloc[0]
+            return Decimal(str(last_close))
+
+        return Decimal("0")
 
     def _calculate_atr(self, df: pd.DataFrame, window: int) -> Optional[Decimal]:
         if len(df) < window:
@@ -419,8 +479,8 @@ class BreakoutStrategy:
         total_positions = Decimal("0")
         for sym, pos in self.open_positions.items():
             amt = pos["amount"]
-            price = self._get_latest_price(sym)
-            total_positions += amt * price
+            px = self._get_latest_price(sym)
+            total_positions += amt * px
         return eur_balance + total_positions
 
     def _get_eur_balance(self) -> Decimal:
@@ -428,20 +488,6 @@ class BreakoutStrategy:
             return self.initial_capital
         bal = self.client.get_balance()
         return Decimal(str(bal.get("EUR", "0")))
-
-    def _get_latest_price(self, symbol: str) -> Decimal:
-        ticker_data = self.db_manager.get_ticker(symbol)
-        if ticker_data:
-            best_bid = Decimal(str(ticker_data.get("bestBid", 0)))
-            best_ask = Decimal(str(ticker_data.get("bestAsk", 0)))
-            if best_bid > 0 and best_ask > 0:
-                return (best_bid + best_ask) / Decimal("2")
-        # Fallback: 1m candle close
-        df_1m = self._fetch_and_indicator(symbol, "1m", limit=1)
-        if not df_1m.empty:
-            last_close = df_1m["close"].iloc[-1]
-            return Decimal(str(last_close))
-        return Decimal("0")
 
     def _can_open_new_position(self) -> bool:
         total_equity = self._get_equity_estimate()

@@ -251,6 +251,10 @@ with tab1:
     show_tables()
 
 # =========== TAB 2: Candle Data & Weerstandslijnen + Trades ===========
+# =========== TAB 2: Candle Data & Weerstandslijnen + Trades ===========
+
+# =========== TAB 2: Candle Data & Weerstandslijnen + Trades ===========
+# =========== TAB 2: Candle Data & Weerstandslijnen + Trades ===========
 with tab2:
     st.header("📊 Candle Data & Weerstandslijnen + Trades")
     if not markets:
@@ -262,6 +266,7 @@ with tab2:
     record_limit = st.slider("Aantal Records (Candles)", min_value=10, max_value=500, step=10, value=100)
     chart_type = st.selectbox("Grafiektype", ["Candles", "Line"], index=0)
 
+    # --- A) Candles + Indicators ---
     df_candles_raw = fetch_data_cached(
         table_name="candles",
         market=selected_market,
@@ -285,7 +290,7 @@ with tab2:
     else:
         st.write("📅 **Candles + indicatoren (head):**", df_indic.head())
 
-        # Pivots: haal daily, 4h en 1h candles op voor pivot berekening
+        # --- B) Pivots bepalen ---
         daily = fetch_data_cached("candles", market=selected_market, interval="1d", limit=50, exchange=selected_exchange)
         pivot_daily = pivot_calculation(daily)
         h4 = fetch_data_cached("candles", market=selected_market, interval="4h", limit=50, exchange=selected_exchange)
@@ -297,19 +302,41 @@ with tab2:
         if pivot_daily: pivot_lines.append({"info": pivot_daily, "label": "1d"})
         if pivot_4h: pivot_lines.append({"info": pivot_4h, "label": "4h"})
         if pivot_1h: pivot_lines.append({"info": pivot_1h, "label": "1h"})
-        df_trades = fetch_data_cached("trades", market=selected_market, limit=200, exchange=selected_exchange)
-        if not df_trades.empty:
-            df_trades["timestamp"] = pd.to_datetime(df_trades["timestamp"], unit="ms", errors="coerce")
-            df_trades["timestamp"] = df_trades["timestamp"].dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam")
-            buys = df_trades[df_trades["side"].str.upper() == "BUY"]
-            sells = df_trades[df_trades["side"].str.upper() == "SELL"]
-            st.write("**[DEBUG] Candles time range:**", df_indic.index.min(), "->", df_indic.index.max())
-            st.write("**[DEBUG] Trades time range:**", df_trades["timestamp"].min(), "->", df_trades["timestamp"].max())
-        else:
-            buys = pd.DataFrame()
-            sells = pd.DataFrame()
 
-        # Plotting met Plotly
+        # --- C) Trades ophalen ---
+        df_trades = fetch_data_cached(
+            table_name="trades",
+            market=selected_market,
+            limit=200,
+            exchange=selected_exchange
+        )
+
+        # Maak lege buys/sells aan; vullen we later in als 'timestamp' bestaat
+        buys = pd.DataFrame()
+        sells = pd.DataFrame()
+
+        if not df_trades.empty:
+            # Check of de kolom 'timestamp' aanwezig is
+            if "timestamp" in df_trades.columns:
+                # => Zet naar datetime, filter op buys/sells
+                df_trades["timestamp"] = pd.to_datetime(df_trades["timestamp"], unit="ms", errors="coerce")
+                df_trades["timestamp"] = (
+                    df_trades["timestamp"]
+                    .dt.tz_localize("UTC")
+                    .dt.tz_convert("Europe/Amsterdam")
+                )
+                # Buys & sells
+                buys = df_trades[df_trades["side"].str.upper() == "BUY"]
+                sells = df_trades[df_trades["side"].str.upper() == "SELL"]
+
+                # Debug logs
+                st.write("**[DEBUG] Candles time range:**", df_indic.index.min(), "->", df_indic.index.max())
+                st.write("**[DEBUG] Trades time range:**", df_trades["timestamp"].min(), "->", df_trades["timestamp"].max())
+            else:
+                # Geen timestamp => geen plot markers
+                st.warning("Kolom 'timestamp' ontbreekt in trades => geen datumconversie mogelijk.")
+
+        # --- D) Plot met Plotly ---
         fig = make_subplots(
             rows=3, cols=1, shared_xaxes=True,
             vertical_spacing=0.02, row_heights=[0.5, 0.2, 0.3],
@@ -320,7 +347,7 @@ with tab2:
             ]
         )
 
-        # Chart type: Candlestick of line-grafiek
+        # 1) Candlestick of line
         if chart_type == "Candles":
             fig.add_trace(go.Candlestick(
                 x=df_indic.index,
@@ -333,7 +360,6 @@ with tab2:
                 decreasing=dict(line=dict(color='red'))
             ), row=1, col=1)
         else:
-            # Lijngrafiek van de closing-prijs
             fig.add_trace(go.Scatter(
                 x=df_indic.index,
                 y=df_indic['close'],
@@ -342,7 +368,7 @@ with tab2:
                 name='Line'
             ), row=1, col=1)
 
-        # Voeg Bollinger Bands en MA toe
+        # 2) Bollinger & MA
         if "bollinger_upper" in df_indic.columns:
             fig.add_trace(go.Scatter(
                 x=df_indic.index,
@@ -365,7 +391,7 @@ with tab2:
                 name='MA'
             ), row=1, col=1)
 
-        # RSI op tweede rij
+        # 3) RSI op tweede rij
         if "rsi" in df_indic.columns:
             fig.add_trace(go.Scatter(
                 x=df_indic.index,
@@ -376,7 +402,7 @@ with tab2:
             fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
             fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
 
-        # MACD op derde rij
+        # 4) MACD op derde rij
         if "macd" in df_indic.columns:
             fig.add_trace(go.Scatter(
                 x=df_indic.index,
@@ -392,7 +418,7 @@ with tab2:
                 name='MACD Sig'
             ), row=3, col=1)
 
-        # Voeg Pivot-lijnen toe (inclusief R1 en S1)
+        # 5) Pivot-lijnen
         for piv in pivot_lines:
             label = piv["label"]
             dat = piv["info"]
@@ -409,8 +435,8 @@ with tab2:
                           annotation_text=f"{label} S1", annotation_position="top right",
                           row=1, col=1)
 
-        # Trades toevoegen als markers
-        if not buys.empty:
+        # 6) Trades plotten (alleen als ze de kolom 'timestamp' hebben)
+        if not buys.empty and "timestamp" in buys.columns:
             fig.add_trace(
                 go.Scatter(
                     x=buys["timestamp"],
@@ -420,7 +446,7 @@ with tab2:
                     name='BUY'
                 ), row=1, col=1
             )
-        if not sells.empty:
+        if not sells.empty and "timestamp" in sells.columns:
             fig.add_trace(
                 go.Scatter(
                     x=sells["timestamp"],
@@ -431,6 +457,7 @@ with tab2:
                 ), row=1, col=1
             )
 
+        # Lay-out update
         fig.update_layout(
             title=f'Candlestick + Weerstand + Trades [{selected_exchange}] {selected_market} ({selected_interval})',
             yaxis_title='Prijs',
@@ -444,6 +471,7 @@ with tab2:
         fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
         fig.update_yaxes(title_text="MACD", row=3, col=1)
 
+        # Tonen in Streamlit
         st.plotly_chart(fig, use_container_width=False)
         st.success("✅ Candlestick + Weerstand + Trades weergegeven.")
 
@@ -520,26 +548,61 @@ with tab5:
 # =========== TAB 6: Trades ===========
 with tab6:
     st.header("💱 Trades (overzicht)")
+
     if not markets:
         st.warning("Geen markten geladen (check config.yaml).")
         st.stop()
+
     selected_market_trades = st.selectbox("Selecteer Markt (Trades)", markets, index=0)
-    df_trades_tab6 = fetch_data_cached("trades",
-                                       market=selected_market_trades,
-                                       limit=100,
-                                       exchange=selected_exchange)
-    if not df_trades_tab6.empty:
-        df_trades_tab6["trade_cost"] = pd.to_numeric(df_trades_tab6["trade_cost"], errors="coerce").fillna(0.0)
-        df_trades_tab6["pnl_eur"] = pd.to_numeric(df_trades_tab6["pnl_eur"], errors="coerce").fillna(0.0)
-        df_trades_tab6["timestamp"] = pd.to_datetime(df_trades_tab6["timestamp"], unit="ms", errors="coerce")
-        df_trades_tab6["timestamp"] = df_trades_tab6["timestamp"].dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam")
-        df_trades_tab6["trade_cost"] = df_trades_tab6["trade_cost"].round(2)
-        df_trades_tab6["pnl_eur"] = df_trades_tab6["pnl_eur"].round(2)
-        st.dataframe(
-            df_trades_tab6.style.format({
-                "trade_cost": "{:.2f}",
-                "pnl_eur": "{:.2f}"
-            })
-        )
-    else:
+    df_trades_tab6 = fetch_data_cached(
+        table_name="trades",
+        market=selected_market_trades,
+        limit=100,
+        exchange=selected_exchange
+    )
+
+    # Debug-hulpmiddel: laat zien wat we terugkrijgen
+    st.write("**[DEBUG trades] Kolommen:**", df_trades_tab6.columns.tolist())
+    st.write("**[DEBUG trades] shape:**", df_trades_tab6.shape)
+
+    if df_trades_tab6.empty:
         st.warning(f"⚠️ Geen trades gevonden voor {selected_market_trades} / {selected_exchange}.")
+    else:
+        # Als we elders de index = 'timestamp' hadden gezet, eerst reset_index
+        # (drop=False betekent: hou de index als kolom met dezelfde naam)
+        df_trades_tab6.reset_index(drop=False, inplace=True)
+
+        if "timestamp" in df_trades_tab6.columns:
+            # Numerieke kolommen
+            df_trades_tab6["trade_cost"] = pd.to_numeric(df_trades_tab6["trade_cost"], errors="coerce").fillna(0.0)
+            df_trades_tab6["pnl_eur"] = pd.to_numeric(df_trades_tab6["pnl_eur"], errors="coerce").fillna(0.0)
+
+            # Zet kolom om naar datetime (milliseconden)
+            df_trades_tab6["timestamp"] = pd.to_datetime(
+                df_trades_tab6["timestamp"],
+                unit="ms",
+                errors="coerce"
+            )
+
+            # Als hij nog tz-naive is => localize UTC, anders .tz_convert
+            if df_trades_tab6["timestamp"].dt.tz is None:
+                df_trades_tab6["timestamp"] = df_trades_tab6["timestamp"].dt.tz_localize("UTC")
+            df_trades_tab6["timestamp"] = df_trades_tab6["timestamp"].dt.tz_convert("Europe/Amsterdam")
+
+            # Ronden
+            df_trades_tab6["trade_cost"] = df_trades_tab6["trade_cost"].round(2)
+            df_trades_tab6["pnl_eur"] = df_trades_tab6["pnl_eur"].round(2)
+
+            st.dataframe(
+                df_trades_tab6.style.format({
+                    "trade_cost": "{:.2f}",
+                    "pnl_eur": "{:.2f}"
+                })
+            )
+        else:
+            st.warning("⚠️ Kolom 'timestamp' ontbreekt in trades; geen datumconversie mogelijk.")
+            st.dataframe(df_trades_tab6)
+
+
+
+

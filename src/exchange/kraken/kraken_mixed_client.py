@@ -126,8 +126,7 @@ def interval_to_hours(interval_str: str) -> float:
 
 def is_candle_closed(candle_timestamp_ms: int, timeframe: str) -> bool:
     """
-    Check of de candle (start=candle_timestamp_ms) voor 'timeframe' al
-    definitief is afgelopen.
+    Check of de candle (start=candle_timestamp_ms) voor 'timeframe' al definitief is afgelopen.
     """
     unit = timeframe[-1]
     try:
@@ -160,15 +159,14 @@ class KrakenMixedClient:
 
     def __init__(self, db_manager, kraken_cfg: dict, use_private_ws=False):
         """
-        kraken_cfg:
-          {
-            "pairs": ["BTC-EUR", "ETH-EUR", ...],
-            "intervals_realtime": [15],
-            "intervals_poll": [60, 240, 1440],
-            "poll_interval_seconds": 300,
-            "apiKey": "...",
-            "apiSecret": "..."
-          }
+        kraken_cfg: {
+          "pairs": ["BTC-EUR", "ETH-EUR", ...],
+          "intervals_realtime": [15],
+          "intervals_poll": [60, 240, 1440],
+          "poll_interval_seconds": 300,
+          "apiKey": "...",
+          "apiSecret": "..."
+        }
         """
         self.db_manager = db_manager
         self.calls_this_minute = 0
@@ -226,8 +224,6 @@ class KrakenMixedClient:
         logger.info("[KrakenMixedClient] use_private_ws=%s (key_len=%d)",
                     self.use_private_ws, len(self.api_key))
 
-        self._ensure_exchange_column()
-
         # Poll thread
         self.poll_running = False
         self.poll_thread = None
@@ -245,16 +241,6 @@ class KrakenMixedClient:
 
     def _increment_call(self):
         self.calls_this_minute += 1
-
-    def _ensure_exchange_column(self):
-        try:
-            rows = self.db_manager.execute_query("PRAGMA table_info(candles)")
-            existing = [r[1] for r in rows]
-            if 'exchange' not in existing:
-                self.db_manager.execute_query("ALTER TABLE candles ADD COLUMN exchange TEXT")
-                logger.info("[KrakenMixedClient] Added 'exchange' col to 'candles'.")
-        except Exception as e:
-            logger.error("[KrakenMixedClient] ensure_exchange => %s", e)
 
     # ===========================================
     # START / STOP
@@ -427,8 +413,7 @@ class KrakenMixedClient:
         # Haal de tuple op: (local_pair, interval_str, iv_int)
         local_pair, interval_str, iv_int = self.channel_id_map[chan_id]
         if not isinstance(payload, list) or len(payload) < 8:
-            logger.warning("[KrakenMixedClient] ongeldige ohlc payload voor %s, interval=%s => %s",
-                           local_pair, interval_str, payload)
+            logger.warning("[KrakenMixedClient] ongeldige ohlc payload => %s", payload)
             return
 
         try:
@@ -451,60 +436,63 @@ class KrakenMixedClient:
             high_p,
             low_p,
             close_p,
-            volume,
-            "Kraken"
-        )
+            volume
+        )  # Let op: GEEN 9e veld 'exchange' meer, we gebruiken candles_kraken
 
         # Controleer of closed
         if is_candle_closed(ts_ms, interval_str):
             logger.info(
                 f"[Candle CLOSED] WS => {local_pair} {interval_str}, start_ts={ts_ms}, recognized closed at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
             )
-            self._save_candle(candle)
+            self._save_candle_kraken(candle)
         else:
             logger.debug("[KrakenMixedClient] Candle voor %s op ts=%d nog niet gesloten; probeer REST-fallback.",
                          local_pair, ts_ms)
             # Bepaal ws_pair via de mapping van de lokale naam
             ws_pair = self.kraken_ws_map.get(local_pair)
-            if ws_pair is None:
+            if not ws_pair:
                 logger.error("[KrakenMixedClient] Geen ws_pair voor %s", local_pair)
                 return
 
             fallback_candle = self._fetch_latest_candle_rest(ws_pair, iv_int)
             if fallback_candle:
-                # fallback_candle is een tuple: (ts, o, h, l, c, vol)
-                fb_ts, fb_o, fb_h, fb_l, fb_c, fb_vol = fallback_candle
-                # Extra check: controleer of deze candle wel afgesloten is
+                (fb_ts, fb_o, fb_h, fb_l, fb_c, fb_vol) = fallback_candle
                 if is_candle_closed(fb_ts, interval_str):
                     logger.info(
                         f"[Candle CLOSED] REST-fallback => {local_pair} {interval_str}, fb_ts={fb_ts}, recognized closed at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
                     )
-                    fallback_candle_full = (fb_ts, local_pair, interval_str, fb_o, fb_h, fb_l, fb_c, fb_vol, "Kraken")
-                    self._save_candle(fallback_candle_full)
+                    fallback_tuple = (fb_ts, local_pair, interval_str, fb_o, fb_h, fb_l, fb_c, fb_vol)
+                    self._save_candle_kraken(fallback_tuple)
                 else:
                     logger.debug("[KrakenMixedClient] REST-fallback candle voor %s is nog niet afgesloten.", local_pair)
-            else:
-                logger.debug("[KrakenMixedClient] REST-fallback geen candle voor %s.", local_pair)
 
-    def _save_candle(self, candle_tuple):
+    # ===========================================
+    # (A.1) Opslaan candle in candles_kraken
+    # ===========================================
+    def _save_candle_kraken(self, candle_tuple):
+        """
+        Schrijft direct weg in 'candles_kraken' (zonder exchange-kolom).
+        candle_tuple = (ts_ms, local_pair, interval_str, o, h, l, c, vol)
+        """
         try:
-            (ts, mkt, iv, o, h, l, c, vol, exch) = candle_tuple
+            (ts, mkt, iv, o, h, l, c, vol) = candle_tuple
             dt_utc = datetime.fromtimestamp(ts / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
             sql = """
-            INSERT OR REPLACE INTO candles
-            (timestamp, datetime_utc, market, interval,
-             open, high, low, close, volume, exchange)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO candles_kraken
+            (timestamp, datetime_utc, market, interval, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
-            params = (ts, dt_utc, mkt, iv, o, h, l, c, vol, exch)
+            params = (ts, dt_utc, mkt, iv, o, h, l, c, vol)
             self.db_manager.connection.execute(sql, params)
+            self.db_manager.connection.commit()
 
             logger.info(
-                "[Store Candle] market=%s, interval=%s, timestamp=%d => open=%.5f, close=%.5f (UTC=%s), stored at local=%s",
-                mkt, iv, ts, o, c, dt_utc, datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                "[Store Candle] => [candles_kraken] market=%s, interval=%s, timestamp=%d => open=%.5f, close=%.5f (UTC=%s)",
+                mkt, iv, ts, o, c, dt_utc
             )
         except Exception as e:
-            logger.error("[KrakenMixedClient] error saving candle => %s", e)
+            logger.error("[KrakenMixedClient] error saving candle to candles_kraken => %s", e)
 
     # ===========================================
     # (B) Private WS
@@ -646,7 +634,7 @@ class KrakenMixedClient:
         price = cost / vol if vol > 0 else float(fill_data.get("price", "0"))
         logger.info(f"[PrivateWS] ownTrade => txid={txid}, side={side}, vol={vol}, price={price}, fee={fee}")
 
-        # 1) fill
+        # 1) fill => in 'fills' met exchange="Kraken"
         fill_row = {
             "order_id": txid,
             "market": pair,
@@ -659,7 +647,7 @@ class KrakenMixedClient:
         }
         self.db_manager.save_fill(fill_row)
 
-        # 2) trade
+        # 2) trade => in 'trades' met exchange="Kraken"
         trade_data = {
             "symbol": pair,
             "side": side,
@@ -750,6 +738,10 @@ class KrakenMixedClient:
         return rows
 
     def _save_ohlc_rows(self, local_pair, iv_int, rows):
+        """
+        Sla de candles op in 'candles_kraken'.
+        row: [time, open, high, low, close, vwap, volume, count]
+        """
         interval_str = self._iv_int_to_str(iv_int)
         count = 0
 
@@ -764,16 +756,14 @@ class KrakenMixedClient:
                 c_ = float(row[4])
                 vol = float(row[6])
                 ts_ms = int(t_s * 1000)
-                # Converteer timestamp naar UTC-string in Python
                 dt_utc = datetime.fromtimestamp(ts_ms / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
                 sql = """
-                INSERT OR REPLACE INTO candles
-                (timestamp, datetime_utc, market, interval,
-                 open, high, low, close, volume, exchange)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO candles_kraken
+                (timestamp, datetime_utc, market, interval, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
-                params = (ts_ms, dt_utc, local_pair, interval_str, o_, h_, l_, c_, vol, "Kraken")
+                params = (ts_ms, dt_utc, local_pair, interval_str, o_, h_, l_, c_, vol)
                 self.db_manager.connection.execute(sql, params)
                 count += 1
 
@@ -783,14 +773,13 @@ class KrakenMixedClient:
                         f"[Poll Candle] {local_pair} {interval_str}, start_ts={ts_ms} => open={o_:.5f}, close={c_:.5f}, dt_utc={dt_utc}"
                     )
 
-        logger.info("[KrakenMixedClient] poll => pair=%s, interval=%s => inserted %d rows",
+        logger.info("[KrakenMixedClient] poll => pair=%s, interval=%s => inserted %d rows into candles_kraken",
                     local_pair, interval_str, count)
 
     # Rest call voor 15m candle als WS openbaar niet levert.
     def _fetch_latest_candle_rest(self, ws_pair, iv_int):
         """
-        Haalt de laatste candle op voor ws_pair/iv_int via REST.
-        Retourneert (ts, open, high, low, close, volume) of None.
+        Haalt de laatste candle op (ts, o, h, l, c, vol) via REST, return None als mislukt.
         """
         self._check_rate_limit()
         self._increment_call()

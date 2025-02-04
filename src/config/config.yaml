@@ -13,7 +13,6 @@ bitvavo:
     - SOL-EUR
     - ADA-EUR
     - TRX-EUR
-    - USDT-EUR
     - SPX-EUR
     - BNB-EUR
     - XVG-EUR
@@ -70,7 +69,7 @@ pullback_accumulate_strategy:
   tp1_atr_mult: 0.5
   tp2_atr_mult: 1.0
   trail_atr_mult: 0.5
-  initial_capital: 125
+  initial_capital: 100
   max_daily_loss_pct: 7.5
   flash_crash_drop_pct: 10.0
   use_depth_trend: true
@@ -172,6 +171,18 @@ altcoin_scanner_strategy:
 
   partial_tp_enabled: true
   partial_tp_pct: 0.25
+
+  initial_capital: 100
+
+### MELTDOWN MANAGER ###
+meltdown_manager:
+  daily_loss_pct: 20              # meltdown als daily portfolio drop >= 20%
+  flash_crash_pct: 20             # meltdown als >=2 coins > 20% daling
+  rsi_reentry_threshold: 30       # meltdown eindigt als RSI > 30
+  meltdown_coins: ["BTC-EUR", "XRP-EUR", "ETH-EUR"]   # barometer
+  meltdown_coins_needed: 2        # min. 2 coins in meltdown_coins >= flash_crash_pct => meltdown
+  meltdown_tf: "5m"               # timeframe voor flash crash check
+  meltdown_lookback: 3            # #candles om te vergelijken (bv. 3x 5m => ~15m)
 
 
 ### SCALPING STRATEGY ###

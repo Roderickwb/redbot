@@ -44,6 +44,7 @@ def safe_get(url, params=None, max_retries=3, sleep_seconds=1, headers=None):
     logger.error(f"[safe_get] Max retries={max_retries} overschreden => None.")
     return None
 
+
 def safe_post(url, data=None, headers=None, max_retries=3, sleep_seconds=1):
     attempts = 0
     while attempts < max_retries:
@@ -124,6 +125,7 @@ def interval_to_hours(interval_str: str) -> float:
     else:
         return 0.0
 
+
 def is_candle_closed(candle_timestamp_ms: int, timeframe: str) -> bool:
     """
     Check of de candle (start=candle_timestamp_ms) voor 'timeframe' al definitief is afgelopen.
@@ -153,20 +155,27 @@ class KrakenMixedClient:
     """
     Combineert:
       1) Publieke WebSocket-subscripties voor 'ohlc' (realtime intervals).
-      2) REST-polling voor grotere intervals (bv. 1h, 4h, 1d).
+      2) REST-polling voor grotere intervals (1h, 4h, 1d).
       3) (Optioneel) Private WebSocket voor ownTrades/openOrders
+
+    Wordt ook als "client" gebruikt in je strategie, dus we kunnen hier
+    een 'get_balance()' toevoegen zodat meltdown_manager of strategies
+    kunnen aanroepen: client.get_balance().
     """
 
     def __init__(self, db_manager, kraken_cfg: dict, use_private_ws=False):
         """
-        kraken_cfg: {
-          "pairs": ["BTC-EUR", "ETH-EUR", ...],
-          "intervals_realtime": [15],
-          "intervals_poll": [60, 240, 1440],
-          "poll_interval_seconds": 300,
-          "apiKey": "...",
-          "apiSecret": "..."
-        }
+        :param db_manager:  DatabaseManager
+        :param kraken_cfg:  dict met keys:
+           {
+             "pairs": [...],
+             "intervals_realtime": [...],
+             "intervals_poll": [...],
+             "poll_interval_seconds": ...,
+             "apiKey": "...",
+             "apiSecret": "..."
+           }
+        :param use_private_ws: True => start private WS (ownTrades, etc.) als apiKey+Secret zijn gezet
         """
         self.db_manager = db_manager
         self.calls_this_minute = 0
@@ -227,6 +236,19 @@ class KrakenMixedClient:
         # Poll thread
         self.poll_running = False
         self.poll_thread = None
+
+    ########################################################################
+    # Toegevoegd => get_balance()
+    ########################################################################
+    def get_balance(self) -> dict:
+        """
+        Voor meltdown_manager of strategies:
+        - Hier zou je een echte REST-call maken naar /0/private/Balance (als real trading).
+        - Of je retourneert een fictief/paper-saldo.
+        Voor nu doen we een 'stub': 1000 EUR.
+        """
+        # Dit is een simpele stub. Pas aan je eigen wensen aan.
+        return {"EUR": "1000"}
 
     def _check_rate_limit(self):
         now = time.time()
@@ -437,7 +459,7 @@ class KrakenMixedClient:
             low_p,
             close_p,
             volume
-        )  # Let op: GEEN 9e veld 'exchange' meer, we gebruiken candles_kraken
+        )
 
         # Controleer of closed
         if is_candle_closed(ts_ms, interval_str):
@@ -492,7 +514,7 @@ class KrakenMixedClient:
                 mkt, iv, ts, o, c, dt_utc
             )
         except Exception as e:
-            logger.error("[KrakenMixedClient] error saving candle to candles_kraken => %s", e)
+            logger.error("[KrakenMixedClient] error saving candle => %s", e)
 
     # ===========================================
     # (B) Private WS
@@ -773,7 +795,7 @@ class KrakenMixedClient:
                         f"[Poll Candle] {local_pair} {interval_str}, start_ts={ts_ms} => open={o_:.5f}, close={c_:.5f}, dt_utc={dt_utc}"
                     )
 
-        logger.info("[KrakenMixedClient] poll => pair=%s, interval=%s => inserted %d rows into candles_kraken",
+        logger.info("[KrakenMixedClient] poll => pair=%s, interval=%s => inserted %d rows",
                     local_pair, interval_str, count)
 
     # Rest call voor 15m candle als WS openbaar niet levert.
@@ -792,7 +814,7 @@ class KrakenMixedClient:
         params = {"pair": rest_name, "interval": iv_int}
         resp = safe_get(url, params=params, max_retries=3, sleep_seconds=2)
         if not resp:
-            logger.error(f"[REST] fout => geen candle na retries voor {ws_pair}/{iv_int}")
+            logger.error(f"[REST] geen candle na retries voor {ws_pair}/{iv_int}")
             return None
         if resp.status_code != 200:
             logger.error(f"[REST] fout bij ophalen candle: {resp.text}")

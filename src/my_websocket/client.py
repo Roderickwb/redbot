@@ -1,5 +1,5 @@
 # ============================================================
-# src/my_websocket/client.py (Bitvavo-only variant)
+# src/my_websocket/client.py (Bitvavo-only variant + REST-poll)
 # ============================================================
 
 import queue
@@ -16,11 +16,7 @@ from datetime import datetime, timedelta, timezone
 from src.logger.logger import setup_websocket_logger, log_error
 from src.indicator_analysis.indicators import IndicatorAnalysis
 from src.config.config import WEBSOCKET_LOG_FILE, PULLBACK_CONFIG, yaml_config
-# We import yaml_config and get the 'bitvavo' sub-dict
-# so we can read "pairs" for markets:
-
 from python_bitvavo_api.bitvavo import Bitvavo
-
 import requests
 import logging
 
@@ -36,6 +32,30 @@ main_logger = setup_websocket_logger(
     use_json=False
 )
 main_logger.info("WebSocket-client gestart.")
+
+
+def safe_get(url, params=None, max_retries=3, sleep_seconds=1):
+    """
+    Voer een GET-request uit met retries bij ConnectionError.
+    """
+    attempts = 0
+    while attempts < max_retries:
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            return resp
+        except requests.exceptions.ConnectionError as ce:
+            main_logger.warning(f"[safe_get] ConnectionError => {ce}, retry {attempts+1}/{max_retries}...")
+            time.sleep(sleep_seconds)
+            attempts += 1
+        except requests.exceptions.HTTPError as he:
+            main_logger.warning(f"[safe_get] HTTPError => {he}.")
+            return None
+        except Exception as ex:
+            main_logger.error(f"[safe_get] Onverwachte fout => {ex}")
+            return None
+    main_logger.error(f"[safe_get] Max retries={max_retries} overschreden => None.")
+    return None
 
 
 def interval_str_to_minutes(interval_str: str) -> int:
@@ -73,7 +93,7 @@ def is_candle_closed(candle_timestamp_ms: int, interval_str: str) -> bool:
 class WebSocketClient:
     def __init__(self, ws_url, db_manager, api_key, api_secret):
         """
-        Client voor Bitvavo WebSocket + REST fallback
+        Client voor Bitvavo WebSocket + (nu uitgebreid met) REST-candle-poll.
         """
         self.ws_url = ws_url
         self.db_manager = db_manager
@@ -84,11 +104,14 @@ class WebSocketClient:
         self.logger.debug(f"[INIT] api_key='{api_key}' (len={len(api_key)})")
         self.logger.debug(f"[INIT] api_secret='{api_secret}' (len={len(api_secret)})")
 
-        # Laad bitvavo-config, bv. "pairs": ["BTC-EUR","ETH-EUR"] etc.
+        # Laad bitvavo-config, bv. "pairs": ["BTC-EUR","ETH-EUR"], "intervals": ["5m", "15m"] etc.
         bitvavo_cfg = yaml_config.get("bitvavo", {})
         self.markets = bitvavo_cfg.get("pairs", [])
+        # Welke intervals wil je periodiek pollen?
+        self.poll_intervals = bitvavo_cfg.get("poll_intervals", ["5m", "15m"])  # Pas aan naar wens, bijv ["1m","5m","15m"]
 
         self.logger.info(f"[WebSocketClient] Using dynamic markets: {self.markets}")
+        self.logger.info(f"[WebSocketClient] Poll intervals: {self.poll_intervals}")
 
         # Maak Bitvavo-instance (REST + WS)
         self.bitvavo = Bitvavo({
@@ -119,6 +142,11 @@ class WebSocketClient:
         # Lock + cache voor REST fallback
         self.fallback_lock = threading.Lock()
         self.fallback_price_cache = {}
+
+        # Stop-event voor poll-thread
+        self._poll_stop_event = threading.Event()
+        self._poll_thread = None
+
 
     # -------------------------------------------------------------
     # Rate-limit
@@ -315,7 +343,11 @@ class WebSocketClient:
         subscribe_payload = {
             "action": "subscribe",
             "channels": [
-                {"name": "candles", "interval": ["1m", "5m", "15m", "1h", "4h", "1d"], "markets": self.markets},
+                {
+                    "name": "candles",
+                    "interval": ["1m", "5m", "15m", "1h", "4h", "1d"],
+                    "markets": self.markets
+                },
                 {"name": "trades", "markets": self.markets},
                 {"name": "ticker", "markets": self.markets},
                 {"name": "book", "markets": self.markets},
@@ -430,23 +462,20 @@ class WebSocketClient:
                     float(row["close"]),
                     float(row["volume"])
                 )
-                # Vroeger => self.db_manager.save_candles([formatted_candle])
-                self.db_manager.save_candles_bitvavo([formatted_candle])  # <--- AANPASSING
+                self.db_manager.save_candles_bitvavo([formatted_candle])
 
                 self.logger.info(
                     f"DEBUG Candle => ts={formatted_candle[0]}, market={formatted_candle[1]}, "
                     f"interval={formatted_candle[2]}, open={formatted_candle[3]}, close={formatted_candle[6]}"
                 )
 
-                # Vroeger => df_test = self.db_manager.fetch_data("candles", ...)
                 df_test = self.db_manager.fetch_data("candles_bitvavo", limit=10, market=market, interval=interval)
                 self.logger.info(f"Na insert -> fetch {market}, {interval}, got {len(df_test)} records")
 
             # Indicators opslaan
             df_with_indicators["market"] = market
             df_with_indicators["interval"] = interval
-            # Vroeger => self.db_manager.save_indicators(df_with_indicators)
-            self.db_manager.save_indicators_bitvavo(df_with_indicators)  # <--- AANPASSING
+            self.db_manager.save_indicators_bitvavo(df_with_indicators)
 
             self.logger.info(f"{len(df_with_indicators)} candles verwerkt voor {market}-{interval}.")
 
@@ -458,7 +487,7 @@ class WebSocketClient:
     # -------------------------------------------------------------
     def process_ticker_data(self, data):
         """
-        AANPASSING: i.p.v. save_ticker(...) => save_ticker_bitvavo(...)
+        AANPASSING: i.p.v. save_ticker(...) => save_ticker_bitvavo(...).
         """
         try:
             self.logger.info(f"Ontvangen ticker-data: {data}")
@@ -473,9 +502,7 @@ class WebSocketClient:
                 'spread': spread,
                 'exchange': 'Bitvavo'
             }
-            # Vroeger => self.db_manager.save_ticker(ticker_data)
-            self.db_manager.save_ticker_bitvavo(ticker_data)  # <--- AANPASSING
-
+            self.db_manager.save_ticker_bitvavo(ticker_data)
             self.logger.info(f"Ticker verwerkt (DB): {ticker_data}")
 
         except Exception as e:
@@ -483,7 +510,7 @@ class WebSocketClient:
 
     def process_orderbook_data(self, data):
         """
-        AANPASSING: i.p.v. save_orderbook(...) => save_orderbook_bitvavo(...)
+        AANPASSING: i.p.v. save_orderbook(...) => save_orderbook_bitvavo(...).
         """
         try:
             orderbook_data = {
@@ -493,8 +520,7 @@ class WebSocketClient:
                 'exchange': 'Bitvavo'
             }
             self.logger.info(f"Orderbook ontvangen: {orderbook_data}")
-            # Vroeger => self.db_manager.save_orderbook(orderbook_data)
-            self.db_manager.save_orderbook_bitvavo(orderbook_data)  # <--- AANPASSING
+            self.db_manager.save_orderbook_bitvavo(orderbook_data)
         except Exception as e:
             self.logger.error(f"Fout bij verwerken van orderbook-data: {e}")
 
@@ -572,7 +598,7 @@ class WebSocketClient:
 
     def stop_websocket(self):
         """
-        Stop de WebSocket-loop en thread.
+        Stop de WebSocket-loop, poll-thread en alle lopende threads.
         """
         self.logger.info("Stop websocket aangevraagd.")
         self.running = False
@@ -584,6 +610,13 @@ class WebSocketClient:
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
+
+        # Ook de poll-thread stoppen
+        self.logger.info("Stop poll-thread aangevraagd.")
+        self._poll_stop_event.set()
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_thread.join(timeout=5)
+
         self.logger.info("WebSocket client is volledig gestopt.")
 
     # -------------------------------------------------------------
@@ -613,7 +646,9 @@ class WebSocketClient:
             # (Je kunt bv. self.db_manager.save_order_bitvavo(order_row) gebruiken
             #  als je aparte bitvavo-order table hebt.)
             self.db_manager.save_order(order_row)
-            self.logger.info(f"[_handle_order_update] order {order_id} => status={status}, filled={filled_amount}/{amount}")
+            self.logger.info(
+                f"[_handle_order_update] order {order_id} => status={status}, filled={filled_amount}/{amount}"
+            )
         except Exception as e:
             self.logger.error(f"Fout in _handle_order_update: {e}")
 
@@ -639,30 +674,173 @@ class WebSocketClient:
             }
             # of self.db_manager.save_fill_bitvavo(fill_row) als aparte 'fills_bitvavo'
             self.db_manager.save_fill(fill_row)
-            self.logger.info(f"[_handle_fill_update] fill => amt={fill_amount} @ price={fill_price}, fee={fee_amount}")
+            self.logger.info(
+                f"[_handle_fill_update] fill => amt={fill_amount} @ price={fill_price}, fee={fee_amount}"
+            )
         except Exception as e:
             self.logger.error(f"Fout in _handle_fill_update: {e}")
 
 
-def safe_get(url, params=None, max_retries=3, sleep_seconds=1):
-    """
-    Voer een GET-request uit met retries bij ConnectionError.
-    """
-    attempts = 0
-    while attempts < max_retries:
+    # -------------------------------------------------------------
+    # Nieuw: periodieke REST-candle-poll
+    # -------------------------------------------------------------
+    def poll_rest_candles(self, market: str, interval: str) -> bool:
+        """
+        Haalt via de Bitvavo REST '/candles/{market}/{interval}' endpoint
+        de nieuwste candles op, en slaat deze in de DB op.
+        Retourneert True als er (tenminste 1) nieuwe candle is toegevoegd,
+        anders False.
+        """
+        self._check_rate_limit()
+        self._increment_call()
+
+        # Stel de querystring samen. Je kunt ook 'start' en 'end' meegeven
+        # als je wilt filteren. Hieronder enkel 'limit' (max 1000 candles).
+        url = f"{self.bitvavo.RESTURL}/{market}/candles"
+        params = {
+            "interval": interval,
+            "limit": 20  # bijvoorbeeld de laatste 20 candles
+        }
+        resp = safe_get(url, params=params, max_retries=3, sleep_seconds=2)
+        if not resp:
+            self.logger.warning(f"[poll_rest_candles] Kan geen data ophalen voor {market} - {interval}.")
+            return False
+
         try:
-            resp = requests.get(url, params=params, timeout=10)
-            resp.raise_for_status()
-            return resp
-        except requests.exceptions.ConnectionError as ce:
-            main_logger.warning(f"[safe_get] ConnectionError => {ce}, retry {attempts+1}/{max_retries}...")
-            time.sleep(sleep_seconds)
-            attempts += 1
-        except requests.exceptions.HTTPError as he:
-            main_logger.warning(f"[safe_get] HTTPError => {he}.")
-            return None
-        except Exception as ex:
-            main_logger.error(f"[safe_get] Onverwachte fout => {ex}")
-            return None
-    main_logger.error(f"[safe_get] Max retries={max_retries} overschreden => None.")
-    return None
+            candle_data = resp.json()
+        except Exception as e:
+            self.logger.error(f"[poll_rest_candles] JSON-error => {e}")
+            return False
+
+        if not isinstance(candle_data, list):
+            self.logger.warning(f"[poll_rest_candles] Onverwachte response (geen lijst): {candle_data}")
+            return False
+
+        # Parse en verwerk net zoals in process_candle_data
+        df = pd.DataFrame(
+            candle_data,
+            columns=["timestamp", "open", "high", "low", "close", "volume"]
+        )
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
+        df_ind = IndicatorAnalysis.calculate_indicators(df)
+
+        new_candles = 0
+        for _, row in df_ind.iterrows():
+            ts_ms = int(row["timestamp"].timestamp() * 1000)
+            if not is_candle_closed(ts_ms, interval):
+                continue
+
+            formatted = (
+                ts_ms,
+                market,
+                interval,
+                float(row["open"]),
+                float(row["high"]),
+                float(row["low"]),
+                float(row["close"]),
+                float(row["volume"])
+            )
+            self.db_manager.save_candles_bitvavo([formatted])
+            new_candles += 1
+
+        if new_candles > 0:
+            df_ind["market"] = market
+            df_ind["interval"] = interval
+            self.db_manager.save_indicators_bitvavo(df_ind)
+
+        self.logger.info(f"[poll_rest_candles] {market}-{interval}: {new_candles} candles opgeslagen (REST).")
+        return (new_candles > 0)
+
+    def _poll_around_boundary(self, interval="5m", max_attempts=3, sleep_sec=10):
+        """
+        Korte cycli poll-logic om 'vers afgesloten' 5m-candle
+        zo snel mogelijk binnen te halen.
+        """
+        # We proberen enkele keren; als de candle vertraagd is, komt-ie dan meestal alsnog
+        for attempt in range(1, max_attempts + 1):
+            if not self.running or self._poll_stop_event.is_set():
+                return
+            success = False
+            for m in self.markets:
+                # Als er tenminste 1 candle is toegevoegd
+                # (denk aan de net afgesloten candle), zien we dat als succes.
+                got_new = self.poll_rest_candles(m, interval)
+                if got_new:
+                    success = True
+            if success:
+                self.logger.info(f"[_poll_around_boundary] {interval} candle(s) ontvangen na {attempt} attempts.")
+                break
+            else:
+                self.logger.info(
+                    f"[_poll_around_boundary] geen verse candle(s) attempt={attempt}/{max_attempts}, sleep {sleep_sec}s..."
+                )
+                time.sleep(sleep_sec)
+
+    def _poll_loop(self):
+        """
+        Hoofdloop die elke X minuten bij de timeframe-boundary de 5m (of andere) candles
+        kortcyclisch opvraagt.
+        """
+        while not self._poll_stop_event.is_set() and self.running:
+            now = datetime.utcnow()
+            # Zoek de eerstvolgende 5-minutenboundary. We pakken alleen
+            # intervals uit self.poll_intervals, maar als '5m' er tussen staat
+            # kun je deze logica gebruiken. Voor '15m' is het vergelijkbaar.
+            # Hier illustreren we het met '5m'; je kunt per interval werken
+            # in 1 loop, of aparte planningen per interval maken.
+
+            # We checken voor elk interval in self.poll_intervals.
+            # Voor elk interval ronden we de tijd op die boundary.
+            for interval in self.poll_intervals:
+                boundary_dt = self._round_up_to_next_interval(now, interval, offset_sec=3)
+                sleep_seconds = (boundary_dt - datetime.utcnow()).total_seconds()
+                if sleep_seconds > 0:
+                    time.sleep(sleep_seconds)
+
+                if self._poll_stop_event.is_set() or (not self.running):
+                    return
+
+                # Als we hier zijn, is het net NA de boundary => poll in korte cycli
+                self._poll_around_boundary(interval, max_attempts=3, sleep_sec=10)
+
+            # Als je meerdere intervals na elkaar doet, dan ga je hier door.
+            # Eventueel kun je daarna weer 'time.sleep(...)' tot de volgende boundary,
+            # maar in dit voorbeeld ronden we elke poll_intervals-lus weer af
+            # en berekenen we de boundary opnieuw in de volgende iteratie.
+
+    def _round_up_to_next_interval(self, dt: datetime, interval_str: str, offset_sec=3) -> datetime:
+        """
+        Rond 'dt' af naar de eerstvolgende 'interval_str' boundary,
+        bv. 5m, 15m, etc. en voeg 'offset_sec' toe als marge.
+        """
+        n_minutes = interval_str_to_minutes(interval_str)
+        if n_minutes <= 0:
+            # Fallback, direct
+            return dt + timedelta(seconds=offset_sec)
+
+        # Stel, dt=14:31:12, n_minutes=5 => volgende boundary=14:35:00 (UTC)
+        # daarna + offset_sec => 14:35:03
+        dt_zero_sec = dt.replace(second=0, microsecond=0)
+        minute_mod = dt_zero_sec.minute % n_minutes
+        if minute_mod == 0:
+            # We zitten al op een boundary => pak deze + offset
+            boundary = dt_zero_sec
+        else:
+            to_add = n_minutes - minute_mod
+            boundary = dt_zero_sec + timedelta(minutes=to_add)
+        return boundary + timedelta(seconds=offset_sec)
+
+    def start_periodic_candle_polling(self):
+        """
+        Start de thread die in _poll_loop regelmatig de verse candles ophaalt
+        (eventueel in korte cycli rond de boundary).
+        """
+        def _poll_thread_fn():
+            self.logger.info("[start_periodic_candle_polling] poll-loop gestart.")
+            self._poll_loop()
+            self.logger.info("[start_periodic_candle_polling] poll-loop gestopt.")
+
+        self._poll_stop_event.clear()
+        self._poll_thread = threading.Thread(target=_poll_thread_fn, daemon=True)
+        self._poll_thread.start()
+        self.logger.info("[start_periodic_candle_polling] poll-thread is gestart.")

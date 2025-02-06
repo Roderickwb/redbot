@@ -646,6 +646,7 @@ class DatabaseManager:
             columns = [col[1] for col in self.cursor.fetchall()]
             logger.debug(f"[create_trades_table] Kolommen in 'trades': {columns}")
 
+            # Toevoeging: Kolom strategy_name, zodat we per strategie kunnen filteren.
             maybe_add = {
                 'datetime_utc': 'TEXT',
                 'position_id': 'TEXT',
@@ -653,7 +654,8 @@ class DatabaseManager:
                 'status': 'TEXT',
                 'pnl_eur': 'REAL',
                 'fees': 'REAL',
-                'trade_cost': 'REAL'
+                'trade_cost': 'REAL',
+                'strategy_name': 'TEXT'  # <- nieuw
             }
             for col_name, col_type in maybe_add.items():
                 if col_name not in columns:
@@ -717,7 +719,9 @@ class DatabaseManager:
             f_price = fill_data.get("fill_price", 0.0)
             fee_amt = fill_data.get("fee_amount", 0.0)
             ts = fill_data.get("timestamp", get_current_utc_timestamp_ms())
-            exch = fill_data.get("exchange", "Bitvavo")
+            # Oorspronkelijke default "Bitvavo" => vervangen door "Kraken"
+            # exch = fill_data.get("exchange", "Bitvavo")
+            exch = fill_data.get("exchange", "Kraken")
 
             params = (order_id, market, side, f_amt, f_price, fee_amt, ts, ts, exch)
             self.execute_query(q, params)
@@ -736,6 +740,7 @@ class DatabaseManager:
             valid_data = []
             for record in data:
                 if len(record) == 8:
+                    # i.p.v. default "Bitvavo" => "Kraken"
                     record = record + ("Kraken",)
                 if len(record) != 9:
                     logger.warning(f"[validate_candles] Ongeldig record: {record}")
@@ -981,7 +986,10 @@ class DatabaseManager:
             best_bid = data.get('bestBid', 0.0)
             best_ask = data.get('bestAsk', 0.0)
             spread = best_ask - best_bid
-            exchange = data.get('exchange', 'Bitvavo')
+            # Oorspronkelijk default "Bitvavo"
+            # exchange = data.get('exchange', 'Bitvavo')
+            exchange = data.get('exchange', 'Kraken')  # <--- AANPASSING
+
             q = """
                 INSERT INTO ticker
                 (timestamp, datetime_utc, market, best_bid, best_ask, spread, exchange)
@@ -1081,7 +1089,8 @@ class DatabaseManager:
             market = data['market']
             bids = data.get('bids', [])
             asks = data.get('asks', [])
-            exchange = data.get('exchange', 'Bitvavo')
+            # exchange = data.get('exchange', 'Bitvavo')
+            exchange = data.get('exchange', 'Kraken')  # <--- AANPASSING
 
             for bid in bids:
                 q = """
@@ -1259,7 +1268,9 @@ class DatabaseManager:
             ema_9 = row.get("ema_9", None)
             ema_21 = row.get("ema_21", None)
             atr14 = row.get("atr14", None)
-            exchange_val = row.get("exchange", "Bitvavo")
+            # Oorspronkelijk default "Bitvavo", nu "Kraken"
+            # exchange_val = row.get("exchange", "Bitvavo")
+            exchange_val = row.get("exchange", "Kraken")
 
             rows.append((
                 ts_val,
@@ -1399,15 +1410,18 @@ class DatabaseManager:
     def save_trade(self, trade_data: dict):
         """
         OUD: Alles in 'trades' met exchange-kolom.
+        AANPASSING: default exchange="Kraken", en optioneel 'strategy_name'.
         """
         try:
+            # We breiden de kolommen uit met strategy_name, dus extra veld in INSERT.
             query = """
                 INSERT INTO trades
                 (timestamp, datetime_utc, symbol, side, price, amount,
-                 position_id, position_type, status, pnl_eur, fees, trade_cost, exchange)
+                 position_id, position_type, status, pnl_eur, fees, trade_cost, exchange, strategy_name)
                 VALUES (
                   ?,
                   datetime(?/1000, 'unixepoch'),
+                  ?,
                   ?,
                   ?,
                   ?,
@@ -1422,7 +1436,11 @@ class DatabaseManager:
                 )
             """
             tstamp = trade_data['timestamp']
-            exchange_val = trade_data.get('exchange', 'Bitvavo')
+            # exchange default "Kraken"
+            # exchange_val = trade_data.get('exchange', 'Bitvavo')
+            exchange_val = trade_data.get('exchange', 'Kraken')
+            # strategy_name (optioneel)
+            strategy_val = trade_data.get('strategy_name', None)
 
             params = (
                 tstamp,
@@ -1437,7 +1455,8 @@ class DatabaseManager:
                 trade_data.get('pnl_eur', 0.0),
                 trade_data.get('fees', 0.0),
                 trade_data.get('trade_cost', 0.0),
-                exchange_val
+                exchange_val,
+                strategy_val
             )
             self.execute_query(query, params)
             logger.info(f"[save_trade] Trade data opgeslagen: {trade_data}")
@@ -1816,7 +1835,8 @@ class DatabaseManager:
                         pnl_eur,
                         fees,
                         trade_cost,
-                        exchange
+                        exchange,
+                        strategy_name  -- Laat strategy_name ook zien, als aanwezig.
                     FROM trades
                 """
                 if market:
@@ -1853,7 +1873,7 @@ class DatabaseManager:
                 # Fallback => "SELECT * FROM <table_name>"
                 base_query = f"SELECT * FROM {table_name}"
 
-            # ===== conditions (WHERExxx) =====
+            # ===== conditions (WHERE ...) =====
             if conditions:
                 base_query += " WHERE " + " AND ".join(conditions)
             base_query += " ORDER BY timestamp DESC LIMIT ?"
@@ -1928,3 +1948,41 @@ class DatabaseManager:
             self.flush_candles_kraken()
             self.connection.close()
             logger.info("[close_connection] DB-verbinding is gesloten.")
+
+    def save_order(self, order_data: dict):
+        """
+        Vangt de aanroep 'save_order(order_row)' uit client.py op,
+        maar slaat het (voorlopig) op in je bestaande 'trades' tabel
+        via 'save_trade(...)'.
+        """
+
+        # Timestamp uit order_data of huidige tijd
+        tstamp = order_data.get("timestamp", get_current_utc_timestamp_ms())
+
+        # In je client.py heet de coin/markt "market", terwijl 'save_trade' expects "symbol".
+        # We mappen dat dus even om:
+        trade_data = {
+            "timestamp": tstamp,
+            "symbol": order_data.get("market", "UNKNOWN"),  # mapped
+            "side": order_data.get("side", "UNKNOWN"),
+            "price": order_data.get("price", 0.0),
+            "amount": order_data.get("amount", 0.0),
+            # Oorspronkelijk "Bitvavo", nu "Kraken"
+            # "exchange": order_data.get("exchange", "Bitvavo"),
+            "exchange": order_data.get("exchange", "Kraken"),
+            "status": order_data.get("status", "open"),
+            "pnl_eur": 0.0,
+            "fees": 0.0,
+            "trade_cost": 0.0,
+
+            # Position/logische kolommen:
+            "position_id": order_data.get("order_id", None),
+            "position_type": None,
+
+            # AANPASSING: Als je 'strategy_name' in order_data meegeeft, nemen we die over.
+            "strategy_name": order_data.get("strategy_name", None)
+        }
+
+        # Re-use je bestaande trades-logica:
+        self.save_trade(trade_data)
+        logger.info(f"[save_order] order_data gemapt -> save_trade: {order_data}")

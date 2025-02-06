@@ -68,7 +68,11 @@ class PullbackAccumulateStrategy:
     ---------------------------------------------------------
      - self.data_client => om de laatste koersen te zien (bv. .latest_prices)
      - self.order_client => om orders te plaatsen en get_balance() te doen
-     - (Nu Bitvavo-only)
+
+    LET OP: Oorspronkelijk stond hier "Bitvavo-only", maar we hebben het nu
+            omgezet naar Kraken-only. De Bitvavo-calls zijn hieronder
+            UITGECOMMENTARIEERD in de code, zodat je ze later kunt
+            activeren als je wilt teruggaan naar Bitvavo.
     """
 
     # CHANGED: constructor heeft data_client en order_client
@@ -96,9 +100,9 @@ class PullbackAccumulateStrategy:
         self.meltdown_manager = MeltdownManager(meltdown_cfg, db_manager=db_manager, logger=self.logger)
         self.initial_capital = Decimal(str(self.strategy_config.get("initial_capital", "100")))
 
-        # -----------------------------------
-        # Hier de rest van je config uit YAML
-        # -----------------------------------
+        # -----------------------------------------------------
+        # Overige configuraties uit YAML
+        # -----------------------------------------------------
         self.pullback_rolling_window = int(self.strategy_config.get("pullback_rolling_window", 20))
         self.daily_timeframe = self.strategy_config.get("daily_timeframe", "1d")
         self.trend_timeframe = self.strategy_config.get("trend_timeframe", "4h")
@@ -133,8 +137,8 @@ class PullbackAccumulateStrategy:
         self.h4_bear_rsi = float(self.strategy_config.get("h4_bear_rsi", 50))
 
         # Fail-safes
-        self.max_daily_loss_pct = Decimal(str(self.strategy_config.get("max_daily_loss_pct", 5.0)))
-        self.flash_crash_drop_pct = Decimal(str(self.strategy_config.get("flash_crash_drop_pct", 10.0)))
+        # self.max_daily_loss_pct = Decimal(str(self.strategy_config.get("max_daily_loss_pct", 5.0)))
+        # self.flash_crash_drop_pct = Decimal(str(self.strategy_config.get("flash_crash_drop_pct", 10.0)))
         self.use_depth_trend = bool(self.strategy_config.get("use_depth_trend", True))
 
         # RSI/MACD config
@@ -163,6 +167,9 @@ class PullbackAccumulateStrategy:
     # Fees & PnL
     # ----------------------------------------------------------------
     def _calculate_fees_and_pnl(self, side: str, amount: float, price: float, reason: str) -> (float, float):
+        """
+        Eenvoudige placeholder om fees en PnL te schatten.
+        """
         trade_cost = amount * price
         fees = 0.0025 * trade_cost
         # Simpele placeholder:
@@ -200,10 +207,10 @@ class PullbackAccumulateStrategy:
 
         self.logger.info(f"[PullbackStrategy] Start for {symbol}")
 
-        # (1) fail-safes
-        if self._check_fail_safes(symbol):
-            self.logger.warning(f"[PullbackStrategy] Fail-safe => skip trading {symbol}")
-            return
+        # (1) fail-safes (uitgecommentarieerd)
+        # if self._check_fail_safes(symbol):
+        #     self.logger.warning(f"[PullbackStrategy] Fail-safe => skip trading {symbol}")
+        #     return
 
         # (2) Trend => daily + H4
         df_daily = self._fetch_and_indicator(symbol, self.daily_timeframe, limit=60)
@@ -225,27 +232,28 @@ class PullbackAccumulateStrategy:
         # (3) H1 => ATR
         df_main = self._fetch_and_indicator(symbol, self.main_timeframe, limit=200)
         if df_main.empty:
-            self.logger.warning(f"[PullbackStrategy] No H1 data => skip {symbol}")
+            self.logger.warning(f"[PullbackStrategy] No {self.main_timeframe} data => skip {symbol}")
             return
+
         atr_value = self._calculate_atr(df_main, self.atr_window)
         if atr_value is None:
-            self.logger.warning(f"[PullbackStrategy] Not enough H1 data => skip {symbol}")
+            self.logger.warning(f"[PullbackStrategy] Not enough data => skip {symbol}")
             return
         else:
             # AANPASSING #2: debug
-            self.logger.info(f"[Debug-ATR] {symbol}: ATR({self.atr_window}) = {atr_value}")
+            self.logger.info(f"[info-ATR] {symbol}: ATR({self.atr_window}) = {atr_value}")
 
-        # (4) Pullback => 15m
-
-        # Stel standaardwaarden in voor de pullback-variabelen
-        rsi_val = 50.0  # standaard RSI-waarde
-        macd_signal_score = 0  # standaard MACD-score
-        current_ws_price = Decimal("0")
+        # Pullback => bv. 15m
+        rsi_val = 50.0
+        macd_signal_score = 0
+        current_price = Decimal("0")
 
         df_entry = self._fetch_and_indicator(symbol, self.entry_timeframe, limit=100)
         if not df_entry.empty:
-            # Zorg dat de data oplopend gesorteerd is op index
+            # Zorg dat de data oplopend gesorteerd is op index (AANPASSING: gebeurt in _fetch_and_indicator, maar extra check kan geen kwaad)
             df_entry.sort_index(inplace=True)
+
+            # AANPASSING #3: Kies correct de laatste of voorlaatste candle
             last_timestamp = df_entry.index[-1]
 
             # Controleer of last_timestamp een pd.Timestamp is, anders ga je ervan uit dat het al in milliseconden is
@@ -257,26 +265,25 @@ class PullbackAccumulateStrategy:
             # Controleer of de laatste candle volledig is afgesloten
             if not is_candle_closed(last_candle_ms, self.entry_timeframe):
                 self.logger.debug(
-                    f"[Pullback] {symbol}: Laatste {self.entry_timeframe} candle is nog niet afgesloten; gebruik penultimate candle.")
+                    f"[Pullback] {symbol}: Laatste {self.entry_timeframe} candle is nog niet afgesloten; penultimate."
+                )
+                # We gebruiken -2 alleen als we minstens 2 rijen hebben
                 if len(df_entry) >= 2:
-                    used_entry = df_entry.iloc[-2]
+                    used_idx = -2
                 else:
-                    used_entry = df_entry.iloc[-1]
+                    used_idx = -1
             else:
-                used_entry = df_entry.iloc[-1]
+                used_idx = -1
 
-            # Haal de RSI en MACD-waarden op uit de DataFrame (of eventueel uit 'used_entry' als dat gewenst is)
-            rsi_val = df_entry["rsi"].iloc[-1]
+            # Haal RSI, MACD & price uit dezelfde rij (AANPASSING #4)
+            rsi_val = df_entry["rsi"].iloc[used_idx]
             macd_signal_score = self._check_macd(df_entry)
-
-            # Haal de candle-close op als fallback-prijs
-            candle_close_price = Decimal(str(used_entry["close"]))
+            candle_close_price = Decimal(str(df_entry["close"].iloc[used_idx]))
 
             # Haal de live WS-prijs op
             ws_price = self._get_ws_price(symbol)
             self.logger.info(
-                f"[Debug-15m] {symbol}: last_close(15m)={candle_close_price}, ws_price={ws_price}"
-            )
+                f"[Info-{self.entry_timeframe}] {symbol}: used_idx={used_idx}, candle_close={candle_close_price}, ws_price={ws_price}")
 
             # Gebruik primair de WS-prijs, fallback naar candle_close
             if ws_price > 0:
@@ -293,7 +300,7 @@ class PullbackAccumulateStrategy:
         # (5) Depth + ML
         ml_signal = self._ml_predict_signal(df_daily)
         depth_score = 0.0
-        if self.use_depth_trend:
+        if self.strategy_config.get("use_depth_trend", True):
             depth_score_instant = self._analyze_depth_trend_instant(symbol)
             # Rolling average
             self.depth_trend_history.append(depth_score_instant)
@@ -317,7 +324,7 @@ class PullbackAccumulateStrategy:
         if pullback_detected and not has_position:
             if direction == "bull":
                 self.logger.info(
-                    f"[DEBUG-bull] symbol={symbol} | "
+                    f"[INFO-bull] symbol={symbol}, "
                     f"rsi_val={rsi_val:.2f} >= {self.rsi_bull_threshold}? => {rsi_val >= self.rsi_bull_threshold}, "
                     f"macd_signal_score={macd_signal_score} >= {self.macd_bull_threshold}? => {macd_signal_score >= self.macd_bull_threshold}, "
                     f"ml_signal={ml_signal} >= 0? => {ml_signal >= 0}, "
@@ -327,37 +334,39 @@ class PullbackAccumulateStrategy:
                     and macd_signal_score >= self.macd_bull_threshold
                     and ml_signal >= 0
                     and depth_score >= self.depth_threshold_bull):
-                    self._open_position(symbol, side="buy", current_price=current_price,
-                                        atr_value=atr_value, extra_invest=invest_extra_flag)
+                    self._open_position(
+                        symbol, side="buy", current_price=current_price,
+                        atr_value=atr_value, extra_invest=invest_extra_flag
+                    )
                     if invest_extra_flag:
                         self.invested_extra = True
 
             elif direction == "bear":
                 self.logger.info(
-                    f"[DEBUG-bear] {symbol}: rsi_val={rsi_val:.2f} <= {self.rsi_bear_threshold}? , "
-                    f"macd_signal={macd_signal_score} <= {self.macd_bear_threshold}? , ml={ml_signal} <= 0? , "
-                    f"depth={depth_score} <= {self.depth_threshold_bear}? "
+                    f"[INFO-bear] {symbol}: rsi_val={rsi_val:.2f} <= {self.rsi_bear_threshold}? , "
+                    f"macd_signal={macd_signal_score} <= {self.macd_bear_threshold}? , "
+                    f"ml={ml_signal} <= 0? , depth={depth_score} <= {self.depth_threshold_bear}? "
                 )
                 if (rsi_val <= self.rsi_bear_threshold
                     and macd_signal_score <= self.macd_bear_threshold
                     and ml_signal <= 0
                     and depth_score <= self.depth_threshold_bear):
-                    self._open_position(symbol, side="sell", current_price=current_price,
-                                        atr_value=atr_value, extra_invest=invest_extra_flag)
+                    self._open_position(
+                        symbol, side="sell", current_price=current_price,
+                        atr_value=atr_value, extra_invest=invest_extra_flag
+                    )
                     if invest_extra_flag:
                         self.invested_extra = True
-
         elif has_position:
             # CHANGED: Geef dezelfde current_price door
             self._manage_open_position(symbol, current_price, atr_value)
 
     # ------------------------------------------------
-    #   TREND CHECK
+    #   TREND
     # ------------------------------------------------
     def _check_trend_direction(self, df_daily: pd.DataFrame, df_h4: pd.DataFrame) -> str:
         if df_daily.empty or df_h4.empty:
             return "range"
-
         rsi_daily = df_daily["rsi"].iloc[-1]
         rsi_h4 = df_h4["rsi"].iloc[-1]
         if rsi_daily > self.daily_bull_rsi and rsi_h4 > self.daily_bull_rsi:
@@ -370,25 +379,25 @@ class PullbackAccumulateStrategy:
     # ------------------------------------------------
     #   FAIL-SAFES
     # ------------------------------------------------
-    def _check_fail_safes(self, symbol: str) -> bool:
-        if self._daily_loss_exceeded():
-            return True
-        if self._flash_crash_detected(symbol):
-            return True
-        return False
+    # def _check_fail_safes(self, symbol: str) -> bool:
+    #     if self._daily_loss_exceeded():
+    #         return True
+    #     if self._flash_crash_detected(symbol):
+    #         return True
+    #     return False
 
-    def _daily_loss_exceeded(self) -> bool:
-        if not self.order_client:
-            return False
+    #def _daily_loss_exceeded(self) -> bool:
+    #    if not self.order_client:
+    #        return False
 
-        bal = self.order_client.get_balance()
-        eur_balance = Decimal(str(bal.get("EUR", "100")))
-        drop_pct = (self.initial_capital - eur_balance) / self.initial_capital * Decimal("100")
+    #    bal = self.order_client.get_balance()
+    #    eur_balance = Decimal(str(bal.get("EUR", "100")))
+    #   drop_pct = (self.initial_capital - eur_balance) / self.initial_capital * Decimal("100")
 
-        if drop_pct >= self.max_daily_loss_pct:
-            self.logger.warning(f"[FailSafe] daily loss {drop_pct:.2f}% >= {self.max_daily_loss_pct}% => STOP.")
-            return True
-        return False
+    #   if drop_pct >= self.max_daily_loss_pct:
+    #        self.logger.warning(f"[FailSafe] daily loss {drop_pct:.2f}% >= {self.max_daily_loss_pct}% => STOP.")
+    #        return True
+    #    return False
 
     def _flash_crash_detected(self, symbol: str) -> bool:
         df_fc = self._fetch_and_indicator(symbol, self.flash_crash_tf, limit=3)
@@ -421,44 +430,59 @@ class PullbackAccumulateStrategy:
     # ------------------------------------------------
     def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
         """
-        BITVAVO-ONLY AANPASSING:
-        i.p.v. Market(...).fetch_candles(...) -> we gebruiken direct self.db_manager.fetch_data("candles_bitvavo", ...).
-        Verder ongewijzigd.
+        KRAKEN-only variant.
+        We comment out the old 'bitvavo' references but keep them in code.
+
+        # BITVAVO:
+        # df = self.db_manager.fetch_data(
+        #     table_name="candles_bitvavo",
+        #     limit=limit,
+        #     market=symbol,
+        #     interval=interval
+        # )
+
+        We now fetch from 'candles_kraken' instead:
         """
         try:
             # i.p.v. market_obj=Market(symbol, self.db_manager) => direct DB call
             df = self.db_manager.fetch_data(
-                table_name="candles_bitvavo",
+                table_name="candles_kraken",  # KRAKEN
                 limit=limit,
                 market=symbol,
                 interval=interval
             )
             if df.empty:
-                self.logger.warning(f"[DEBUG] Geen candles opgehaald uit 'candles_bitvavo' voor {symbol} ({interval}).")
+                self.logger.debug(f"[DEBUG] Geen candles uit 'candles_kraken' voor {symbol} ({interval}).")
                 return pd.DataFrame()
 
-            self.logger.info(f"[DEBUG] Opgehaalde candles voor {symbol} ({interval}): {df.shape[0]} rijen")
+            self.logger.debug(f"[DEBUG] Opgehaalde candles (Kraken) voor {symbol} ({interval}): {df.shape[0]} rijen")
             self.logger.debug(f"[DEBUG] Eerste rijen:\n{df.head()}")
 
+            # In many DB setups, columns might be [timestamp, datetime_utc, market, interval, open, high, low, close, volume]
+            # We rename them if needed (like the original approach).
             # Drop 'datetime_utc' en 'exchange' (als ze bestaan)
             for col in ['datetime_utc', 'exchange']:
                 if col in df.columns:
                     df.drop(columns=col, inplace=True, errors='ignore')
 
-            # We verwachten kolommen: timestamp, market, interval, open, high, low, close, volume
-            # (als je fetch_data columns=[timestamp, datetime_utc, market, interval, open, high, low, close, volume, exchange], rename net als voorheen):
-            # => pas rename toe als je code dat deed
-            # We doen wat je oorspronkelijk deed:
+            # Let op: check even of de kolommen kloppen. We assumen:
+            # [timestamp, market, interval, open, high, low, close, volume]
             df.columns = ['timestamp', 'market', 'interval', 'open', 'high', 'low', 'close', 'volume']
 
             for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = df[col].astype(float, errors="ignore")
 
+            # AANPASSING #5: maak timestamp tot datetime + index
+            # (de oude df.sort_values(by="timestamp", ...) commenten we uit of vervangen)
+            # df.sort_values(by="timestamp", inplace=True)
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+            df.set_index("timestamp", inplace=True)
+            df.sort_index(inplace=True)
+
             self.logger.debug(f"[DEBUG] Data na opschonen:\n{df.head()}")
             self.logger.debug(f"[DEBUG] Close-prijzen vóór indicatorberekeningen:\n{df['close'].head(20)}")
 
             # Indicatoren
-            df.sort_values(by="timestamp", inplace=True)
             df = IndicatorAnalysis.calculate_indicators(df, rsi_window=self.rsi_window)
 
             # MACD
@@ -486,10 +510,7 @@ class PullbackAccumulateStrategy:
     def _calculate_atr(self, df: pd.DataFrame, window=14) -> Optional[Decimal]:
         if len(df) < window:
             return None
-        atr_obj = AverageTrueRange(
-            high=df['high'], low=df['low'], close=df['close'],
-            window=window
-        )
+        atr_obj = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=window)
         series_atr = atr_obj.average_true_range()
         last_atr = series_atr.iloc[-1]
         if pd.isna(last_atr):
@@ -524,8 +545,7 @@ class PullbackAccumulateStrategy:
             drop_pct = (Decimal(str(recent_high)) - current_price) / Decimal(str(recent_high)) * Decimal("100")
             if drop_pct >= self.pullback_threshold_pct:
                 self.logger.info(
-                    f"[Pullback-bull] {drop_pct:.2f}% below recent high => pullback "
-                    f"(threshold={self.pullback_threshold_pct}%, window={self.pullback_rolling_window})."
+                    f"[Pullback-bull] {drop_pct:.2f}% below recent high => pullback (threshold={self.pullback_threshold_pct}%)"
                 )
                 return True
             return False
@@ -541,8 +561,7 @@ class PullbackAccumulateStrategy:
             rally_pct = (current_price - Decimal(str(recent_low))) / Decimal(str(recent_low)) * Decimal("100")
             if rally_pct >= self.pullback_threshold_pct:
                 self.logger.info(
-                    f"[Pullback-bear] {rally_pct:.2f}% above recent low => pullback "
-                    f"(threshold={self.pullback_threshold_pct}%, window={self.pullback_rolling_window})."
+                    f"[Pullback-bear] {rally_pct:.2f}% above recent low => pullback (threshold={self.pullback_threshold_pct}%)"
                 )
                 return True
             return False
@@ -633,7 +652,7 @@ class PullbackAccumulateStrategy:
         # 3) Bepaal hoeveel EUR we willen investeren
         pct = self.position_size_pct
         if extra_invest:
-            pct = Decimal("0.10")
+            pct = Decimal("0.00") #even op 0 gezet en bij live eens nadenkem over de gehele logica strategie breed
         buy_eur = eur_balance * pct
         if buy_eur < 5:
             self.logger.warning(f"[PullbackStrategy] buy_eur < 5 => skip {symbol}")
@@ -672,7 +691,8 @@ class PullbackAccumulateStrategy:
             "status": "open",
             "pnl_eur": pnl_eur,
             "fees": fees,
-            "trade_cost": trade_cost
+            "trade_cost": trade_cost,
+            "strategy_name": "pullback"  # (NIEUW) we loggen de strategie mee
         }
         self.db_manager.save_trade(trade_data)
 
@@ -693,7 +713,8 @@ class PullbackAccumulateStrategy:
             "trail_active": False,
             "trail_high": current_price,
             "position_id": position_id,
-            "position_type": position_type
+            "position_type": position_type,
+            "db_id": new_trade_id
         }
 
         # 8) ... dan de db_id toevoegen
@@ -714,11 +735,8 @@ class PullbackAccumulateStrategy:
             # Bij LONG => stoploss als current_price <= entry*(1 - stop_loss_pct)
             stop_loss_price = entry * (Decimal("1.0") - self.stop_loss_pct)
             if current_price <= stop_loss_price:
-                self.logger.info(f"[PullbackStrategy] LONG STOPLOSS => close entire position {symbol}")
-                self._sell_portion(
-                    symbol, amount, portion=Decimal("1.0"), reason="StopLoss",
-                    exec_price=current_price
-                )
+                self.logger.info(f"[PullbackStrategy] LONG STOPLOSS => close entire {symbol}")
+                self._sell_portion(symbol, amount, portion=Decimal("1.0"), reason="StopLoss", exec_price=current_price)
                 if symbol in self.open_positions:
                     del self.open_positions[symbol]
                 return
@@ -728,17 +746,14 @@ class PullbackAccumulateStrategy:
             tp2_price = entry + pos["atr"] * self.tp2_atr_mult
 
             self.logger.info(
-                f"[DEBUG-manage-LONG] symbol={symbol}, tp1_done={pos['tp1_done']}, current_price={current_price}, "
+                f"[INFO-manage-LONG] symbol={symbol}, tp1_done={pos['tp1_done']}, current_price={current_price}, "
                 f"tp1_price={tp1_price:.4f}, tp2_done={pos['tp2_done']}, tp2_price={tp2_price:.4f}"
             )
 
             # TP1
             if (not pos["tp1_done"]) and (current_price >= tp1_price):
                 self.logger.info(f"[PullbackStrategy] LONG TP1 => Sell 25% {symbol}")
-                self._sell_portion(
-                    symbol, amount, portion=Decimal("0.25"), reason="TP1",
-                    exec_price=current_price
-                )
+                self._sell_portion(symbol, amount, portion=Decimal("0.25"), reason="TP1", exec_price=current_price)
                 pos["tp1_done"] = True
                 pos["trail_active"] = True
                 pos["trail_high"] = max(pos["trail_high"], current_price)
@@ -746,10 +761,7 @@ class PullbackAccumulateStrategy:
             # TP2
             elif (not pos["tp2_done"]) and (current_price >= tp2_price):
                 self.logger.info(f"[PullbackStrategy] LONG TP2 => Sell 25% {symbol}")
-                self._sell_portion(
-                    symbol, amount, portion=Decimal("0.25"), reason="TP2",
-                    exec_price=current_price
-                )
+                self._sell_portion(symbol, amount, portion=Decimal("0.25"), reason="TP2", exec_price=current_price)
                 pos["tp2_done"] = True
                 pos["trail_active"] = True
                 pos["trail_high"] = max(pos["trail_high"], current_price)
@@ -760,69 +772,51 @@ class PullbackAccumulateStrategy:
                     pos["trail_high"] = current_price
                 trailing_stop_price = pos["trail_high"] - (atr_value * self.trail_atr_mult)
                 self.logger.info(
-                    f"[DEBUG-trailing-LONG] symbol={symbol}, trail_high={pos['trail_high']}, "
+                    f"[INFO-trailing-LONG] {symbol}, trail_high={pos['trail_high']}, "
                     f"trailing_stop_price={trailing_stop_price}, current_price={current_price}"
                 )
                 if current_price <= trailing_stop_price:
                     self.logger.info(f"[PullbackStrategy] LONG TrailingStop => close last 50% {symbol}")
-                    self._sell_portion(
-                        symbol, amount, portion=Decimal("1.0"), reason="TrailingStop",
-                        exec_price=current_price
-                    )
+                    self._sell_portion(symbol, amount, portion=Decimal("1.0"), reason="TrailingStop", exec_price=current_price)
                     if symbol in self.open_positions:
                         del self.open_positions[symbol]
-
         else:
             # SHORT
             stop_loss_price = entry * (Decimal("1.0") + self.stop_loss_pct)
             if current_price >= stop_loss_price:
-                self.logger.info(f"[PullbackStrategy] SHORT STOPLOSS => close entire position {symbol}")
-                self._buy_portion(
-                    symbol, amount, portion=Decimal("1.0"), reason="StopLoss",
-                    exec_price=current_price
-                )
+                self.logger.info(f"[PullbackStrategy] SHORT STOPLOSS => close entire {symbol}")
+                self._buy_portion(symbol, amount, portion=Decimal("1.0"), reason="StopLoss", exec_price=current_price)
                 if symbol in self.open_positions:
                     del self.open_positions[symbol]
                 return
 
             tp1_price = entry - pos["atr"] * self.tp1_atr_mult
             tp2_price = entry - pos["atr"] * self.tp2_atr_mult
-
             self.logger.info(
-                f"[DEBUG-manage-SHORT] symbol={symbol}, tp1_done={pos['tp1_done']}, current_price={current_price}, "
+                f"[INFO-manage-SHORT] {symbol}, tp1_done={pos['tp1_done']}, current_price={current_price}, "
                 f"tp1_price={tp1_price:.4f}, tp2_done={pos['tp2_done']}, tp2_price={tp2_price:.4f}"
             )
 
             if (not pos["tp1_done"]) and (current_price <= tp1_price):
                 self.logger.info(f"[PullbackStrategy] SHORT TP1 => Buy-to-Close 25% {symbol}")
-                self._buy_portion(
-                    symbol, amount, portion=Decimal("0.25"), reason="TP1",
-                    exec_price=current_price
-                )
+                self._buy_portion(symbol, amount, portion=Decimal("0.25"), reason="TP1", exec_price=current_price)
                 pos["tp1_done"] = True
                 pos["trail_active"] = True
-
             elif (not pos["tp2_done"]) and (current_price <= tp2_price):
                 self.logger.info(f"[PullbackStrategy] SHORT TP2 => Buy-to-Close 25% {symbol}")
-                self._buy_portion(
-                    symbol, amount, portion=Decimal("0.25"), reason="TP2",
-                    exec_price=current_price
-                )
+                self._buy_portion(symbol, amount, portion=Decimal("0.25"), reason="TP2", exec_price=current_price)
                 pos["tp2_done"] = True
                 pos["trail_active"] = True
 
             if pos["trail_active"]:
                 trailing_stop_price = entry + (pos["atr"] * self.trail_atr_mult)
                 self.logger.info(
-                    f"[DEBUG-trailing-SHORT] symbol={symbol}, entry={entry}, "
+                    f"[INFO-trailing-SHORT] {symbol}, entry={entry}, "
                     f"trail_stop={trailing_stop_price:.4f}, current_price={current_price}"
                 )
                 if current_price >= trailing_stop_price:
                     self.logger.info(f"[PullbackStrategy] SHORT TrailingStop => close last 50% {symbol}")
-                    self._buy_portion(
-                        symbol, amount, portion=Decimal("0.50"), reason="TrailingStop",
-                        exec_price=current_price
-                    )
+                    self._buy_portion(symbol, amount, portion=Decimal("0.50"), reason="TrailingStop", exec_price=current_price)
                     if symbol in self.open_positions:
                         del self.open_positions[symbol]
 
@@ -844,7 +838,7 @@ class PullbackAccumulateStrategy:
             current_price = self._get_ws_price(symbol)
 
         if current_price <= 0:
-            self.logger.warning(f"[PullbackStrategy] _sell_portion => current_price=0 => skip SELL {symbol}")
+            self.logger.warning(f"[PullbackStrategy] _sell_portion => price=0 => skip SELL {symbol}")
             return
 
         raw_pnl = (current_price - entry_price) * amt_to_sell
@@ -853,7 +847,7 @@ class PullbackAccumulateStrategy:
         realized_pnl = float(raw_pnl) - fees
 
         self.logger.info(
-            f"[DEBUG {reason}] {symbol}: portion={portion}, amt_to_sell={amt_to_sell:.6f}, "
+            f"[INFO {reason}] {symbol}: portion={portion}, amt_to_sell={amt_to_sell:.6f}, "
             f"entry={entry_price}, current_price={current_price}, trade_cost={trade_cost}, fees={fees:.2f}"
         )
 
@@ -866,8 +860,7 @@ class PullbackAccumulateStrategy:
         if self.order_client:
             self.order_client.place_order("sell", symbol, float(amt_to_sell), order_type="market")
             self.logger.info(
-                f"[LIVE/PAPER] SELL {symbol} => {portion*100:.1f}%, amt={amt_to_sell:.4f}, reason={reason}, "
-                f"fees={fees:.2f}, pnl={realized_pnl:.2f}"
+                f"[LIVE/PAPER] SELL {symbol} => {portion*100:.1f}%, amt={amt_to_sell:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
             )
             trade_data = {
                 "symbol": symbol,
@@ -880,13 +873,14 @@ class PullbackAccumulateStrategy:
                 "status": trade_status,
                 "pnl_eur": realized_pnl,
                 "fees": fees,
-                "trade_cost": float(trade_cost)
+                "trade_cost": float(trade_cost),
+                # (NIEUW) strategy_name veld erbij
+                "strategy_name": "pullback"
             }
             self.db_manager.save_trade(trade_data)
         else:
             self.logger.info(
-                f"[Paper] SELL {symbol} => {portion*100:.1f}%, amt={amt_to_sell:.4f}, reason={reason}, "
-                f"(fees={fees:.2f}, pnl={realized_pnl:.2f})"
+                f"[Paper] SELL {symbol} => {portion*100:.1f}%, amt={amt_to_sell:.4f}, reason={reason}, (fees={fees:.2f}, pnl={realized_pnl:.2f})"
             )
 
         self.open_positions[symbol]["amount"] -= amt_to_sell
@@ -919,7 +913,7 @@ class PullbackAccumulateStrategy:
             current_price = self._get_ws_price(symbol)
 
         if current_price <= 0:
-            self.logger.warning(f"[PullbackStrategy] _buy_portion => current_price=0 => skip BUY {symbol}")
+            self.logger.warning(f"[PullbackStrategy] _buy_portion => price=0 => skip BUY {symbol}")
             return
 
         raw_pnl = (entry_price - current_price) * amt_to_buy
@@ -928,7 +922,7 @@ class PullbackAccumulateStrategy:
         realized_pnl = float(raw_pnl) - fees
 
         self.logger.info(
-            f"[DEBUG {reason}] {symbol}: portion={portion}, amt_to_buy={amt_to_buy:.6f}, "
+            f"[INFO {reason}] {symbol}: portion={portion}, amt_to_buy={amt_to_buy:.6f}, "
             f"entry={entry_price}, current_price={current_price}, trade_cost={trade_cost}, fees={fees:.2f}"
         )
 
@@ -940,8 +934,7 @@ class PullbackAccumulateStrategy:
         if self.order_client:
             self.order_client.place_order("buy", symbol, float(amt_to_buy), order_type="market")
             self.logger.info(
-                f"[LIVE/PAPER] BUY {symbol} => {portion*100:.1f}%, amt={amt_to_buy:.4f}, reason={reason}, "
-                f"fees={fees:.2f}, pnl={realized_pnl:.2f}"
+                f"[LIVE/PAPER] BUY {symbol} => {portion*100:.1f}%, amt={amt_to_buy:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
             )
             trade_data = {
                 "symbol": symbol,
@@ -954,13 +947,14 @@ class PullbackAccumulateStrategy:
                 "status": trade_status,
                 "pnl_eur": realized_pnl,
                 "fees": fees,
-                "trade_cost": float(trade_cost)
+                "trade_cost": float(trade_cost),
+                # (NIEUW) strategy_name veld erbij
+                "strategy_name": "pullback"
             }
             self.db_manager.save_trade(trade_data)
         else:
             self.logger.info(
-                f"[Paper] BUY {symbol} => {portion*100:.1f}%, amt={amt_to_buy:.4f}, reason={reason}, "
-                f"(fees={fees:.2f}, pnl={realized_pnl:.2f})"
+                f"[Paper] BUY {symbol} => {portion*100:.1f}%, amt={amt_to_buy:.4f}, reason={reason}, (fees={fees:.2f}, pnl={realized_pnl:.2f})"
             )
 
         # 5) Update open_positions
@@ -973,7 +967,6 @@ class PullbackAccumulateStrategy:
             if db_id:
                 self.db_manager.update_trade(db_id, {"status": "closed"})
                 self.logger.info(f"[PullbackStrategy] Trade {db_id} => status=closed in DB")
-
             del self.open_positions[symbol]
 
     # ------------------------------------------------
@@ -982,7 +975,6 @@ class PullbackAccumulateStrategy:
     def _get_equity_estimate(self) -> Decimal:
         if not self.order_client:
             return self.initial_capital
-
         bal = self.order_client.get_balance()
         eur_balance = Decimal(str(bal.get("EUR", "1000")))
         total_pos_value = Decimal("0")
@@ -995,11 +987,23 @@ class PullbackAccumulateStrategy:
 
     def _get_latest_price(self, symbol: str) -> Decimal:
         """
-        AANPASSING: i.p.v. self.db_manager.get_ticker(symbol) => BITVAVO => fetch_data("ticker_bitvavo", ...)
+        KRAKEN-only variant.
+        We comment out the old 'bitvavo' references but keep them in code.
+
+        # Oorspronkelijk (Bitvavo):
+        # df_ticker = self.db_manager.fetch_data(
+        #     table_name="ticker_bitvavo",
+        #     limit=1,
+        #     market=symbol
+        # )
+        # ...
+        # fallback => candles_bitvavo
+
+        We now fetch from 'ticker_kraken' => fallback 'candles_kraken'.
         """
-        # i.p.v. 'get_ticker(symbol)', we doen direct bitvavo's 'ticker_bitvavo'.
+        # KRAKEN ticker:
         df_ticker = self.db_manager.fetch_data(
-            table_name="ticker_bitvavo",
+            table_name="ticker_kraken",
             limit=1,
             market=symbol
         )
@@ -1009,9 +1013,9 @@ class PullbackAccumulateStrategy:
             if best_bid > 0 and best_ask > 0:
                 return (Decimal(str(best_bid)) + Decimal(str(best_ask))) / Decimal("2")
 
-        # Fallback => 1m in 'candles_bitvavo'
+        # Fallback => 1m in 'candles_kraken'
         df_1m = self.db_manager.fetch_data(
-            table_name="candles_bitvavo",
+            table_name="candles_kraken",
             limit=1,
             market=symbol,
             interval="1m"
@@ -1022,27 +1026,38 @@ class PullbackAccumulateStrategy:
 
         return Decimal("0")
 
-    def _get_ws_price(self, symbol):
+    def _get_ws_price(self, symbol: str) -> Decimal:
+        """
+        Haal 'live' prijs op via kraken_data_client.get_latest_ws_price(symbol).
+        Fallback op 1m candle_kraken als er geen (of te oude) ticker is.
+        """
         if not self.data_client:
-            self.logger.warning("[PullbackStrategy] data_client=None => return price=0")
+            self.logger.warning("[Pullback] data_client=None => return 0")
             return Decimal("0")
 
-        price = self.data_client.get_price_with_fallback(symbol, max_age=10)
-        return price if price > 0 else Decimal("0")
+        # 1) Live ticker
+        px_float = self.data_client.get_latest_ws_price(symbol)
+        # Als px_float > 0, dan heb je een live ticker
+        if px_float > 0.0:
+            return Decimal(str(px_float))
+
+        # 2) Fallback => 1m-candle
+        df_1m = self.db_manager.fetch_data(
+            table_name="candles_kraken",
+            limit=1,
+            market=symbol,
+            interval="1m"
+        )
+        if not df_1m.empty and "close" in df_1m.columns:
+            last_close = df_1m["close"].iloc[0]
+            return Decimal(str(last_close))
+
+        # 3) Als alles faalt
+        return Decimal("0")
 
     def update_position_with_fill(self, fill_data: dict):
         """
-        Voorbeeld fill_data:
-        {
-          "event": "fill",
-          "orderId": "...",
-          "market": "BTC-EUR",
-          "side": "buy",    # Dit is de kant van de order
-          "amount": "0.03", # fill-amount
-          "price": "30000",
-          "fee": "0.1",
-          ...
-        }
+        Als we partial fills ontvangen, werken we het 'entry_price' volumegemiddeld bij, etc.
         """
         symbol = fill_data.get("market")
         fill_side = fill_data.get("side", "").lower()
@@ -1076,7 +1091,7 @@ class PullbackAccumulateStrategy:
 
         # === 2) Update filled_amount & actual 'amount' ===
         pos["filled_amount"] = new_filled
-        pos["amount"] = new_filled  # we doen alsof 'amount' = echt open volume
+        pos["amount"] = new_filled
 
         # === 3) Check of we nu fully filled ===
         desired = pos["desired_amount"]
@@ -1089,7 +1104,7 @@ class PullbackAccumulateStrategy:
             )
         else:
             self.logger.info(
-                f"[update_position_with_fill] {symbol}: partial fill => {pos['filled_amount']}/{desired} @ last fill price={fill_price}"
+                f"[update_position_with_fill] {symbol}: partial fill => {pos['filled_amount']}/{desired} @ {fill_price}"
             )
 
     def _load_open_positions_from_db(self):
@@ -1136,5 +1151,21 @@ class PullbackAccumulateStrategy:
 
             self.open_positions[symbol] = pos_data
             self.logger.info(
-                f"[PullbackStrategy] Hersteld open pos in memory => {symbol}, side={side}, amt={amount}, entry={entry_price}"
+                f"[PullbackStrategy] Hersteld open pos => {symbol}, side={side}, amt={amount}, entry={entry_price}"
             )
+
+    # [NEW] Methode om intra-candle exits te checken voor ALLE open posities
+    #       (Elke 5-10s vanuit de executor oproepen.)
+    def manage_intra_candle_exits(self):
+        """
+        [NEW] Aanroepen vanuit je executor-loop,
+        om SL/TP semi-live te checken (zonder te wachten op candle-close).
+        """
+        self.logger.info("[PullbackStrategy] manage_intra_candle_exits => start SL/TP checks.")
+        for sym in list(self.open_positions.keys()):
+            pos = self.open_positions[sym]
+            # Haal de 'live' price op
+            current_price = self._get_ws_price(sym)
+            if current_price > 0:
+                # We hergebruiken _manage_open_position(...) met de atr in pos["atr"]
+                self._manage_open_position(sym, current_price, pos["atr"])

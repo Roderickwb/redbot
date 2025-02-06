@@ -8,7 +8,7 @@ import time
 import threading
 import websocket
 
-websocket.enableTrace(True)  # Activeer gedetailleerde WS-debug logging
+websocket.enableTrace(True)  # Laat debug-logs van de websocket-library zien
 
 import hashlib
 import hmac
@@ -161,6 +161,9 @@ class KrakenMixedClient:
     Wordt ook als "client" gebruikt in je strategie, dus we kunnen hier
     een 'get_balance()' toevoegen zodat meltdown_manager of strategies
     kunnen aanroepen: client.get_balance().
+
+    [NEW] We voegen ook een live-ticker feed toe, zodat je SL/TP
+    intra-candle kunt checken via get_latest_ws_price(symbol).
     """
 
     def __init__(self, db_manager, kraken_cfg: dict, use_private_ws=False):
@@ -227,6 +230,9 @@ class KrakenMixedClient:
         # channel_id => (local_pair, interval_str, iv_int)
         self.channel_id_map = {}
 
+        # [ADDED] Dictionary voor live tickerprijzen
+        self.live_ticker_prices = {}  # key=symbol("BTC-EUR"), value=float price
+
         logger.info("[KrakenMixedClient] init => pairs=%s", self.pairs)
         logger.info("[KrakenMixedClient] intervals_realtime=%s, intervals_poll=%s, poll_interval=%ds",
                     self.intervals_realtime, self.intervals_poll, self.poll_interval)
@@ -287,7 +293,6 @@ class KrakenMixedClient:
                 self._start_private_ws()
             else:
                 logger.warning("[KrakenMixedClient] no private WS token => skip")
-
         elif self.use_private_ws:
             logger.warning("[KrakenMixedClient] missing key/secret => skip private ws")
 
@@ -344,6 +349,8 @@ class KrakenMixedClient:
 
     def _on_ws_open(self, ws):
         logger.info("[KrakenMixedClient] _on_ws_open => subscribe intervals=%s", self.intervals_realtime)
+
+        # A) Abonneer op OHLC (zoals voorheen)
         for local in self.pairs:
             if local not in self.kraken_ws_map:
                 logger.warning(f"[PubWS] no ws_map for {local}, skip.")
@@ -360,6 +367,21 @@ class KrakenMixedClient:
                 }
                 ws.send(json.dumps(sub_msg))
                 logger.info(f"[PubWS] Subscribe => {ws_name}, interval={iv_int}")
+
+        # B) [NEW] Abonneer op 'ticker' voor live bestBid/bestAsk => live_ticker_prices
+        for local in self.pairs:
+            if local not in self.kraken_ws_map:
+                continue
+            ws_name = self.kraken_ws_map[local]
+            sub_msg_ticker = {
+                "event": "subscribe",
+                "pair": [ws_name],
+                "subscription": {
+                    "name": "ticker"
+                }
+            }
+            ws.send(json.dumps(sub_msg_ticker))
+            logger.info(f"[PubWS] Ticker Subscribe => {ws_name}")
 
     def _on_ws_message(self, ws, message):
         try:
@@ -379,7 +401,17 @@ class KrakenMixedClient:
             else:
                 logger.debug(f"[KrakenMixedClient] public ws unknown => {data}")
         elif isinstance(data, list):
-            self._process_ohlc_data(data)
+            # Let op: data kan OHLC-data zijn, of Ticker-data
+            if len(data) >= 4:
+                msg_type = data[-2]  # bv. "ohlc-15" of "ticker"
+                if isinstance(msg_type, str) and msg_type.startswith("ohlc"):
+                    self._process_ohlc_data(data)
+                elif msg_type == "ticker":
+                    self._process_ticker_data(data)
+                else:
+                    logger.debug(f"[KrakenMixedClient] Array msg => {data}")
+            else:
+                logger.debug(f"[KrakenMixedClient] Short array => {data}")
         else:
             logger.warning(f"[KrakenMixedClient] unexpected ws msg => {type(data)}")
 
@@ -399,35 +431,80 @@ class KrakenMixedClient:
         channel_id = data.get("channelID")
         ws_pair = data.get("pair", "?")
         sub = data.get("subscription", {})
-        iv_int = sub.get("interval", 1)
+        name = sub.get("name")
+        iv_int = sub.get("interval", None)  # enkel bij 'ohlc'
 
         local_found = None
         for local, ws_ in self.kraken_ws_map.items():
             if ws_ == ws_pair:
                 local_found = local
                 break
+
         if not local_found:
             logger.warning(f"[KrakenMixedClient] subscription for {ws_pair} => no local found??")
             return
 
-        interval_str = self._iv_int_to_str(iv_int)
-        # Sla nu (local_found, interval_str, iv_int) op in de mapping
-        self.channel_id_map[channel_id] = (local_found, interval_str, iv_int)
-        logger.info("[KrakenMixedClient] channel_id=%d => local_pair=%s, interval=%s",
-                    channel_id, local_found, interval_str)
+        if name == "ohlc" and iv_int is not None:
+            interval_str = self._iv_int_to_str(iv_int)
+            self.channel_id_map[channel_id] = (local_found, interval_str, iv_int)
+            logger.info("[KrakenMixedClient] channel_id=%d => local_pair=%s, interval=%s (ohlc)",
+                        channel_id, local_found, interval_str)
+        elif name == "ticker":
+            # Voor ticker hoef je geen intervals bij te houden, maar wel channel_id => local_pair
+            self.channel_id_map[channel_id] = (local_found, "ticker", None)
+            logger.info("[KrakenMixedClient] channel_id=%d => local_pair=%s (ticker)", channel_id, local_found)
+        else:
+            logger.info(f"[KrakenMixedClient] subscriptionStatus => sub={name}, {ws_pair}")
+
+    def _process_ticker_data(self, data_list):
+        """
+        Kraken Ticker data komt in de vorm:
+        [channel_id, {
+          "b": ["bestBid","lot volume"],
+          "a": ["bestAsk","lot volume"],
+          ...
+        }, "ticker", <pair>]
+        """
+        chan_id = data_list[0]
+        if chan_id not in self.channel_id_map:
+            logger.warning("[Ticker] Onbekende channel_id => %d", chan_id)
+            return
+
+        local_pair, sub_name, _ = self.channel_id_map[chan_id]  # (symbol, "ticker", None)
+        if len(data_list) < 4:
+            logger.warning("[Ticker] Invalid data_list => %s", data_list)
+            return
+
+        payload = data_list[1]
+        if not isinstance(payload, dict):
+            logger.warning("[Ticker] payload is not a dict => %s", payload)
+            return
+
+        best_bid_arr = payload.get("b", [])
+        best_ask_arr = payload.get("a", [])
+        if len(best_bid_arr) < 1 or len(best_ask_arr) < 1:
+            logger.debug("[Ticker] incomplete b/a => %s", payload)
+            return
+
+        try:
+            best_bid = float(best_bid_arr[0])
+            best_ask = float(best_ask_arr[0])
+            mid_px = (best_bid + best_ask)/2
+            self.live_ticker_prices[local_pair] = mid_px
+            logger.debug(f"[Ticker] {local_pair} => bid={best_bid:.2f}, ask={best_ask:.2f}, mid={mid_px:.2f}")
+        except Exception as e:
+            logger.error("[Ticker] parsing error => %s", e)
 
     def _process_ohlc_data(self, data_list):
+        """
+        Grotendeels hetzelfde als je oude code, maar wat ingekort.
+        """
         if len(data_list) < 4:
             logger.debug("[KrakenMixedClient] ontvangen data_list te kort: %s", data_list)
             return
         chan_id = data_list[0]
         payload = data_list[1]
         msg_type = data_list[2]
-        logger.debug("[KrakenMixedClient] berichttype ontvangen: %s", repr(msg_type))
-        if not msg_type.startswith("ohlc"):
-            logger.debug("[KrakenMixedClient] ontvangen niet-ohlc bericht: %s", data_list)
-            return
-
         if chan_id not in self.channel_id_map:
             logger.warning("[KrakenMixedClient] onbekende channel_id => %d", chan_id)
             return
@@ -450,18 +527,7 @@ class KrakenMixedClient:
             return
 
         ts_ms = int(time_s * 1000)
-        candle = (
-            ts_ms,
-            local_pair,
-            interval_str,
-            open_p,
-            high_p,
-            low_p,
-            close_p,
-            volume
-        )
-
-        # Controleer of closed
+        candle = (ts_ms, local_pair, interval_str, open_p, high_p, low_p, close_p, volume)
         if is_candle_closed(ts_ms, interval_str):
             logger.info(
                 f"[Candle CLOSED] WS => {local_pair} {interval_str}, start_ts={ts_ms}, recognized closed at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
@@ -481,7 +547,7 @@ class KrakenMixedClient:
                 (fb_ts, fb_o, fb_h, fb_l, fb_c, fb_vol) = fallback_candle
                 if is_candle_closed(fb_ts, interval_str):
                     logger.info(
-                        f"[Candle CLOSED] REST-fallback => {local_pair} {interval_str}, fb_ts={fb_ts}, recognized closed at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                        f"[Candle CLOSED] REST-fallback => {local_pair} {interval_str}, fb_ts={fb_ts}, recognized closed"
                     )
                     fallback_tuple = (fb_ts, local_pair, interval_str, fb_o, fb_h, fb_l, fb_c, fb_vol)
                     self._save_candle_kraken(fallback_tuple)
@@ -493,8 +559,7 @@ class KrakenMixedClient:
     # ===========================================
     def _save_candle_kraken(self, candle_tuple):
         """
-        Schrijft direct weg in 'candles_kraken' (zonder exchange-kolom).
-        candle_tuple = (ts_ms, local_pair, interval_str, o, h, l, c, vol)
+        Zelfde als voorheen: ts, mkt, iv, o, h, l, c, vol
         """
         try:
             (ts, mkt, iv, o, h, l, c, vol) = candle_tuple
@@ -607,7 +672,8 @@ class KrakenMixedClient:
         }
         ws.send(json.dumps(sub_msg))
         logger.info("Abonnement voor ownTrades verzonden via private WS.")
-        # Indien gewenst, kun je ook openOrders abonneren:
+
+        # Eventueel openOrders:
         # sub_msg_orders = {
         #     "event": "subscribe",
         #     "subscription": {
@@ -789,7 +855,7 @@ class KrakenMixedClient:
                 self.db_manager.connection.execute(sql, params)
                 count += 1
 
-                # Als je specifiek de 4h/1d wilt loggen, doe:
+                # Eventueel loggen
                 if interval_str in ("4h", "1d"):
                     logger.info(
                         f"[Poll Candle] {local_pair} {interval_str}, start_ts={ts_ms} => open={o_:.5f}, close={c_:.5f}, dt_utc={dt_utc}"
@@ -849,3 +915,13 @@ class KrakenMixedClient:
             60: "1h", 240: "4h", 1440: "1d"
         }
         return mapping.get(iv_int, f"{iv_int}m")
+
+    # ===========================================
+    # PUBLIC HELPER: get_latest_ws_price(...)
+    # ===========================================
+    def get_latest_ws_price(self, symbol: str) -> float:
+        """
+        Geeft de meest recente (live) prijs terug, zoals ontvangen via
+        de 'ticker'-websocket feed. Returnt 0 als er niets bekend is.
+        """
+        return float(self.live_ticker_prices.get(symbol, 0.0))

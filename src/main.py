@@ -13,7 +13,6 @@ from datetime import datetime, timedelta, timezone
 # Let op: we importeren direct config_logger niet - we vertrouwen op de logger uit config of elders
 from src.config.config import DB_FILE, MAIN_LOG_FILE, yaml_config
 from src.logger.logger import setup_logger, setup_database_logger
-
 from src.database_manager.database_manager import DatabaseManager
 from src.trading_engine.executor import Executor
 
@@ -26,7 +25,6 @@ db_manager = DatabaseManager(db_path=DB_FILE)
 
 # Start de flush-timer: dit zorgt ervoor dat de candle-buffer elke 5 seconden wordt geleegd
 db_manager.start_flush_timer(5)  # Flush elke 5 seconden
-
 
 def main():
     """
@@ -57,7 +55,7 @@ def main():
         PAPER_TRADING = True
     else:  # development
         USE_WEBSOCKET = False
-        PAPER_TRADING = True
+        PAPER_TRADING = False  # tijdelijk => Bitvavo even uitgeschakeld
 
     # === Bepaal KRAKEN_ENV (paper/real/off) ===
     KRAKEN_ENV = os.getenv("KRAKEN_ENV", "off").lower()
@@ -115,7 +113,14 @@ def main():
     else:
         logger.info("Kraken uitgeschakeld.")
 
-    bitvavo = Bitvavo({'APIKEY': BITVAVO_API_KEY, 'APISECRET': BITVAVO_API_SECRET})
+    ### BITVAVO OFF ###
+    # bitvavo = Bitvavo({
+    #     'APIKEY': BITVAVO_API_KEY,
+    #     'APISECRET': BITVAVO_API_SECRET
+    # })
+    #
+    # logger.debug("[main] Aangemaakte Bitvavo-instance (REST + WS). (UIT, want Bitvavo = OFF)")
+    ### END BITVAVO OFF ###
 
     # zet in yaml_config de kraken keys
     if "kraken" not in yaml_config:
@@ -123,7 +128,6 @@ def main():
     yaml_config["kraken"]["apiKey"] = KRAKEN_API_KEY
     yaml_config["kraken"]["apiSecret"] = KRAKEN_API_SECRET
 
-    # Extra logging: toon de volledige Kraken-configuratie
     logger.debug(f"Kraken-configuratie in main.py: {yaml_config.get('kraken', {})}")
 
     # === Stap 5) Maak Executor aan ===

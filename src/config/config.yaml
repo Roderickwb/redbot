@@ -17,7 +17,6 @@ bitvavo:
     - BNB-EUR
     - XVG-EUR
     - LTC-EUR
-    - TRX-EUR
     - XLM-EUR
     - PEPE-EUR
     - LINK-EUR
@@ -26,7 +25,6 @@ bitvavo:
 
 # [OPTIONEEL, net als voorheen]
 intervals:
-  - "1m"
   - "5m"
   - "15m"
   - "1h"
@@ -70,8 +68,8 @@ pullback_accumulate_strategy:
   tp2_atr_mult: 1.0
   trail_atr_mult: 0.5
   initial_capital: 100
-  max_daily_loss_pct: 7.5
-  flash_crash_drop_pct: 10.0
+  # max_daily_loss_pct: 7.5
+  # flash_crash_drop_pct: 10.0
   use_depth_trend: true
   pivot_points_window: 20
   rsi_window: 14
@@ -104,8 +102,8 @@ breakout_strategy:
   trail_atr_mult: 1.0
   partial_tp_r: 1.0
   partial_tp_pct: 0.25
-  position_size_pct: 0.10
-  max_positions_equity_pct: 0.90
+  position_size_pct: 0.05
+  max_positions_equity_pct: 0.5
   initial_capital: 100
 
 
@@ -158,7 +156,7 @@ altcoin_scanner_strategy:
   timeframe: "15m"
   lookback: 6
   price_change_threshold: 5.0
-  volume_threshold_factor: 2.0
+  volume_threshold_factor: 1.5
   min_base_volume: 5000
 
   # Positie-management

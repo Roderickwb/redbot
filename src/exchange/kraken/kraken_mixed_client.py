@@ -16,6 +16,7 @@ import base64
 import urllib.parse
 import os
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal  # [ADDED for minLot usage]
 
 from src.logger.logger import setup_kraken_logger
 
@@ -32,7 +33,7 @@ def safe_get(url, params=None, max_retries=3, sleep_seconds=1, headers=None):
             resp.raise_for_status()
             return resp
         except requests.exceptions.ConnectionError as ce:
-            logger.warning(f"[safe_get] ConnectionError => {ce}, retry {attempts+1}/{max_retries}...")
+            logger.warning(f"[safe_get] ConnectionError => {ce}, retry {attempts + 1}/{max_retries}...")
             time.sleep(sleep_seconds)
             attempts += 1
         except requests.exceptions.HTTPError as he:
@@ -53,7 +54,7 @@ def safe_post(url, data=None, headers=None, max_retries=3, sleep_seconds=1):
             resp.raise_for_status()
             return resp
         except requests.exceptions.ConnectionError as ce:
-            logger.warning(f"[safe_post] ConnectionError => {ce}, retry {attempts+1}/{max_retries}...")
+            logger.warning(f"[safe_post] ConnectionError => {ce}, retry {attempts + 1}/{max_retries}...")
             time.sleep(sleep_seconds)
             attempts += 1
         except requests.exceptions.HTTPError as he:
@@ -107,10 +108,6 @@ def build_kraken_mapping() -> dict:
         logger.error(f"[DynamicMapping] exception => {e}")
         return {}
 
-
-# -------------------------------
-# Helper functies voor candles
-# -------------------------------
 
 def interval_to_hours(interval_str: str) -> float:
     """
@@ -183,7 +180,7 @@ class KrakenMixedClient:
         self.db_manager = db_manager
         self.calls_this_minute = 0
         self.last_reset_ts = time.time()
-        self.rest_limit_per_minute = 100
+        self.rest_limit_per_minute = 250  # [CHANGED => 250]
 
         # 1) Dynamische mapping
         all_mapping = build_kraken_mapping()
@@ -239,13 +236,17 @@ class KrakenMixedClient:
         logger.info("[KrakenMixedClient] use_private_ws=%s (key_len=%d)",
                     self.use_private_ws, len(self.api_key))
 
+        # [ADDED for minLot]
+        self._min_lot_dict = {}
+
         # Poll thread
         self.poll_running = False
         self.poll_thread = None
 
-    ########################################################################
-    # Toegevoegd => get_balance()
-    ########################################################################
+        # [ADDED] => poll 15m
+        self.poll_thread_15m = None
+        self.poll_15m_running = False
+
     def get_balance(self) -> dict:
         """
         Voor meltdown_manager of strategies:
@@ -253,8 +254,7 @@ class KrakenMixedClient:
         - Of je retourneert een fictief/paper-saldo.
         Voor nu doen we een 'stub': 1000 EUR.
         """
-        # Dit is een simpele stub. Pas aan je eigen wensen aan.
-        return {"EUR": "1000"}
+        return {"EUR": "100"}
 
     def _check_rate_limit(self):
         now = time.time()
@@ -264,7 +264,7 @@ class KrakenMixedClient:
             self.last_reset_ts = now
         # Als je limiet bereikt of overschreden is, wacht dan even
         if self.calls_this_minute >= self.rest_limit_per_minute:
-            logger.warning("REST rate limit dreigt overschreden te worden. Slaap 5s...")
+            logger.warning("REST rate limit dreigt overschreden. Slaap 5s...")
             time.sleep(5)
 
     def _increment_call(self):
@@ -278,14 +278,23 @@ class KrakenMixedClient:
         Start WS en poll (en private WS indien gewenst).
         """
         logger.info("[KrakenMixedClient] start => launching WS + poll + (maybe) private.")
+
+        # 1) Start WS
         if self.intervals_realtime:
             self._start_ws()
 
-        # 2) Start poll
+        # 2) Start poll-thread (voor alle intervals behalve 15m)
         if self.intervals_poll:
             self._start_poll_thread()
 
-        # 3) Start private WS (optioneel)
+        # [ADDED] => poll 15m
+        if 15 in self.intervals_poll:
+            self._start_poll_15m_thread()
+
+        # [ADDED for minLot] => bouw min_lot_info
+        self.build_min_lot_info()
+
+        # 3) Start private WS
         if self.use_private_ws and self.api_key and self.api_secret:
             tok = self._fetch_kraken_token()
             if tok:
@@ -307,14 +316,76 @@ class KrakenMixedClient:
         # 2) Stop poll
         if self.intervals_poll:
             self._stop_poll_thread()
-        # 3) Stop private WS
+        # [ADDED] => stop poll 15m
+        self._stop_poll_15m_thread()
+
         if self.use_private_ws:
             self._stop_private_ws()
         logger.info("[KrakenMixedClient] Stopped everything.")
 
-    # ===========================================
-    # (A) Publieke WS
-    # ===========================================
+    # [ADDED for minLot]
+    def build_min_lot_info(self):
+        """
+        Haal van /0/public/AssetPairs alle data op,
+        parse 'ordermin' (of lot_decimals) en sla dit
+        in self._min_lot_dict op, keyed door rest_name.
+        """
+        logger.info("[KrakenMixedClient] build_min_lot_info => start polling AssetPairs for minLot.")
+        url = "https://api.kraken.com/0/public/AssetPairs"
+        try:
+            resp = safe_get(url, max_retries=3, sleep_seconds=1)
+            if not resp:
+                logger.error("[build_min_lot_info] no response => skip.")
+                return
+            data = resp.json()
+            if data.get("error"):
+                logger.error(f"[build_min_lot_info] error => {data['error']}")
+                return
+            results = data.get("result", {})
+            for pair_name, info in results.items():
+                # We check of 'ordermin' in info, anders fallback
+                ordermin_str = None
+                if "ordermin" in info:
+                    ordermin_str = info["ordermin"]
+                elif "lot_decimals" in info:
+                    # lot_decimals => b.v. 8 => min lot=10^-8
+                    dec = info["lot_decimals"]
+                    ordermin_str = str(Decimal("1") / Decimal(str(10**dec)))
+                else:
+                    ordermin_str = "1.0"
+                try:
+                    self._min_lot_dict[pair_name] = Decimal(ordermin_str)
+                except:
+                    self._min_lot_dict[pair_name] = Decimal("1.0")
+
+            logger.info(f"[build_min_lot_info] done => {len(self._min_lot_dict)} pairs in dict.")
+        except Exception as e:
+            logger.error(f"[build_min_lot_info] Unexpected => {e}")
+
+    def get_min_lot(self, local_symbol: str) -> Decimal:
+        """
+        Geef minLot terug voor local_symbol ("XBT-EUR", enz).
+        We zoeken in self.kraken_rest_map => rest_name => self._min_lot_dict[rest_name].
+        Fallback=Decimal("1.0")
+        """
+        if not hasattr(self, "_min_lot_dict") or not self._min_lot_dict:
+            return Decimal("1.0")
+
+        ws_ = self.kraken_ws_map.get(local_symbol, "")
+        rest_ = self.kraken_rest_map.get(ws_, "")
+        if rest_ in self._min_lot_dict:
+            return self._min_lot_dict[rest_]
+        else:
+            logger.warning(f"[get_min_lot] {local_symbol} => rest_name={rest_} not found => fallback=1.0")
+            return Decimal("1.0")
+
+    # -------------------------------------------
+    # (A) Publieke WS code
+    # -------------------------------------------
+    # De rest van de code is ongewijzigd, behalve wat je hierboven al ziet
+    # (extra poll threads, minLot toegevoegingen etc.)
+    # -------------------------------------------
+
     def _start_ws(self):
         logger.info("[KrakenMixedClient] _start_ws => intervals=%s", self.intervals_realtime)
         self.ws_running = True
@@ -349,8 +420,7 @@ class KrakenMixedClient:
 
     def _on_ws_open(self, ws):
         logger.info("[KrakenMixedClient] _on_ws_open => subscribe intervals=%s", self.intervals_realtime)
-
-        # A) Abonneer op OHLC (zoals voorheen)
+        # A) Abonneer op OHLC
         for local in self.pairs:
             if local not in self.kraken_ws_map:
                 logger.warning(f"[PubWS] no ws_map for {local}, skip.")
@@ -368,7 +438,7 @@ class KrakenMixedClient:
                 ws.send(json.dumps(sub_msg))
                 logger.info(f"[PubWS] Subscribe => {ws_name}, interval={iv_int}")
 
-        # B) [NEW] Abonneer op 'ticker' voor live bestBid/bestAsk => live_ticker_prices
+        # B) Ticker feed
         for local in self.pairs:
             if local not in self.kraken_ws_map:
                 continue
@@ -432,7 +502,7 @@ class KrakenMixedClient:
         ws_pair = data.get("pair", "?")
         sub = data.get("subscription", {})
         name = sub.get("name")
-        iv_int = sub.get("interval", None)  # enkel bij 'ohlc'
+        iv_int = sub.get("interval", None)
 
         local_found = None
         for local, ws_ in self.kraken_ws_map.items():
@@ -470,7 +540,7 @@ class KrakenMixedClient:
             logger.warning("[Ticker] Onbekende channel_id => %d", chan_id)
             return
 
-        local_pair, sub_name, _ = self.channel_id_map[chan_id]  # (symbol, "ticker", None)
+        local_pair, sub_name, _ = self.channel_id_map[chan_id]
         if len(data_list) < 4:
             logger.warning("[Ticker] Invalid data_list => %s", data_list)
             return
@@ -489,7 +559,7 @@ class KrakenMixedClient:
         try:
             best_bid = float(best_bid_arr[0])
             best_ask = float(best_ask_arr[0])
-            mid_px = (best_bid + best_ask)/2
+            mid_px = (best_bid + best_ask) / 2
             self.live_ticker_prices[local_pair] = mid_px
             logger.debug(f"[Ticker] {local_pair} => bid={best_bid:.2f}, ask={best_ask:.2f}, mid={mid_px:.2f}")
         except Exception as e:
@@ -528,6 +598,10 @@ class KrakenMixedClient:
 
         ts_ms = int(time_s * 1000)
         candle = (ts_ms, local_pair, interval_str, open_p, high_p, low_p, close_p, volume)
+
+        # [ADDED] => skip fallback tot candle min. 20s oud na officiele eind
+        #          (dus current_time_ms - ts_ms >= 20000)
+        #    if we do normal is_candle_closed => ok, else skip fallback
         if is_candle_closed(ts_ms, interval_str):
             logger.info(
                 f"[Candle CLOSED] WS => {local_pair} {interval_str}, start_ts={ts_ms}, recognized closed at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
@@ -536,30 +610,41 @@ class KrakenMixedClient:
         else:
             logger.debug("[KrakenMixedClient] Candle voor %s op ts=%d nog niet gesloten; probeer REST-fallback.",
                          local_pair, ts_ms)
-            # Bepaal ws_pair via de mapping van de lokale naam
-            ws_pair = self.kraken_ws_map.get(local_pair)
-            if not ws_pair:
-                logger.error("[KrakenMixedClient] Geen ws_pair voor %s", local_pair)
-                return
 
-            fallback_candle = self._fetch_latest_candle_rest(ws_pair, iv_int)
-            if fallback_candle:
-                (fb_ts, fb_o, fb_h, fb_l, fb_c, fb_vol) = fallback_candle
-                if is_candle_closed(fb_ts, interval_str):
-                    logger.info(
-                        f"[Candle CLOSED] REST-fallback => {local_pair} {interval_str}, fb_ts={fb_ts}, recognized closed"
-                    )
-                    fallback_tuple = (fb_ts, local_pair, interval_str, fb_o, fb_h, fb_l, fb_c, fb_vol)
-                    self._save_candle_kraken(fallback_tuple)
-                else:
-                    logger.debug("[KrakenMixedClient] REST-fallback candle voor %s is nog niet afgesloten.", local_pair)
+            # Tijdelijk niet gebruiken. Voor 15M een poll ingebouwd voor de rest vertrouwen we op WS.
+            #current_time_ms = int(time.time() * 1000)
+            # [CHANGED] => 20sec skip
+            #if (current_time_ms - ts_ms) < 20000:
+            #    logger.debug("[KrakenMixedClient] Candle is nog vers => skip fallback for now.")
+            #    return
+
+            #ws_pair = self.kraken_ws_map.get(local_pair)
+            #if not ws_pair:
+            #    logger.error("[KrakenMixedClient] Geen ws_pair voor %s", local_pair)
+            #    return
+
+            # fallback_candle = self._fetch_latest_candle_rest(ws_pair, iv_int)
+            # if fallback_candle:
+            #    (fb_ts, fb_o, fb_h, fb_l, fb_c, fb_vol) = fallback_candle
+            #    if is_candle_closed(fb_ts, interval_str):
+            #        logger.info(
+            #            f"[Candle CLOSED] REST-fallback => {local_pair} {interval_str}, fb_ts={fb_ts}, recognized closed"
+            #        )
+            #        fallback_tuple = (fb_ts, local_pair, interval_str, fb_o, fb_h, fb_l, fb_c, fb_vol)
+            #        self._save_candle_kraken(fallback_tuple)
+            #    else:
+            #        logger.debug("[KrakenMixedClient] REST-fallback candle voor %s is nog niet afgesloten.", local_pair)
 
     # ===========================================
     # (A.1) Opslaan candle in candles_kraken
     # ===========================================
     def _save_candle_kraken(self, candle_tuple):
         """
-        Zelfde als voorheen: ts, mkt, iv, o, h, l, c, vol
+        Voorheen:
+          self.db_manager.connection.execute(...)
+          self.db_manager.connection.commit()
+
+        Nu vervangen door self.db_manager.execute_query(...).
         """
         try:
             (ts, mkt, iv, o, h, l, c, vol) = candle_tuple
@@ -571,8 +656,9 @@ class KrakenMixedClient:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             params = (ts, dt_utc, mkt, iv, o, h, l, c, vol)
-            self.db_manager.connection.execute(sql, params)
-            self.db_manager.connection.commit()
+
+            # => Door "INSERT" begint de DB-manager in de write-tak (BEGIN IMMEDIATE + COMMIT).
+            self.db_manager.execute_query(sql, params)
 
             logger.info(
                 "[Store Candle] => [candles_kraken] market=%s, interval=%s, timestamp=%d => open=%.5f, close=%.5f (UTC=%s)",
@@ -760,7 +846,7 @@ class KrakenMixedClient:
         logger.warning("[PrivateWS] closed => code=%s, msg=%s", code, msg)
 
     # ===========================================
-    # (C) Poll-Thread (REST)
+    # (C) Poll-Thread (REST) - origineel
     # ===========================================
     def _start_poll_thread(self):
         logger.info("[KrakenMixedClient] _start_poll_thread => intervals=%s, poll_int=%ds",
@@ -782,12 +868,23 @@ class KrakenMixedClient:
             self.poll_thread.join(timeout=5)
 
     def _poll_intervals(self):
+        """
+        Poll alle intervals (zoals [60, 240, 1440]) behalve 15m,
+        want we doen 15m in een aparte poll-thread met korter interval (30s).
+
+        Als je wél 15m in intervals_poll hebt, kun je het hier uitcommenten of checken.
+        """
         for loc in self.pairs:
             if loc not in self.kraken_ws_map:
                 logger.warning(f"[POLL] local={loc} => skip (no ws_map).")
                 continue
             ws_ = self.kraken_ws_map[loc]
             for iv_int in self.intervals_poll:
+                # [COMMENTED] => skip if iv_int==15
+                if iv_int == 15:
+                    # We skip 15m here, do it in _start_poll_15m_thread
+                    continue
+
                 try:
                     rows = self._fetch_ohlc_rest(ws_, iv_int)
                     if rows:
@@ -827,87 +924,129 @@ class KrakenMixedClient:
 
     def _save_ohlc_rows(self, local_pair, iv_int, rows):
         """
-        Sla de candles op in 'candles_kraken'.
-        row: [time, open, high, low, close, vwap, volume, count]
+        Voorheen: `with self.db_manager.connection: for row in rows: ...`
+
+        Nu: maken we een final_list en gebruiken we _executemany(...) in de DB-manager,
+        zodat we niet in conflict komen met “cannot start a transaction within a transaction.”
         """
         interval_str = self._iv_int_to_str(iv_int)
-        count = 0
-
-        with self.db_manager.connection:
-            for row in rows:
-                if len(row) < 8:
-                    continue
-                t_s = float(row[0])
-                o_ = float(row[1])
-                h_ = float(row[2])
-                l_ = float(row[3])
-                c_ = float(row[4])
-                vol = float(row[6])
-                ts_ms = int(t_s * 1000)
-                dt_utc = datetime.fromtimestamp(ts_ms / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-
-                sql = """
-                INSERT OR REPLACE INTO candles_kraken
-                (timestamp, datetime_utc, market, interval, open, high, low, close, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """
-                params = (ts_ms, dt_utc, local_pair, interval_str, o_, h_, l_, c_, vol)
-                self.db_manager.connection.execute(sql, params)
-                count += 1
-
-                # Eventueel loggen
-                if interval_str in ("4h", "1d"):
-                    logger.info(
-                        f"[Poll Candle] {local_pair} {interval_str}, start_ts={ts_ms} => open={o_:.5f}, close={c_:.5f}, dt_utc={dt_utc}"
-                    )
-
-        logger.info("[KrakenMixedClient] poll => pair=%s, interval=%s => inserted %d rows",
-                    local_pair, interval_str, count)
-
-    # Rest call voor 15m candle als WS openbaar niet levert.
-    def _fetch_latest_candle_rest(self, ws_pair, iv_int):
+        final_list = []
+        insert_sql = """
+            INSERT OR REPLACE INTO candles_kraken
+            (timestamp, datetime_utc, market, interval, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        Haalt de laatste candle op (ts, o, h, l, c, vol) via REST, return None als mislukt.
+
+        for row in rows:
+            if len(row) < 8:
+                continue
+            t_s = float(row[0])
+            o_ = float(row[1])
+            h_ = float(row[2])
+            l_ = float(row[3])
+            c_ = float(row[4])
+            vol = float(row[6])
+            ts_ms = int(t_s * 1000)
+            dt_utc = datetime.fromtimestamp(ts_ms / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+            params = (ts_ms, dt_utc, local_pair, interval_str, o_, h_, l_, c_, vol)
+            final_list.append(params)
+
+        if final_list:
+            try:
+                self.db_manager._executemany(insert_sql, final_list)
+                logger.info("[KrakenMixedClient] poll => pair=%s, interval=%s => inserted %d rows",
+                            local_pair, interval_str, len(final_list))
+            except Exception as e:
+                logger.error("[KrakenMixedClient] _save_ohlc_rows error => %s", e)
+
+    # ===========================================
+    # (D) Extra poll-thread specifically for 15m
+    # ===========================================
+    def _start_poll_15m_thread(self):
+        logger.info("[KrakenMixedClient] _start_poll_15m_thread => poll every 30s for 15m candles.")
+        self.poll_15m_running = True
+
+        def _poll_loop_15m():
+            while self.poll_15m_running:
+                self._poll_15m_only()
+                time.sleep(30)
+
+        self.poll_thread_15m = threading.Thread(target=_poll_loop_15m, daemon=True)
+        self.poll_thread_15m.start()
+
+    def _stop_poll_15m_thread(self):
+        logger.info("[KrakenMixedClient] _stop_poll_15m_thread")
+        self.poll_15m_running = False
+        if self.poll_thread_15m and self.poll_thread_15m.is_alive():
+            self.poll_thread_15m.join(timeout=5)
+
+    def _poll_15m_only(self):
         """
-        self._check_rate_limit()
-        self._increment_call()
-        rest_name = self.kraken_rest_map.get(ws_pair)
-        if not rest_name:
-            logger.warning(f"[REST] ws_pair={ws_pair} => geen rest_name => overslaan.")
-            return None
+        Poll alleen de 15m interval, elke 30s.
+        """
+        if 15 not in self.intervals_poll:
+            # als 15m niet in intervals_poll zit, doe niks
+            return
+        for loc in self.pairs:
+            if loc not in self.kraken_ws_map:
+                logger.warning(f"[poll_15m_only] local={loc} => skip (no ws_map).")
+                continue
+            ws_ = self.kraken_ws_map[loc]
 
-        url = "https://api.kraken.com/0/public/OHLC"
-        params = {"pair": rest_name, "interval": iv_int}
-        resp = safe_get(url, params=params, max_retries=3, sleep_seconds=2)
-        if not resp:
-            logger.error(f"[REST] geen candle na retries voor {ws_pair}/{iv_int}")
-            return None
-        if resp.status_code != 200:
-            logger.error(f"[REST] fout bij ophalen candle: {resp.text}")
-            return None
-        data = resp.json()
-        if data.get("error"):
-            logger.warning(f"[REST] error => {data['error']}")
-            return None
-        result = data.get("result", {})
-        if not result:
-            return None
-        key = list(result.keys())[0]
-        candles = result[key]
-        if not candles:
-            return None
+            # we doen alleen 15m
+            iv_int = 15
+            try:
+                rows = self._fetch_ohlc_rest(ws_, iv_int)
+                if rows:
+                    self._save_ohlc_rows(loc, iv_int, rows)
+            except Exception as e:
+                logger.error("poll_15m_only => pair=%s => %s", loc, e)
 
-        last_candle = candles[-1]
-        if len(last_candle) < 7:
-            return None
+        # Rest call voor 15m candle als WS openbaar niet levert.
+        # def _fetch_latest_candle_rest(self, ws_pair, iv_int):
+        #    """
+        #    Haalt de laatste candle op (ts, o, h, l, c, vol) via REST, return None als mislukt.
+        #    """
+        #    self._check_rate_limit()
+        #    self._increment_call()
+        #    rest_name = self.kraken_rest_map.get(ws_pair)
+        #    if not rest_name:
+        #        logger.warning(f"[REST] ws_pair={ws_pair} => geen rest_name => overslaan.")
+        #        return None
 
-        ts = int(float(last_candle[0]) * 1000)
-        o = float(last_candle[1])
-        h = float(last_candle[2])
-        l = float(last_candle[3])
-        c = float(last_candle[4])
-        vol = float(last_candle[6])
-        return (ts, o, h, l, c, vol)
+        #    url = "https://api.kraken.com/0/public/OHLC"
+        #    params = {"pair": rest_name, "interval": iv_int}
+        #    resp = safe_get(url, params=params, max_retries=3, sleep_seconds=2)
+        #    if not resp:
+        #        logger.error(f"[REST] geen candle na retries voor {ws_pair}/{iv_int}")
+        #        return None
+        #    if resp.status_code != 200:
+        #        logger.error(f"[REST] fout bij ophalen candle: {resp.text}")
+        #        return None
+        #    data = resp.json()
+        #    if data.get("error"):
+        #        logger.warning(f"[REST] error => {data['error']}")
+        #        return None
+        #    result = data.get("result", {})
+        #    if not result:
+        #        return None
+        #    key = list(result.keys())[0]
+        #    candles = result[key]
+        #    if not candles:
+        #        return None
+
+        #    last_candle = candles[-1]
+        #    if len(last_candle) < 7:
+        #        return None
+
+        #    ts = int(float(last_candle[0]) * 1000)
+        #    o = float(last_candle[1])
+        #    h = float(last_candle[2])
+        #    l = float(last_candle[3])
+        #    c = float(last_candle[4])
+        #    vol = float(last_candle[6])
+        #    return (ts, o, h, l, c, vol)
 
     def _iv_int_to_str(self, iv_int):
         mapping = {

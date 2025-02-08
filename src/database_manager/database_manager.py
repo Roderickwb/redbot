@@ -30,7 +30,12 @@ class DatabaseManager:
 
         try:
             # Verbind met de database en zet deze in WAL-modus
-            self.connection = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30)
+            self.connection = sqlite3.connect(
+                self.db_path,
+                check_same_thread=False,
+                timeout=30,
+                isolation_level=None  # We beheren zelf transactiegrenzen
+            )
             self.connection.execute("PRAGMA journal_mode=WAL;")
             self.cursor = self.connection.cursor()
 
@@ -90,41 +95,135 @@ class DatabaseManager:
             except sqlite3.Error as e:
                 logger.error(f"[DatabaseManager] Fout bij sluiten van de db-verbinding: {e}")
 
-    def execute_query(self, query, params=(), retries=10, delay=0.2):
+    # --------------------------------------------------------------------------
+    # Vernieuwde concurrency-/transactielogica met aparte methodes voor read/write
+    # --------------------------------------------------------------------------
+
+    def _execute_read_query(self, query, params=(), retries=10, delay=0.2):
         """
-        Universele query-executor met retries voor 'locked'-errors.
-        Geeft:
-         - rows (list of tuples) als het een SELECT of PRAGMA is.
-         - None als het een UPDATE/INSERT/DELETE is.
+        Voert een read-only query uit (SELECT/PRAGMA), zonder BEGIN/COMMIT.
         """
-        logger.debug(f"[execute_query] Query: {repr(query)} | Params: {params}")
         with self._db_lock:
             for attempt in range(retries):
                 try:
                     self.cursor.execute(query, params)
-                    self.connection.commit()
-
-                    lower_query = query.strip().lower()
-                    if lower_query.startswith("select") or lower_query.startswith("pragma"):
-                        rows = self.cursor.fetchall()
-                        logger.debug(f"[execute_query] SELECT => fetched {len(rows)} rows.")
-                        return rows
-                    else:
-                        return None
-
+                    rows = self.cursor.fetchall()
+                    logger.debug(f"[_execute_read_query] Fetched {len(rows)} rows.")
+                    return rows
                 except sqlite3.OperationalError as e:
                     if "locked" in str(e).lower():
-                        logger.warning(f"[execute_query] DB locked. Retry {attempt + 1}/{retries}...")
+                        logger.warning(f"[_execute_read_query] DB locked. Retry {attempt + 1}/{retries}...")
                         time.sleep(delay)
                     else:
-                        logger.error(f"[execute_query] OperationalError: {e}")
+                        logger.error(f"[_execute_read_query] OperationalError: {e}")
                         raise
                 except Exception as e:
-                    logger.error(f"[execute_query] Onverwachte fout: {e}")
+                    logger.error(f"[_execute_read_query] Onverwachte fout: {e}")
+                    raise
+            logger.error("[_execute_read_query] Max retries => DB locked.")
+            raise sqlite3.OperationalError("Database is vergrendeld na meerdere retries (read).")
+
+    def _execute_write_query(self, query, params=(), retries=10, delay=0.2):
+        """
+        Voert een write-query (INSERT/UPDATE/DELETE/DDL) uit met
+        BEGIN IMMEDIATE TRANSACTION + COMMIT bij succes, ROLLBACK bij fout.
+        """
+        with self._db_lock:
+            for attempt in range(retries):
+                try:
+                    self.cursor.execute("BEGIN IMMEDIATE TRANSACTION")
+                    self.cursor.execute(query, params)
+                    self.cursor.execute("COMMIT")
+                    return None
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e).lower():
+                        logger.warning(f"[_execute_write_query] DB locked. Retry {attempt + 1}/{retries}...")
+                        try:
+                            self.cursor.execute("ROLLBACK")
+                        except:
+                            pass
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"[_execute_write_query] OperationalError: {e}")
+                        try:
+                            self.cursor.execute("ROLLBACK")
+                        except:
+                            pass
+                        raise
+                except Exception as e:
+                    logger.error(f"[_execute_write_query] Onverwachte fout: {e}")
+                    try:
+                        self.cursor.execute("ROLLBACK")
+                    except:
+                        pass
                     raise
 
-            logger.error("[execute_query] Max retries bereikt => Database is vergrendeld.")
-            raise sqlite3.OperationalError("Database is vergrendeld na meerdere retries.")
+            logger.error("[_execute_write_query] Max retries => DB locked.")
+            raise sqlite3.OperationalError("Database is vergrendeld na meerdere retries (write).")
+
+    def _executemany_write(self, query, list_of_tuples, retries=10, delay=0.2):
+        """
+        Net als _execute_write_query maar dan voor executemany().
+        Altijd write => BEGIN IMMEDIATE + COMMIT.
+        """
+        with self._db_lock:
+            for attempt in range(retries):
+                try:
+                    self.cursor.execute("BEGIN IMMEDIATE TRANSACTION")
+                    self.cursor.executemany(query, list_of_tuples)
+                    self.cursor.execute("COMMIT")
+                    return
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e).lower():
+                        logger.warning(f"[_executemany_write] locked. Retry {attempt + 1}/{retries}...")
+                        try:
+                            self.cursor.execute("ROLLBACK")
+                        except:
+                            pass
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"[_executemany_write] OperationalError: {e}")
+                        try:
+                            self.cursor.execute("ROLLBACK")
+                        except:
+                            pass
+                        raise
+                except Exception as e:
+                    logger.error(f"[_executemany_write] Onverwachte fout: {e}")
+                    try:
+                        self.cursor.execute("ROLLBACK")
+                    except:
+                        pass
+                    raise
+
+            logger.error("[_executemany_write] Max retries => DB locked.")
+            raise sqlite3.OperationalError("Database is vergrendeld (executemany) na meerdere retries.")
+
+    def execute_query(self, query, params=(), retries=10, delay=0.2):
+        """
+        Universele method die onderscheid maakt tussen read-queries (SELECT/PRAGMA)
+        en write-queries (INSERT/UPDATE/DELETE/DDL).
+        """
+        logger.debug(f"[execute_query] Query: {repr(query)} | Params: {params}")
+        lower_query = query.strip().lower()
+
+        # Check of het een SELECT of PRAGMA is => read
+        if lower_query.startswith("select") or lower_query.startswith("pragma"):
+            return self._execute_read_query(query, params, retries, delay)
+        else:
+            # Alle andere statements => write
+            return self._execute_write_query(query, params, retries, delay)
+
+    def _executemany(self, query, list_of_tuples, retries=10, delay=0.2):
+        """
+        Zelfde idee als execute_query maar voor batch inserts/updates: write-only.
+        """
+        logger.debug(f"[_executemany] query=({query[:60]}...) #rows={len(list_of_tuples)}")
+        self._executemany_write(query, list_of_tuples, retries, delay)
+
+    # --------------------------------------------------------------------------
+    # Bestaande methodes vanaf hier grotendeels ongewijzigd
+    # --------------------------------------------------------------------------
 
     def get_table_count(self, table_name):
         """Haal het aantal records op uit een tabel met een eenvoudige COUNT(*)."""
@@ -789,13 +888,15 @@ class DatabaseManager:
                 dt_utc = datetime.fromtimestamp(ts / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
                 final_list.append((ts, dt_utc, market, interval, o, h, l, c, vol, exch))
 
-            with self.connection:
-                self.connection.executemany("""
-                    INSERT OR REPLACE INTO candles
-                    (timestamp, datetime_utc, market, interval, open, high, low, close, volume, exchange)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, final_list)
-
+            # [CHANGED] => i.p.v. 'with self.connection:', gebruik self._executemany
+            # with self.connection:
+            #     self.connection.executemany(""" ... """, final_list)
+            insert_sql = """
+                INSERT OR REPLACE INTO candles
+                (timestamp, datetime_utc, market, interval, open, high, low, close, volume, exchange)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            self._executemany(insert_sql, final_list)
             logger.info(f"[flush_candle_buffer] {len(self.candle_buffer)} candle records weggeschreven (oud).")
             self.candle_buffer.clear()
         except Exception as e:
@@ -881,13 +982,13 @@ class DatabaseManager:
                 dt_utc = datetime.fromtimestamp(ts / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
                 final_list.append((ts, dt_utc, market, interval, o, h, l, c, vol))
 
-            with self.connection:
-                self.connection.executemany("""
-                    INSERT OR REPLACE INTO candles_bitvavo
-                    (timestamp, datetime_utc, market, interval, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, final_list)
-
+            # [CHANGED] => i.p.v. 'with self.connection:', gebruik self._executemany
+            insert_sql = """
+                INSERT OR REPLACE INTO candles_bitvavo
+                (timestamp, datetime_utc, market, interval, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            self._executemany(insert_sql, final_list)
             logger.info(f"[flush_candle_buffer_bitvavo] {len(self.candle_buffer_bitvavo)} records -> candles_bitvavo.")
             self.candle_buffer_bitvavo.clear()
         except Exception as e:
@@ -949,13 +1050,13 @@ class DatabaseManager:
                 dt_utc = datetime.fromtimestamp(ts / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
                 final_list.append((ts, dt_utc, market, interval, o, h, l, c, vol))
 
-            with self.connection:
-                self.connection.executemany("""
-                    INSERT OR REPLACE INTO candles_kraken
-                    (timestamp, datetime_utc, market, interval, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, final_list)
-
+            # [CHANGED] => i.p.v. 'with self.connection:', gebruik self._executemany
+            insert_sql = """
+                INSERT OR REPLACE INTO candles_kraken
+                (timestamp, datetime_utc, market, interval, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            self._executemany(insert_sql, final_list)
             logger.info(f"[flush_candle_buffer_kraken] {len(self.candle_buffer_kraken)} -> candles_kraken.")
             self.candle_buffer_kraken.clear()
         except Exception as e:
@@ -1269,7 +1370,6 @@ class DatabaseManager:
             ema_21 = row.get("ema_21", None)
             atr14 = row.get("atr14", None)
             # Oorspronkelijk default "Bitvavo", nu "Kraken"
-            # exchange_val = row.get("exchange", "Bitvavo")
             exchange_val = row.get("exchange", "Kraken")
 
             rows.append((
@@ -1293,8 +1393,7 @@ class DatabaseManager:
             return
 
         try:
-            with self.connect() as conn:
-                conn.executemany(insert_q, rows)
+            self._executemany(insert_q, rows)
             logger.info(f"[save_indicators] {len(rows)} rows inserted/updated in 'indicators' (oud).")
         except Exception as e:
             logger.error(f"[save_indicators] Fout: {e}")
@@ -1379,8 +1478,8 @@ class DatabaseManager:
             atr14 = row.get("atr14", None)
 
             rows.append((
-                ts_val,               # timestamp
-                ts_val,               # datetime(?/1000)
+                ts_val,
+                ts_val,
                 market_val,
                 interval_val,
                 rsi_val,
@@ -1398,8 +1497,7 @@ class DatabaseManager:
             return
 
         try:
-            with self.connect() as conn:
-                conn.executemany(insert_query, rows)
+            self._executemany(insert_query, rows)
             logger.info(f"{log_prefix} {len(rows)} rows inserted/updated.")
         except Exception as e:
             logger.error(f"{log_prefix} Fout: {e}")
@@ -1528,7 +1626,7 @@ class DatabaseManager:
             params = []
             conditions = []
 
-            # ============= OUD: candles (enkel) =============
+            # OUD: candles
             if table_name == "candles":
                 base_query = """
                     SELECT DISTINCT
@@ -1836,7 +1934,7 @@ class DatabaseManager:
                         fees,
                         trade_cost,
                         exchange,
-                        strategy_name  -- Laat strategy_name ook zien, als aanwezig.
+                        strategy_name
                     FROM trades
                 """
                 if market:
@@ -1963,7 +2061,7 @@ class DatabaseManager:
         # We mappen dat dus even om:
         trade_data = {
             "timestamp": tstamp,
-            "symbol": order_data.get("market", "UNKNOWN"),  # mapped
+            "symbol": order_data.get("market", "UNKNOWN"),
             "side": order_data.get("side", "UNKNOWN"),
             "price": order_data.get("price", 0.0),
             "amount": order_data.get("amount", 0.0),

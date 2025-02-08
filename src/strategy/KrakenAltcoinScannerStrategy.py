@@ -36,7 +36,7 @@ class KrakenAltcoinScannerStrategy:
         """
 
         self.client = kraken_client
-        self.db_manager = db_manager     # Wordt (optioneel) gebruikt door meltdown_manager
+        self.db_manager = db_manager  # Wordt (optioneel) gebruikt door meltdown_manager
         self.config = config
 
         self.enabled = bool(config.get("enabled", True))
@@ -100,6 +100,30 @@ class KrakenAltcoinScannerStrategy:
 
         return logger
 
+    # ---------------------------------------------------------------------
+    # [NEW] _get_min_lot(...) => fallback dictionary
+    # ---------------------------------------------------------------------
+    def _get_min_lot(self, symbol: str) -> Decimal:
+        # Voorbeeld-lokale minima (fallback)
+        kraken_minlots = {
+            "XBT-EUR": Decimal("0.0002"),
+            "ETH-EUR": Decimal("0.001"),
+            "XRP-EUR": Decimal("10"),
+            "ADA-EUR": Decimal("10"),
+            "DOGE-EUR": Decimal("50"),
+            "SOL-EUR": Decimal("0.1"),
+            "DOT-EUR": Decimal("0.2"),
+        }
+
+        if self.client and hasattr(self.client, "get_min_lot"):
+            try:
+                return self.client.get_min_lot(symbol)
+            except:
+                pass  # als het faalt, val terug
+
+        # Fallback => local dict
+        return kraken_minlots.get(symbol, Decimal("1.0"))
+
     # =================================================
     # Hoofd-functie => elke X minuten aanroepen
     # =================================================
@@ -130,9 +154,7 @@ class KrakenAltcoinScannerStrategy:
             if sym in self.exclude_symbols:
                 self.logger.debug(f"[AltcoinScanner] symbol={sym} is in exclude_symbols => skip.")
                 continue
-            # (Optioneel) we kunnen hier baseVolume check doen =>
-            #   => extra REST calls => we skip or do partial.
-            #   => we just do 'sym'
+            # Eventueel extra checks
             tradable_symbols.append(sym)
 
         self.logger.info(f"[KrakenAltcoinScanner] scanning {len(tradable_symbols)} symbols, timeframe={self.timeframe}.")
@@ -167,8 +189,8 @@ class KrakenAltcoinScannerStrategy:
 
             # volume spike check
             recent_vol = Decimal(str(df["volume"].iloc[-1]))
-            avg_vol = Decimal(str(df["volume"].tail(self.lookback).mean())) if self.lookback>0 else Decimal("0")
-            if avg_vol>0:
+            avg_vol = Decimal(str(df["volume"].tail(self.lookback).mean())) if self.lookback > 0 else Decimal("0")
+            if avg_vol > 0:
                 vol_factor = recent_vol / avg_vol
             else:
                 vol_factor = Decimal("0")
@@ -204,26 +226,35 @@ class KrakenAltcoinScannerStrategy:
             return
 
         amt = trade_cap / current_price
+
+        # check min-lot
+        min_lot = self._get_min_lot(symbol)
+        if amt < min_lot:
+            self.logger.warning(
+                f"[AltcoinScanner] symbol={symbol} => calculated amt={amt:.6f} < minLot={min_lot} => skip open pos."
+            )
+            return
+
         if self.client:
             self.client.place_order("buy", symbol, float(amt), order_type="market")
             self.logger.info(f"[LIVE] BUY {symbol}, amt={amt:.4f} @ ~{current_price:.4f}")
         else:
             self.logger.info(f"[Paper] BUY {symbol}, amt={amt:.4f} @ ~{current_price:.4f}")
 
-        # (NIEUW) DB-log van de open trade
+        # Log in DB
         trade_data = {
             "timestamp": int(time.time() * 1000),
             "symbol": symbol,
             "side": "buy",
             "price": float(current_price),
             "amount": float(amt),
-            "position_id": f"{symbol}-{int(time.time())}",  # id
+            "position_id": f"{symbol}-{int(time.time())}",
             "position_type": "long",
             "status": "open",
             "pnl_eur": 0.0,
             "fees": 0.0,
             "trade_cost": float(amt * current_price),
-            "strategy_name": "scanner"  # <--- Tag de strategie
+            "strategy_name": "scanner"
         }
         self.db_manager.save_trade(trade_data)
 
@@ -279,17 +310,17 @@ class KrakenAltcoinScannerStrategy:
                 if self.client:
                     self.client.place_order("sell", symbol, float(part_qty), order_type="market")
 
-                # (NIEUW) DB-log van partial exit
+                # DB-log van partial exit
                 trade_data = {
                     "timestamp": int(time.time() * 1000),
                     "symbol": symbol,
                     "side": "sell",
                     "price": float(curr_price),
                     "amount": float(part_qty),
-                    "position_id": None,      # je mag hier ook de echte ID doorgeven
-                    "position_type": "long",  # want dit was een BUY
+                    "position_id": None,
+                    "position_type": "long",
                     "status": "partial",
-                    "pnl_eur": 0.0,   # simplificatie
+                    "pnl_eur": 0.0,
                     "fees": 0.0,
                     "trade_cost": float(part_qty * curr_price),
                     "strategy_name": "scanner"
@@ -308,7 +339,9 @@ class KrakenAltcoinScannerStrategy:
             if trail_sl > pos["stop_loss"]:
                 old_sl = pos["stop_loss"]
                 pos["stop_loss"] = trail_sl
-                self.logger.info(f"[AltcoinScanner] trailing SL updated => old={old_sl:.4f}, new={trail_sl:.4f} for {symbol}")
+                self.logger.info(
+                    f"[AltcoinScanner] trailing SL updated => old={old_sl:.4f}, new={trail_sl:.4f} for {symbol}"
+                )
 
     # =================================================
     # Close positie
@@ -333,10 +366,10 @@ class KrakenAltcoinScannerStrategy:
             "side": "sell",
             "price": float(current_price),
             "amount": float(amt),
-            "position_id": None,   # idem, kan eigen ID
+            "position_id": None,
             "position_type": "long",
             "status": "closed",
-            "pnl_eur": 0.0,  # simplificatie
+            "pnl_eur": 0.0,
             "fees": 0.0,
             "trade_cost": float(amt * current_price),
             "strategy_name": "scanner"
@@ -365,13 +398,12 @@ class KrakenAltcoinScannerStrategy:
     def _get_kraken_ohlc(self, symbol: str, iv_int: int, limit=50) -> pd.DataFrame:
         """
         Roept /0/public/OHLC op, mapped => pd.DataFrame(columns=[timestamp, open, high, low, close, volume])
+        + skipt evt. "rare" of "corrupt" rows via try/except
         """
         pair_rest = symbol.replace("-","/")
         url = "https://api.kraken.com/0/public/OHLC"
-        params = {
-            "pair": pair_rest,
-            "interval": iv_int
-        }
+        params = {"pair": pair_rest, "interval": iv_int}
+
         try:
             rr = requests.get(url, params=params, timeout=5)
             rr.raise_for_status()
@@ -379,8 +411,8 @@ class KrakenAltcoinScannerStrategy:
             if data.get("error"):
                 self.logger.debug(f"[AltcoinScanner] _get_kraken_ohlc => error => {data['error']}")
                 return pd.DataFrame()
-            result = data.get("result",{})
-            # key matching
+            result = data.get("result", {})
+            # Zoek de key in result die (meestal) <pair_rest> of <restName> bevat
             found_key = None
             for k in result.keys():
                 if pair_rest in k:
@@ -388,26 +420,49 @@ class KrakenAltcoinScannerStrategy:
                     break
             if not found_key:
                 return pd.DataFrame()
+
             rows = result[found_key]
-            outlist=[]
+            outlist = []
             # parse => [time, open, high, low, close, vwap, volume, count]
-            # we only need => time, open, high, low, close, volume
-            # time in float => ms => *1000
             for row in rows:
-                if len(row)<8:
+                if len(row) < 8:
                     continue
+                try:
+                    t_s       = float(row[0])
+                    open_val  = float(row[1])
+                    high_val  = float(row[2])
+                    low_val   = float(row[3])
+                    close_val = float(row[4])
+                    vol_val   = float(row[6])
+                except Exception as e:
+                    self.logger.error(f"[AltcoinScanner] parse-error => symbol={symbol}, row={row}, err={e}")
+                    continue  # skip dit ene record
+
                 outlist.append({
-                    "timestamp": float(row[0])*1000,
-                    "open": row[1],
-                    "high": row[2],
-                    "low": row[3],
-                    "close": row[4],
-                    "volume": row[6]
+                    "timestamp": t_s * 1000,
+                    "open": open_val,
+                    "high": high_val,
+                    "low": low_val,
+                    "close": close_val,
+                    "volume": vol_val
                 })
-            if len(outlist)>limit:
-                outlist=outlist[-limit:]
+
             df = pd.DataFrame(outlist)
+            if df.empty:
+                return df
+            # Beperk tot 'limit' laatste candles
+            if len(df) > limit:
+                df = df.iloc[-limit:]
+
+            # Extra safety: to_numeric & dropna
+            # (Mocht er toch nog iets corrupt zijn)
+            cols = ["open","high","low","close","volume"]
+            for c in cols:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+            df.dropna(subset=cols, inplace=True)
+
             return df
+
         except Exception as e:
             self.logger.error(f"[AltcoinScanner] _get_kraken_ohlc error => {e}")
             return pd.DataFrame()
@@ -418,19 +473,19 @@ class KrakenAltcoinScannerStrategy:
         return list of local symbols
         """
         try:
-            url="https://api.kraken.com/0/public/AssetPairs"
-            r=requests.get(url, timeout=5)
+            url = "https://api.kraken.com/0/public/AssetPairs"
+            r = requests.get(url, timeout=5)
             r.raise_for_status()
             j = r.json()
             if j.get("error"):
                 self.logger.debug(f"[AltcoinScanner] _fetch_all_eur_pairs => error => {j['error']}")
                 return []
-            result=j.get("result",{})
+            result = j.get("result", {})
             out=[]
             for restname, info in result.items():
-                ws= info.get("wsname","")
+                ws = info.get("wsname","")
                 if ws.endswith("/EUR"):
-                    sym= ws.replace("/","-")
+                    sym = ws.replace("/","-")
                     out.append(sym)
             return out
         except Exception as ex:
@@ -443,41 +498,41 @@ class KrakenAltcoinScannerStrategy:
         via self.client.get_latest_ws_price(...) gebruiken
         """
         # 1) check of client has get_latest_ws_price
-        if hasattr(self.client,"get_latest_ws_price"):
+        if hasattr(self.client, "get_latest_ws_price"):
             px = self.client.get_latest_ws_price(symbol)
-            if px>0:
+            if px > 0:
                 return Decimal(str(px))
 
         # 2) fallback => 1m candle
         df_1m = self._fetch_candles(symbol, "1m", limit=1)
         if not df_1m.empty:
-            last_close= df_1m["close"].iloc[-1]
+            last_close = df_1m["close"].iloc[-1]
             return Decimal(str(last_close))
         return Decimal("0")
 
     def _get_eur_balance(self) -> Decimal:
         if not self.client:
             return self.initial_capital
-        bals= self.client.get_balance()
+        bals = self.client.get_balance()
         return Decimal(str(bals.get("EUR","0")))
 
     def _get_equity_estimate(self)->Decimal:
         if not self.client:
             return self.initial_capital
-        eur_bal= self._get_eur_balance()
-        total_val=Decimal("0")
+        eur_bal = self._get_eur_balance()
+        total_val = Decimal("0")
         for sym, pos in self.open_positions.items():
-            px= self._get_latest_price(sym)
-            total_val+= (pos["amount"]*px)
+            px = self._get_latest_price(sym)
+            total_val += (pos["amount"] * px)
         return eur_bal + total_val
 
     def _can_open_new_position(self)->bool:
-        tot_eq= self._get_equity_estimate()
-        bal= self._get_eur_balance()
-        invested= tot_eq - bal
-        ratio= invested/tot_eq if tot_eq>0 else Decimal("0")
+        tot_eq = self._get_equity_estimate()
+        bal = self._get_eur_balance()
+        invested = tot_eq - bal
+        ratio = invested / tot_eq if tot_eq > 0 else Decimal("0")
         self.logger.debug(f"[AltcoinScanner] _can_open_new_position => ratio={ratio:.2f}, max={self.max_positions_equity_pct}")
-        return ratio<self.max_positions_equity_pct
+        return ratio < self.max_positions_equity_pct
 
     # [NEW] Methode om intra-candle exits te checken voor ALLE open posities
     #       (Elke 5-10s vanuit de executor oproepen.)
@@ -493,12 +548,3 @@ class KrakenAltcoinScannerStrategy:
             if curr_price > 0:
                 # We hergebruiken _manage_position
                 self._manage_position(sym)
-
-    def _fetch_and_indicator(self, symbol: str, timeframe: str, limit=100) -> pd.DataFrame:
-        """
-        Simpele helper zodat meltdown_manager flash-crash check niet faalt.
-        Haalt candles direct via REST (self._fetch_candles).
-        Return DataFrame
-        """
-        df= self._fetch_candles(symbol, timeframe, limit=limit)
-        return df if not df.empty else pd.DataFrame()

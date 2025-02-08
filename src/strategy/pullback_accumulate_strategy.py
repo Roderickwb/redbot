@@ -174,6 +174,9 @@ class PullbackAccumulateStrategy:
         # (NIEUW) Na self.open_positions = {}
         self._load_open_positions_from_db()
 
+        # Nieuw, om na ene nieuwe candle maar 1x de strategie uit te voeren
+        self.last_processed_candle_ts = {}  # [ADDED] dict: {symbol: last_candle_ms we used}
+
     # ----------------------------------------------------------------
     # Fees & PnL
     # ----------------------------------------------------------------
@@ -254,7 +257,7 @@ class PullbackAccumulateStrategy:
             # AANPASSING #2: debug
             self.logger.info(f"[info-ATR] {symbol}: ATR({self.atr_window}) = {atr_value}")
 
-        # Pullback => bv. 15m
+        # Pullback => self.entry_timeframe
         rsi_val = 50.0
         macd_signal_score = 0
         current_price = Decimal("0")
@@ -268,23 +271,29 @@ class PullbackAccumulateStrategy:
             last_timestamp = df_entry.index[-1]
 
             # Controleer of last_timestamp een pd.Timestamp is, anders ga je ervan uit dat het al in milliseconden is
+            df_entry.sort_index(inplace=True)
+            last_timestamp = df_entry.index[-1]
             if isinstance(last_timestamp, pd.Timestamp):
                 last_candle_ms = int(last_timestamp.timestamp() * 1000)
             else:
                 last_candle_ms = int(last_timestamp)
 
-            # Controleer of de laatste candle volledig is afgesloten
+            # 1) check: is de candle al gesloten?
             if not is_candle_closed(last_candle_ms, self.entry_timeframe):
-                self.logger.debug(
-                    f"[Pullback] {symbol}: Laatste {self.entry_timeframe} candle is nog niet afgesloten; penultimate."
-                )
-                # We gebruiken -2 alleen als we minstens 2 rijen hebben
-                if len(df_entry) >= 2:
-                    used_idx = -2
-                else:
-                    used_idx = -1
-            else:
-                used_idx = -1
+                self.logger.debug(f"[Pullback] {symbol}: Laatste candle niet afgesloten => return.")
+                return
+
+            # 2) check: hebben we deze candle_ts al verwerkt?
+            prev_candle_ts = self.last_processed_candle_ts.get(symbol, None)
+            if prev_candle_ts == last_candle_ms:
+                self.logger.debug(f"[Pullback] {symbol}: Candle {last_candle_ms} al verwerkt => return.")
+                return
+
+            # 3) Nieuw! => sla op dat we deze candle verwerken
+            self.last_processed_candle_ts[symbol] = last_candle_ms
+
+            # 4) Nu pas pak je used_idx = -1, rsi, macd, etc.
+            used_idx = -1
 
             # Haal RSI, MACD & price uit dezelfde rij (AANPASSING #4)
             rsi_val = df_entry["rsi"].iloc[used_idx]
@@ -294,7 +303,8 @@ class PullbackAccumulateStrategy:
             # Haal de live WS-prijs op
             ws_price = self._get_ws_price(symbol)
             self.logger.info(
-                f"[Info-{self.entry_timeframe}] {symbol}: used_idx={used_idx}, candle_close={candle_close_price}, ws_price={ws_price}")
+                f"[Info-{self.entry_timeframe}] {symbol}: used_idx={used_idx}, candle_close={candle_close_price}, ws_price={ws_price}"
+            )
 
             # Gebruik primair de WS-prijs, fallback naar candle_close
             if ws_price > 0:
@@ -345,10 +355,8 @@ class PullbackAccumulateStrategy:
                         and macd_signal_score >= self.macd_bull_threshold
                         and ml_signal >= 0
                         and depth_score >= self.depth_threshold_bull):
-                    self._open_position(
-                        symbol, side="buy", current_price=current_price,
-                        atr_value=atr_value, extra_invest=invest_extra_flag
-                    )
+                    self._open_position(symbol, side="buy", current_price=current_price,
+                                        atr_value=atr_value, extra_invest=invest_extra_flag)
                     if invest_extra_flag:
                         self.invested_extra = True
 
@@ -362,10 +370,8 @@ class PullbackAccumulateStrategy:
                         and macd_signal_score <= self.macd_bear_threshold
                         and ml_signal <= 0
                         and depth_score <= self.depth_threshold_bear):
-                    self._open_position(
-                        symbol, side="sell", current_price=current_price,
-                        atr_value=atr_value, extra_invest=invest_extra_flag
-                    )
+                    self._open_position(symbol, side="sell", current_price=current_price,
+                                        atr_value=atr_value, extra_invest=invest_extra_flag)
                     if invest_extra_flag:
                         self.invested_extra = True
         elif has_position:
@@ -481,7 +487,7 @@ class PullbackAccumulateStrategy:
 
             for col in ["open", "high", "low", "close", "volume"]:
                 try:
-                    df[col] = df[col].astype(float, errors="raise")  # <--- ipv 'ignore'
+                    df[col] = df[col].astype(float, errors="raise")
                 except Exception as exc:
                     unique_vals = df[col].unique()
                     self.logger.error(
@@ -489,8 +495,7 @@ class PullbackAccumulateStrategy:
                         f"Symbol={symbol}, interval={interval}, "
                         f"UNIQUE VALUES (max. 10)={unique_vals[:10]} | Error={exc}"
                     )
-                    # Eventueel kun je alles in 1x loggen of direct raise
-                    raise  # <--- direct doorgeven, zodat je ziet waar het breekt
+                    raise
 
             # timestamp => datetime + index
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
@@ -931,10 +936,28 @@ class PullbackAccumulateStrategy:
             # (NIEUW) => update DB => status='closed'
             db_id = pos.get("db_id", None)
             if db_id:
-                self.db_manager.update_trade(db_id, {"status": "closed"})
+                self.db_manager.update_trade(db_id, {"status": "closed"})  # [ADDED] finalize open row
                 self.logger.info(f"[PullbackStrategy] Trade {db_id} => status=closed in DB")
 
             del self.open_positions[symbol]
+        else:
+            # [ADDED] => partial => cumulatief fees/pnl updaten in de 'open' trade row
+            db_id = pos.get("db_id", None)
+            if db_id:
+                # We lezen de huidige fees/pnl uit DB en tellen deze partial toe
+                old_row = self.db_manager.execute_query(
+                    "SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,)
+                )
+                if old_row:
+                    old_fees, old_pnl = old_row[0]  # fees, pnl
+                    new_fees = old_fees + fees
+                    new_pnl = old_pnl + realized_pnl
+                    self.db_manager.update_trade(db_id, {
+                        "status": "partial",
+                        "fees": new_fees,
+                        "pnl_eur": new_pnl
+                    })
+                    self.logger.info(f"[PullbackStrategy] updated open trade {db_id} => partial fees={new_fees}, pnl={new_pnl}")
 
     # (B) Pas _buy_portion aan met exec_price
     def _buy_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
@@ -1006,9 +1029,26 @@ class PullbackAccumulateStrategy:
             # (NIEUW) => update DB => status='closed'
             db_id = pos.get("db_id", None)
             if db_id:
-                self.db_manager.update_trade(db_id, {"status": "closed"})
+                self.db_manager.update_trade(db_id, {"status": "closed"})  # [ADDED] finalize open row
                 self.logger.info(f"[PullbackStrategy] Trade {db_id} => status=closed in DB")
             del self.open_positions[symbol]
+        else:
+            # [ADDED] => partial => cumulatief fees/pnl updaten in de 'open' trade row
+            db_id = pos.get("db_id", None)
+            if db_id:
+                old_row = self.db_manager.execute_query(
+                    "SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,)
+                )
+                if old_row:
+                    old_fees, old_pnl = old_row[0]
+                    new_fees = old_fees + fees
+                    new_pnl = old_pnl + realized_pnl
+                    self.db_manager.update_trade(db_id, {
+                        "status": "partial",
+                        "fees": new_fees,
+                        "pnl_eur": new_pnl
+                    })
+                    self.logger.info(f"[PullbackStrategy] updated open trade {db_id} => partial fees={new_fees}, pnl={new_pnl}")
 
     # ------------------------------------------------
     #   Hulp: equity, ws price
@@ -1140,13 +1180,9 @@ class PullbackAccumulateStrategy:
             # Volledig open (of overshoot)
             pos["amount"] = desired
             pos["filled_amount"] = desired
-            self.logger.info(
-                f"[update_position_with_fill] {symbol}: order fully filled => {desired} / {desired}"
-            )
+            self.logger.info(f"[update_position_with_fill] {symbol}: order fully filled => {desired} / {desired}")
         else:
-            self.logger.info(
-                f"[update_position_with_fill] {symbol}: partial fill => {pos['filled_amount']}/{desired} @ {fill_price}"
-            )
+            self.logger.info(f"[update_position_with_fill] {symbol}: partial fill => {pos['filled_amount']}/{desired} @ {fill_price}")
 
     def _load_open_positions_from_db(self):
         """
@@ -1178,7 +1214,8 @@ class PullbackAccumulateStrategy:
                 "trail_active": False,
                 "trail_high": entry_price,
                 "position_id": position_id,
-                "position_type": position_type
+                "position_type": position_type,
+                # db_id niet altijd bekend, alleen als we dat in "save_trade" opslaan
             }
 
             # === Nieuw: bereken de ATR opnieuw voor main_timeframe ===
@@ -1186,9 +1223,10 @@ class PullbackAccumulateStrategy:
             atr_value = self._calculate_atr(df_main, self.atr_window)
             if atr_value:
                 pos_data["atr"] = Decimal(str(atr_value))
-            else:
-                # Als nog niet genoeg data, laat 0.0 staan
-                pass
+
+            # We check of 'id' in row => db_id
+            if "id" in row:
+                pos_data["db_id"] = row["id"]
 
             self.open_positions[symbol] = pos_data
             self.logger.info(

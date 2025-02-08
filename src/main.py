@@ -55,7 +55,7 @@ def main():
         PAPER_TRADING = True
     else:  # development
         USE_WEBSOCKET = False
-        PAPER_TRADING = False  # tijdelijk => Bitvavo even uitgeschakeld
+        PAPER_TRADING = True  # tijdelijk => Bitvavo even uitgeschakeld
 
     # === Bepaal KRAKEN_ENV (paper/real/off) ===
     KRAKEN_ENV = os.getenv("KRAKEN_ENV", "off").lower()

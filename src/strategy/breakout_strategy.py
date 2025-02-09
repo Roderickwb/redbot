@@ -33,7 +33,10 @@ class BreakoutStrategy:
       1) Bepaal 'range': highest high / lowest low (laatste X candles) + Bollinger-limieten
       2) Candle sluit >= 0.5% boven/onder die limiet (buffer)
       3) Volume-check (moet > 'volume_threshold_factor' x gemiddeld volume)
-      4) Open positie => Stoploss = 1xATR, partial TP (25%) bij 1R, rest trailing
+      4) Open positie =>
+         * Stoploss = ATR * sl_atr_mult
+         * TrailingStop = ATR * trailing_atr_mult
+         * ~~Geen partial-TP in deze versie~~
     - Max 90% van je kapitaal in posities, etc.
     """
 
@@ -70,12 +73,15 @@ class BreakoutStrategy:
         self.breakout_buffer_pct = Decimal(str(self.strategy_config.get("breakout_buffer_pct", "0.5")))
         self.volume_threshold_factor = float(self.strategy_config.get("volume_threshold_factor", 1.2))
 
+        # Belangrijk: we gebruiken ATR i.p.v. sl_pct/ trailing_pct
         self.atr_window = int(self.strategy_config.get("atr_window", 14))
         self.sl_atr_mult = Decimal(str(self.strategy_config.get("sl_atr_mult", "1.0")))
-        self.trail_atr_mult = Decimal(str(self.strategy_config.get("trail_atr_mult", "1.0")))
+        self.trail_atr_mult = Decimal(str(self.strategy_config.get("trailing_atr_mult", "1.0")))
 
-        self.partial_tp_r = Decimal(str(self.strategy_config.get("partial_tp_r", "1.0")))
-        self.partial_tp_pct = Decimal(str(self.strategy_config.get("partial_tp_pct", "0.25")))
+        # ~~ partial TP / R-risk-based => uitcommentarieerd ~~
+        # self.partial_tp_r = Decimal(str(self.strategy_config.get("partial_tp_r", "1.0")))
+        # self.partial_tp_pct = Decimal(str(self.strategy_config.get("partial_tp_pct", "0.25")))
+
         self.position_size_pct = Decimal(str(self.strategy_config.get("position_size_pct", "0.10")))
         self.max_positions_equity_pct = Decimal(str(self.strategy_config.get("max_positions_equity_pct", "0.90")))
         self.initial_capital = Decimal(str(self.strategy_config.get("initial_capital", "125")))
@@ -91,7 +97,7 @@ class BreakoutStrategy:
         self.open_positions = {}
 
     # --------------------------------------------------------------------------
-    # [NEW] Methode om dynamisch de minLot op te vragen OF fallback met local dict
+    # _get_min_lot(...) => fallback
     # --------------------------------------------------------------------------
     def _get_min_lot(self, symbol: str) -> Decimal:
         """
@@ -100,11 +106,11 @@ class BreakoutStrategy:
         anders fallback naar deze dictionary.
         """
         kraken_minlots = {
-            "XBT-EUR": Decimal("0.0002"),  # ~0.0002 BTC
-            "ETH-EUR": Decimal("0.001"),   # 0.001 ETH
-            "XRP-EUR": Decimal("10"),      # 10 stuks
-            "ADA-EUR": Decimal("10"),      # 10 stuks
-            "DOGE-EUR": Decimal("50"),     # 50 stuks
+            "XBT-EUR": Decimal("0.0002"),
+            "ETH-EUR": Decimal("0.001"),
+            "XRP-EUR": Decimal("10"),
+            "ADA-EUR": Decimal("10"),
+            "DOGE-EUR": Decimal("50"),
             "SOL-EUR": Decimal("0.1"),
             "DOT-EUR": Decimal("0.2"),
         }
@@ -154,7 +160,8 @@ class BreakoutStrategy:
         if breakout_signal["breakout_detected"]:
             self.logger.info(
                 f"[Breakout] {symbol} => breakout => side={breakout_signal['side']}, "
-                f"price={breakout_signal['price']}, ATR={breakout_signal['atr']}, limit={breakout_signal['limit_price']}"
+                f"price={breakout_signal['price']}, ATR={breakout_signal['atr']}, "
+                f"limit={breakout_signal['limit_price']}"
             )
             if symbol not in self.open_positions:
                 self._open_position(symbol, breakout_signal)
@@ -247,7 +254,8 @@ class BreakoutStrategy:
         # Haal de actuele prijs op (alleen voor logging; de strategie gebruikt de candle-close)
         current_price = self._get_latest_price(symbol)
         self.logger.debug(
-            f"[Breakout] {symbol} => last_4h_close={last_4h_close}, current_price={current_price}, diff={current_price - last_4h_close}"
+            f"[Breakout] {symbol} => last_4h_close={last_4h_close}, current_price={current_price}, "
+            f"diff={current_price - last_4h_close}"
         )
 
         last_volume = Decimal(str(df_4h["volume"].iloc[-1]))
@@ -263,7 +271,8 @@ class BreakoutStrategy:
         if trend == "bull":
             required_price = breakout_limit * (Decimal("1") + buffer_decimal)
             self.logger.debug(
-                f"[Breakout] {symbol}(bull) => breakout_limit={breakout_limit}, required_price={required_price}, close={last_4h_close}"
+                f"[Breakout] {symbol}(bull) => breakout_limit={breakout_limit}, "
+                f"required_price={required_price}, close={last_4h_close}"
             )
             if last_4h_close > required_price:
                 if last_volume > (avg_volume * Decimal(str(self.volume_threshold_factor))):
@@ -275,11 +284,12 @@ class BreakoutStrategy:
                         "limit_price": breakout_limit
                     }
                 else:
-                    self.logger.debug(f"[Breakout] {symbol} => volume check fail: {last_volume} <= {avg_volume} * factor")
+                    self.logger.debug(f"[Breakout] {symbol} => volume check fail => {last_volume} <= factor * {avg_volume}")
         else:  # bear
             required_price = breakout_limit * (Decimal("1") - buffer_decimal)
             self.logger.debug(
-                f"[Breakout] {symbol}(bear) => breakout_limit={breakout_limit}, required_price={required_price}, close={last_4h_close}"
+                f"[Breakout] {symbol}(bear) => breakout_limit={breakout_limit}, "
+                f"required_price={required_price}, close={last_4h_close}"
             )
             if last_4h_close < required_price:
                 if last_volume > (avg_volume * Decimal(str(self.volume_threshold_factor))):
@@ -333,7 +343,7 @@ class BreakoutStrategy:
         else:
             self.logger.info(f"[Paper] {side.upper()} {symbol}, amt={amount:.4f}, price={price:.2f}")
 
-        # StopLoss
+        # StopLoss => ATR-based
         sl_dist = atr_val * self.sl_atr_mult
         if side == "buy":
             sl_price = price - sl_dist
@@ -347,8 +357,7 @@ class BreakoutStrategy:
             "amount": amount,
             "stop_loss": sl_price,
             "atr": atr_val,
-            "tp1_done": False,
-            "partial_qty": amount * self.partial_tp_pct,
+            # "tp1_done": False,  # partial TP uitgecommentarieerd
             "highest_price": price if side == "buy" else Decimal("0"),
             "lowest_price": price if side == "sell" else Decimal("999999")
         }
@@ -364,6 +373,7 @@ class BreakoutStrategy:
         entry = pos["entry_price"]
         amt = pos["amount"]
         sl_price = pos["stop_loss"]
+        atr_val = pos["atr"]
 
         current_price = self._get_latest_price(symbol)
         if current_price <= 0:
@@ -387,44 +397,46 @@ class BreakoutStrategy:
                 return
 
         # partial TP bij 1R
-        if not pos["tp1_done"]:
-            if side == "buy":
-                risk = entry - sl_price
-                tp1 = entry + risk
-                self.logger.debug(f"[Breakout-manage] {symbol} => LONG risk={risk:.4f}, tp1={tp1:.4f}")
-                if current_price >= tp1:
-                    self.logger.info(f"[Breakout] {symbol} => 1R => partial LONG => {pos['partial_qty']:.4f}")
-                    self._take_partial_profit(symbol, pos["partial_qty"], "sell")
-                    pos["tp1_done"] = True
-            else:
-                risk = sl_price - entry
-                tp1 = entry - risk
-                self.logger.debug(f"[Breakout-manage] {symbol} => SHORT risk={risk:.4f}, tp1={tp1:.4f}")
-                if current_price <= tp1:
-                    self.logger.info(f"[Breakout] {symbol} => 1R => partial SHORT => {pos['partial_qty']:.4f}")
-                    self._take_partial_profit(symbol, pos["partial_qty"], "buy")
-                    pos["tp1_done"] = True
+        #if not pos["tp1_done"]:
+        #    if side == "buy":
+        #        risk = entry - sl_price
+        #        tp1 = entry + risk
+        #        self.logger.debug(f"[Breakout-manage] {symbol} => LONG risk={risk:.4f}, tp1={tp1:.4f}")
+        #        if current_price >= tp1:
+        #            self.logger.info(f"[Breakout] {symbol} => 1R => partial LONG => {pos['partial_qty']:.4f}")
+        #            self._take_partial_profit(symbol, pos["partial_qty"], "sell")
+        #            pos["tp1_done"] = True
+        #    else:
+        #        risk = sl_price - entry
+        #        tp1 = entry - risk
+        #        self.logger.debug(f"[Breakout-manage] {symbol} => SHORT risk={risk:.4f}, tp1={tp1:.4f}")
+        #        if current_price <= tp1:
+        #            self.logger.info(f"[Breakout] {symbol} => 1R => partial SHORT => {pos['partial_qty']:.4f}")
+        #            self._take_partial_profit(symbol, pos["partial_qty"], "buy")
+        #            pos["tp1_done"] = True
 
-        # trailing stop
-        atr_val = pos["atr"]
-        trail_dist = atr_val * self.trail_atr_mult
+        # Trailing Stop => ATR-based (trailing_atr_mult)
         if side == "buy":
-            # 'highest_price' updaten
+            # highest_price updaten
             if current_price > pos["highest_price"]:
                 pos["highest_price"] = current_price
-            new_sl = pos["highest_price"] - trail_dist
+            new_sl = pos["highest_price"] - (atr_val * self.trail_atr_mult)
             if new_sl > pos["stop_loss"]:
                 old_sl = pos["stop_loss"]
                 pos["stop_loss"] = new_sl
-                self.logger.info(f"[Breakout] {symbol} => update trailing SL => old={old_sl:.2f}, new={new_sl:.2f}")
+                self.logger.info(
+                    f"[Breakout] {symbol} => update trailing SL => old={old_sl:.2f}, new={new_sl:.2f}"
+                )
         else:
             if current_price < pos["lowest_price"]:
                 pos["lowest_price"] = current_price
-            new_sl = pos["lowest_price"] + trail_dist
+            new_sl = pos["lowest_price"] + (atr_val * self.trail_atr_mult)
             if new_sl < pos["stop_loss"]:
                 old_sl = pos["stop_loss"]
                 pos["stop_loss"] = new_sl
-                self.logger.info(f"[Breakout] {symbol} => update trailing SL => old={old_sl:.2f}, new={new_sl:.2f}")
+                self.logger.info(
+                    f"[Breakout] {symbol} => update trailing SL => old={old_sl:.2f}, new={new_sl:.2f}"
+                )
 
     def _close_position(self, symbol: str):
         pos = self.open_positions.get(symbol)
@@ -449,32 +461,32 @@ class BreakoutStrategy:
         del self.open_positions[symbol]
         self.logger.info(f"[Breakout] Positie {symbol} volledig gesloten.")
 
-    def _take_partial_profit(self, symbol: str, qty: Decimal, exit_side: str):
-        """
-        exit_side="sell" => partial exit (LONG)
-        exit_side="buy"  => partial exit (SHORT)
-        """
-        if symbol not in self.open_positions:
-            return
+    #def _take_partial_profit(self, symbol: str, qty: Decimal, exit_side: str):
+    #    """
+    #    exit_side="sell" => partial exit (LONG)
+    #    exit_side="buy"  => partial exit (SHORT)
+    #    """
+    #    if symbol not in self.open_positions:
+    #        return
 
-        pos = self.open_positions[symbol]
-        current_price = self._get_latest_price(symbol)
+    #    pos = self.open_positions[symbol]
+    #    current_price = self._get_latest_price(symbol)
 
-        if self.client:
-            self.client.place_order(exit_side, symbol, float(qty), order_type="market")
-            self.logger.info(f"[LIVE] PARTIAL EXIT => {exit_side.upper()} {qty:.4f} {symbol} @ ~{current_price:.2f}")
-        else:
-            self.logger.info(f"[Paper] PARTIAL EXIT => {exit_side.upper()} {qty:.4f} {symbol} @ ~{current_price:.2f}")
+    #    if self.client:
+    #        self.client.place_order(exit_side, symbol, float(qty), order_type="market")
+    #        self.logger.info(f"[LIVE] PARTIAL EXIT => {exit_side.upper()} {qty:.4f} {symbol} @ ~{current_price:.2f}")
+    #    else:
+    #        self.logger.info(f"[Paper] PARTIAL EXIT => {exit_side.upper()} {qty:.4f} {symbol} @ ~{current_price:.2f}")
 
-        pos["amount"] -= qty
-        if pos["amount"] <= Decimal("0"):
-            self.logger.info(f"[Breakout] Positie uitgeput => {symbol} closed")
-            del self.open_positions[symbol]
+    #    pos["amount"] -= qty
+    #    if pos["amount"] <= Decimal("0"):
+    #        self.logger.info(f"[Breakout] Positie uitgeput => {symbol} closed")
+    #        del self.open_positions[symbol]
 
     def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
         """
         Haalt de candles uit 'candles_kraken' via db_manager.fetch_data("candles_kraken", ...).
-        Bereken RSI + Bollinger (en evt. macd).
+        Bereken RSI + Bollinger.
         """
         df = self.db_manager.fetch_data(
             table_name="candles_kraken",
@@ -592,7 +604,7 @@ class BreakoutStrategy:
 
     def manage_intra_candle_exits(self):
         """
-        [NEW] Methode om intra-candle SL/TP te checken op basis van 'live' (ticker) prijs.
+        [NEW] Methode om intra-candle SL te checken op basis van 'live' (ticker) price.
         Elke 5-10s aanroepen vanuit je executor.
         """
         # Loop over alle open posities en roep _manage_position() aan

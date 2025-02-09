@@ -71,6 +71,7 @@ pullback_accumulate_strategy:
 
   sl_atr_mult: 0.5        # SL => full close
   tp1_atr_mult: 0.5       # 50% close
+  tp1_portion_pct: 0.50
   trailing_atr_mult: 0.5  # voor de rolling 50%
   initial_capital: 250
 
@@ -99,6 +100,10 @@ breakout_strategy:
   rsi_bull_level: 55
   rsi_bear_level: 45
   atr_window: 14
+
+  trailing_enabled: true
+  trailing_pct: 2
+  sl_pct: 2
 
   min_lot_multiplier: 1.1
   sl_atr_mult: 1.0

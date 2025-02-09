@@ -127,6 +127,7 @@ class PullbackAccumulateStrategy:
         self.max_position_pct = Decimal(str(self.strategy_config.get("max_position_pct", "0.05")))
         self.max_position_eur = Decimal(str(self.strategy_config.get("max_position_eur", "250")))
 
+        # ATR / SL / TP1 / TP2 / TR
         self.tp1_atr_mult = Decimal(str(self.strategy_config.get("tp1_atr_mult", "1.0")))
         self.tp2_atr_mult = Decimal(str(self.strategy_config.get("tp2_atr_mult", "2.0")))
         self.trail_atr_mult = Decimal(str(self.strategy_config.get("trailing_atr_mult", "1.0")))
@@ -134,6 +135,9 @@ class PullbackAccumulateStrategy:
         self.atr_window = int(self.strategy_config.get("atr_window", 14))
         self.initial_capital = Decimal(str(self.strategy_config.get("initial_capital", "100")))
         self.log_file = self.strategy_config.get("log_file", PULLBACK_STRATEGY_LOG_FILE)
+
+        # **NIEUW** => TP1-percentage uit YAML (default 0.50 => 50%)
+        self.tp1_portion_pct = Decimal(str(self.strategy_config.get("tp1_portion_pct", "0.50")))
 
         # Indicator-drempels (voor RSI & MACD) uit config
         self.rsi_bull_threshold = float(self.strategy_config.get("rsi_bull_threshold", 55))
@@ -787,6 +791,7 @@ class PullbackAccumulateStrategy:
 
             # -- Bestaande partial take-profits --
             tp1_price = entry + pos["atr"] * self.tp1_atr_mult
+            # TP2 is niet verwijderd, maar uitgecommentarieerd
             tp2_price = entry + pos["atr"] * self.tp2_atr_mult
 
             self.logger.info(
@@ -794,21 +799,21 @@ class PullbackAccumulateStrategy:
                 f"tp1_price={tp1_price:.4f}, tp2_done={pos['tp2_done']}, tp2_price={tp2_price:.4f}"
             )
 
-            # TP1
+            # TP1 => Uit YAML => self.tp1_portion_pct
             if (not pos["tp1_done"]) and (current_price >= tp1_price):
-                self.logger.info(f"[PullbackStrategy] LONG TP1 => Sell 25% {symbol}")
-                self._sell_portion(symbol, amount, portion=Decimal("0.25"), reason="TP1", exec_price=current_price)
+                self.logger.info(f"[PullbackStrategy] LONG TP1 => Sell {self.tp1_portion_pct*100}% {symbol}")
+                self._sell_portion(symbol, amount, portion=self.tp1_portion_pct, reason="TP1", exec_price=current_price)
                 pos["tp1_done"] = True
                 pos["trail_active"] = True
                 pos["trail_high"] = max(pos["trail_high"], current_price)
 
-            # TP2
-            elif (not pos["tp2_done"]) and (current_price >= tp2_price):
-                self.logger.info(f"[PullbackStrategy] LONG TP2 => Sell 25% {symbol}")
-                self._sell_portion(symbol, amount, portion=Decimal("0.25"), reason="TP2", exec_price=current_price)
-                pos["tp2_done"] = True
-                pos["trail_active"] = True
-                pos["trail_high"] = max(pos["trail_high"], current_price)
+            # === TP2 UITGECOMMENTARIEERD ===
+            # elif (not pos["tp2_done"]) and (current_price >= tp2_price):
+            #     self.logger.info(f"[PullbackStrategy] LONG TP2 => Sell 25% {symbol}")
+            #     self._sell_portion(symbol, amount, portion=Decimal("0.25"), reason="TP2", exec_price=current_price)
+            #     pos["tp2_done"] = True
+            #     pos["trail_active"] = True
+            #     pos["trail_high"] = max(pos["trail_high"], current_price)
 
             # Trailing stop
             if pos["trail_active"]:
@@ -842,16 +847,19 @@ class PullbackAccumulateStrategy:
                 f"tp1_price={tp1_price:.4f}, tp2_done={pos['tp2_done']}, tp2_price={tp2_price:.4f}"
             )
 
+            # TP1 => Uit YAML => self.tp1_portion_pct
             if (not pos["tp1_done"]) and (current_price <= tp1_price):
-                self.logger.info(f"[PullbackStrategy] SHORT TP1 => Buy-to-Close 25% {symbol}")
-                self._buy_portion(symbol, amount, portion=Decimal("0.25"), reason="TP1", exec_price=current_price)
+                self.logger.info(f"[PullbackStrategy] SHORT TP1 => Buy-to-Close {self.tp1_portion_pct*100}% {symbol}")
+                self._buy_portion(symbol, amount, portion=self.tp1_portion_pct, reason="TP1", exec_price=current_price)
                 pos["tp1_done"] = True
                 pos["trail_active"] = True
-            elif (not pos["tp2_done"]) and (current_price <= tp2_price):
-                self.logger.info(f"[PullbackStrategy] SHORT TP2 => Buy-to-Close 25% {symbol}")
-                self._buy_portion(symbol, amount, portion=Decimal("0.25"), reason="TP2", exec_price=current_price)
-                pos["tp2_done"] = True
-                pos["trail_active"] = True
+
+            # === TP2 UITGECOMMENTARIEERD ===
+            # elif (not pos["tp2_done"]) and (current_price <= tp2_price):
+            #     self.logger.info(f"[PullbackStrategy] SHORT TP2 => Buy-to-Close 25% {symbol}")
+            #     self._buy_portion(symbol, amount, portion=Decimal("0.25"), reason="TP2", exec_price=current_price)
+            #     pos["tp2_done"] = True
+            #     pos["trail_active"] = True
 
             if pos["trail_active"]:
                 trailing_stop_price = entry + (pos["atr"] * self.trail_atr_mult)
@@ -1258,4 +1266,3 @@ class PullbackAccumulateStrategy:
             return Decimal("1.0")
         # Anders:
         return self.data_client.get_min_lot(symbol)
-

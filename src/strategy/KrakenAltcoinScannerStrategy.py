@@ -22,7 +22,7 @@ class KrakenAltcoinScannerStrategy:
     - Detecteer signaal => open short-term positie (LONG):
       * position_size_pct van 'free' EUR
       * SL = sl_pct% onder entry
-      * TP = tp_pct% boven entry (of trailing)
+      * ~~TP = tp_pct% boven entry (of trailing)~~ (UITGECOMMENTARIEERD)
     - max_positions_equity_pct => max % van je kapitaal in deze strategie
     """
 
@@ -68,12 +68,19 @@ class KrakenAltcoinScannerStrategy:
         self.position_size_pct = Decimal(str(config.get("position_size_pct", "0.03")))
         self.max_positions_equity_pct = Decimal(str(config.get("max_positions_equity_pct", "0.50")))
         self.sl_pct = Decimal(str(config.get("sl_pct", 2.0)))
-        self.tp_pct = Decimal(str(config.get("tp_pct", 5.0)))
+
+        # ~~self.tp_pct = Decimal(str(config.get("tp_pct", 5.0)))~~  (UITGECOMMENTARIEERD)
+
         self.trailing_enabled = bool(config.get("trailing_enabled", False))
         self.trailing_pct = Decimal(str(config.get("trailing_pct", 2.0)))
 
-        self.partial_tp_enabled = bool(config.get("partial_tp_enabled", False))
-        self.partial_tp_pct = Decimal(str(config.get("partial_tp_pct", 0.25)))
+        # ~~self.partial_tp_enabled = bool(config.get("partial_tp_enabled", False))~~
+        # ~~self.partial_tp_pct = Decimal(str(config.get("partial_tp_pct", 0.25)))~~
+
+        # (NIEUW) => extra keys uit YAML (momenteel niet actief gebruikt):
+        self.min_lot_multiplier = Decimal(str(config.get("min_lot_multiplier", "1.1")))
+        self.sl_atr_mult = Decimal(str(config.get("sl_atr_mult", "1.0")))
+        self.trailing_atr_mult = Decimal(str(config.get("trailing_atr_mult", "1.0")))
 
         # open_positions => { "DOGE-EUR": {...}, ... }
         self.open_positions = {}
@@ -144,7 +151,7 @@ class KrakenAltcoinScannerStrategy:
         # We halen alle EUR-paren van Kraken => /0/public/AssetPairs
         dynamic_symbols = self._fetch_all_eur_pairs()
         if not dynamic_symbols:
-            self.logger.warning("[KrakenAltcoinScanner] geen dynamische EUR-paren => stop.")
+            self.logger.warning("[AltcoinScanner] geen dynamische EUR-paren => stop.")
             return
 
         # Filter excludes e.d.
@@ -258,23 +265,25 @@ class KrakenAltcoinScannerStrategy:
         }
         self.db_manager.save_trade(trade_data)
 
-        # Simple SL/TP
+        # Simple SL
         sl_price = current_price * (Decimal("1") - (self.sl_pct / Decimal("100")))
-        tp_price = current_price * (Decimal("1") + (self.tp_pct / Decimal("100")))
+
+        # ~~TP => current_price * (Decimal("1") + self.tp_pct/100)~~ (UITGECOMMENTARIEERD)
+        # ~~We laten "take_profit" weg~~
 
         self.open_positions[symbol] = {
             "side": "buy",
             "entry_price": current_price,
             "amount": amt,
             "stop_loss": sl_price,
-            "take_profit": tp_price,
-            "partial_tp_done": False,
+            # "take_profit": tp_price,  # (UITGECOMMENTARIEERD)
+            # "partial_tp_done": False, # partial-TP ook uit
             "highest_price": current_price
         }
-        self.logger.info(f"[AltcoinScanner] OPEN LONG {symbol} => SL={sl_price:.4f}, TP={tp_price:.4f}")
+        self.logger.info(f"[AltcoinScanner] OPEN LONG {symbol} => SL={sl_price:.4f} (TP uit code verwijderd).")
 
     # =================================================
-    # Manage positie => check SL/TP/partial/trailing
+    # Manage positie => check SL ~~TP/partial/trailing~~
     # =================================================
     def _manage_position(self, symbol: str):
         pos = self.open_positions.get(symbol)
@@ -294,41 +303,40 @@ class KrakenAltcoinScannerStrategy:
             self._close_position(symbol)
             return
 
-        # check take-profit
-        tp_price = pos["take_profit"]
-        if curr_price >= tp_price:
-            self.logger.info(f"[AltcoinScanner] {symbol} => TP geraakt => close pos")
-            self._close_position(symbol)
-            return
+        # ~~check take-profit~~ (UITGECOMMENTARIEERD)
+        # if curr_price >= pos["take_profit"]:
+        #     self.logger.info(f"[AltcoinScanner] {symbol} => TP geraakt => close pos")
+        #     self._close_position(symbol)
+        #     return
 
-        # partial TP halverwege
-        if self.partial_tp_enabled and (not pos["partial_tp_done"]):
-            half_target = pos["entry_price"] + (tp_price - pos["entry_price"]) / Decimal("2")
-            if curr_price >= half_target:
-                part_qty = pos["amount"] * self.partial_tp_pct
-                self.logger.info(f"[AltcoinScanner] partial TP => {symbol}, sell {part_qty:.4f}")
-                if self.client:
-                    self.client.place_order("sell", symbol, float(part_qty), order_type="market")
-
-                # DB-log van partial exit
-                trade_data = {
-                    "timestamp": int(time.time() * 1000),
-                    "symbol": symbol,
-                    "side": "sell",
-                    "price": float(curr_price),
-                    "amount": float(part_qty),
-                    "position_id": None,
-                    "position_type": "long",
-                    "status": "partial",
-                    "pnl_eur": 0.0,
-                    "fees": 0.0,
-                    "trade_cost": float(part_qty * curr_price),
-                    "strategy_name": "scanner"
-                }
-                self.db_manager.save_trade(trade_data)
-
-                pos["amount"] -= part_qty
-                pos["partial_tp_done"] = True
+        # ~~ partial-TP halverwege => uitcommentarieerd ~~
+        # if self.partial_tp_enabled and (not pos["partial_tp_done"]):
+        #     half_target = pos["entry_price"] + (pos["take_profit"] - pos["entry_price"]) / Decimal("2")
+        #     if curr_price >= half_target:
+        #         part_qty = pos["amount"] * self.partial_tp_pct
+        #         self.logger.info(f"[AltcoinScanner] partial TP => {symbol}, sell {part_qty:.4f}")
+        #         if self.client:
+        #             self.client.place_order("sell", symbol, float(part_qty), order_type="market")
+        #
+        #         # DB-log van partial exit
+        #         trade_data = {
+        #             "timestamp": int(time.time() * 1000),
+        #             "symbol": symbol,
+        #             "side": "sell",
+        #             "price": float(curr_price),
+        #             "amount": float(part_qty),
+        #             "position_id": None,
+        #             "position_type": "long",
+        #             "status": "partial",
+        #             "pnl_eur": 0.0,
+        #             "fees": 0.0,
+        #             "trade_cost": float(part_qty * curr_price),
+        #             "strategy_name": "scanner"
+        #         }
+        #         self.db_manager.save_trade(trade_data)
+        #
+        #         pos["amount"] -= part_qty
+        #         pos["partial_tp_done"] = True
 
         # trailing
         if self.trailing_enabled:
@@ -548,3 +556,11 @@ class KrakenAltcoinScannerStrategy:
             if curr_price > 0:
                 # We hergebruiken _manage_position
                 self._manage_position(sym)
+
+    def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
+        """
+        Dummy/alias voor meltdown_manager.
+        Hier berekenen we geen indicators; we halen alleen de candles op.
+        """
+        df = self._fetch_candles(symbol, interval, limit=limit)
+        return df

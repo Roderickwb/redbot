@@ -35,24 +35,24 @@ intervals:
 ### PULLBACK_ACCUMULATE_STRATEGY ###
 pullback_accumulate_strategy:
   # STAP 1 DE GROTE TREND: CHECK DIRECTION
-  daily_bull_rsi: 50
-  daily_bear_rsi: 50
-  h4_bull_rsi: 50
-  h4_bear_rsi: 50
+  daily_bull_rsi: 55
+  daily_bear_rsi: 45
+  h4_bull_rsi: 55
+  h4_bear_rsi: 45
 
   # Deze bestonden al (voorbeeld) gaat om de pullback 15M candle:
-  rsi_bull_threshold: 40   # RSI >= 40 => oversold => bullisch pullback
-  rsi_bear_threshold: 60   # RSI <= 60 => overbought => bearisch pullback
+  rsi_bull_threshold: 40   # RSI <= 40 => oversold => bullisch pullback
+  rsi_bear_threshold: 60   # RSI >= 60 => overbought => bearisch pullback
 
   # Nieuw (om depth_score-checks te configureren!)
   depth_threshold_bull: -0.3 # orderboek-analyse om te checken of er voldoende volume is om een trend te ondersteuen idealiter > 0)
   depth_threshold_bear: 0.3
 
-  macd_bull_threshold: -1  # was 0
-  macd_bear_threshold: 1   # was 0
+  macd_bull_threshold: 0  # minder streng is -1
+  macd_bear_threshold: 0   # minder stregn is +1
 
   # bepaald hoever de pullback van de weerstand of support ,oet bewegen om in te stappen = pullback = true
-  pullback_threshold_pct: 1.0 # is redelijk
+  pullback_atr_mult: 1.5
 
   ml_model_enabled: true
 
@@ -62,17 +62,17 @@ pullback_accumulate_strategy:
   daily_timeframe: "1d"
   flash_crash_timeframe: "5m"
   atr_window: 14
-  accumulate_threshold: 1.0
+  accumulate_threshold: 1.1 # als er 10% winst is gemaakt mag dat geinvesteerd worden in coins. Door al bij 10% te doen cummuleer je sneller meerdere coins
 
   # (Nieuw)
   min_lot_multiplier: 2.1  # min. 2.1× minLot
   max_position_pct: 0.1   # max 5% van je capital
   max_position_eur: 15  # of direct een vast bedrag
 
-  sl_atr_mult: 0.5        # SL => full close
-  tp1_atr_mult: 0.5       # 50% close
+  sl_atr_mult: 1        # SL => full close
+  tp1_atr_mult: 1       # 50% close
   tp1_portion_pct: 0.50
-  trailing_atr_mult: 0.5  # voor de rolling 50%
+  trailing_atr_mult: 0.75  # voor de rolling 50%
   initial_capital: 250
 
   use_depth_trend: true
@@ -181,7 +181,7 @@ altcoin_scanner_strategy:
 
 ### MELTDOWN MANAGER ###
 meltdown_manager:
-  daily_loss_pct: 20              # meltdown als daily portfolio drop >= 20%
+  daily_loss_pct: 30              # meltdown als daily portfolio drop >= 20%
   flash_crash_pct: 20             # meltdown als >=2 coins > 20% daling
   rsi_reentry_threshold: 30       # meltdown eindigt als RSI > 30
   meltdown_coins: ["BTC-EUR", "XRP-EUR", "ETH-EUR"]   # barometer

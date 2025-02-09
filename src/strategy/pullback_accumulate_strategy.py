@@ -114,7 +114,7 @@ class PullbackAccumulateStrategy:
         self.entry_timeframe = self.strategy_config.get("entry_timeframe", "15m")
         self.flash_crash_tf = self.strategy_config.get("flash_crash_timeframe", "5m")
 
-        self.pullback_threshold_pct = Decimal(str(self.strategy_config.get("pullback_threshold_pct", "0.5")))
+        self.pullback_atr_mult = Decimal(str(self.strategy_config.get("pullback_atr_mult", "1.0")))
 
         # Overige settings
         self.accumulate_threshold = Decimal(str(self.strategy_config.get("accumulate_threshold", "1.25")))
@@ -316,7 +316,7 @@ class PullbackAccumulateStrategy:
             else:
                 current_price = candle_close_price
 
-            pullback_detected = self._detect_pullback(df_entry, current_price, direction)
+            pullback_detected = self._detect_pullback(df_entry, current_price, direction, atr_value)
         else:
             # Als df_entry leeg is, blijven de standaardwaarden behouden
             current_price = Decimal("0")
@@ -347,7 +347,7 @@ class PullbackAccumulateStrategy:
 
         # CHANGED: Gebruik current_price (live) = ws_price of fallback
         if pullback_detected and not has_position:
-            if direction == "bull":
+            if direction == "bull": # Bull: RSI<40 + MACD<0 => oversold in bull => buy.
                 self.logger.info(
                     f"[INFO-bull] symbol={symbol}, "
                     f"rsi_val={rsi_val:.2f} >= {self.rsi_bull_threshold}? => {rsi_val >= self.rsi_bull_threshold}, "
@@ -355,8 +355,8 @@ class PullbackAccumulateStrategy:
                     f"ml_signal={ml_signal} >= 0? => {ml_signal >= 0}, "
                     f"depth_score={depth_score:.2f} >= {self.depth_threshold_bull}? => {depth_score >= self.depth_threshold_bull}"
                 )
-                if (rsi_val >= self.rsi_bull_threshold
-                        and macd_signal_score >= self.macd_bull_threshold
+                if (rsi_val <= self.rsi_bull_threshold # oversol bijvoorbeeld 35-40
+                        and macd_signal_score <= self.macd_bull_threshold
                         and ml_signal >= 0
                         and depth_score >= self.depth_threshold_bull):
                     self._open_position(symbol, side="buy", current_price=current_price,
@@ -364,14 +364,14 @@ class PullbackAccumulateStrategy:
                     if invest_extra_flag:
                         self.invested_extra = True
 
-            elif direction == "bear":
+            elif direction == "bear": # Bear: RSI>60 + MACD>0 => overbought in bear => short.
                 self.logger.info(
                     f"[INFO-bear] {symbol}: rsi_val={rsi_val:.2f} <= {self.rsi_bear_threshold}? , "
                     f"macd_signal={macd_signal_score} <= {self.macd_bear_threshold}? , "
                     f"ml={ml_signal} <= 0? , depth={depth_score} <= {self.depth_threshold_bear}? "
                 )
-                if (rsi_val <= self.rsi_bear_threshold
-                        and macd_signal_score <= self.macd_bear_threshold
+                if (rsi_val >= self.rsi_bear_threshold # overbought dus bijvoorbeeld 60-65
+                        and macd_signal_score >= self.macd_bear_threshold
                         and ml_signal <= 0
                         and depth_score <= self.depth_threshold_bear):
                     self._open_position(symbol, side="sell", current_price=current_price,
@@ -556,7 +556,13 @@ class PullbackAccumulateStrategy:
         s1 = (2 * pivot) - hi
         return {"pivot": pivot, "R1": r1, "S1": s1}
 
-    def _detect_pullback(self, df: pd.DataFrame, current_price: Decimal, direction: str) -> bool:
+    def _detect_pullback(self, df: pd.DataFrame, current_price: Decimal, direction: str, atr_value: Decimal) -> bool:
+        """
+        - Vervangt de procentuele pullback-check door een ATR-gebaseerde check.
+        - Houdt dezelfde structuur en logging.
+        - 'atr_value' moet van buitenaf worden meegegeven (bv. in execute_strategy).
+        """
+
         if len(df) < self.pullback_rolling_window:
             self.logger.info(f"[Pullback] <{self.pullback_rolling_window} candles => skip.")
             return False
@@ -568,11 +574,15 @@ class PullbackAccumulateStrategy:
             if recent_high <= 0:
                 return False
 
-            # drop_pct = percentage verschil tussen recent_high en current_price
-            drop_pct = (Decimal(str(recent_high)) - current_price) / Decimal(str(recent_high)) * Decimal("100")
-            if drop_pct >= self.pullback_threshold_pct:
+            # pullback_distance = verschil tussen recent high en current_price
+            pullback_distance = Decimal(str(recent_high)) - current_price
+            # Vergelijk met: self.pullback_atr_mult × ATR
+            atr_threshold = atr_value * Decimal(str(self.pullback_atr_mult))
+
+            if pullback_distance >= atr_threshold:
                 self.logger.info(
-                    f"[Pullback-bull] {drop_pct:.2f}% below recent high => pullback (threshold={self.pullback_threshold_pct}%)"
+                    f"[Pullback-bull] distance={pullback_distance:.4f} >= {self.pullback_atr_mult}xATR=({atr_value}*{self.pullback_atr_mult}), "
+                    f"=> pullback"
                 )
                 return True
             return False
@@ -584,14 +594,19 @@ class PullbackAccumulateStrategy:
             if recent_low <= 0:
                 return False
 
-            # rally_pct = percentage verschil tussen current_price en recent_low
-            rally_pct = (current_price - Decimal(str(recent_low))) / Decimal(str(recent_low)) * Decimal("100")
-            if rally_pct >= self.pullback_threshold_pct:
+            # rally_distance = verschil tussen current_price en recent low
+            rally_distance = current_price - Decimal(str(recent_low))
+            # Vergelijk met: self.pullback_atr_mult × ATR
+            atr_threshold = atr_value * Decimal(str(self.pullback_atr_mult))
+
+            if rally_distance >= atr_threshold:
                 self.logger.info(
-                    f"[Pullback-bear] {rally_pct:.2f}% above recent low => pullback (threshold={self.pullback_threshold_pct}%)"
+                    f"[Pullback-bear] distance={rally_distance:.4f} >= {self.pullback_atr_mult}xATR=({atr_value}*{self.pullback_atr_mult}), "
+                    f"=> pullback"
                 )
                 return True
             return False
+
         else:
             return False
 
@@ -792,11 +807,11 @@ class PullbackAccumulateStrategy:
             # -- Bestaande partial take-profits --
             tp1_price = entry + pos["atr"] * self.tp1_atr_mult
             # TP2 is niet verwijderd, maar uitgecommentarieerd
-            tp2_price = entry + pos["atr"] * self.tp2_atr_mult
+            # tp2_price = entry + pos["atr"] * self.tp2_atr_mult
 
             self.logger.info(
                 f"[INFO-manage-LONG] symbol={symbol}, tp1_done={pos['tp1_done']}, current_price={current_price}, "
-                f"tp1_price={tp1_price:.4f}, tp2_done={pos['tp2_done']}, tp2_price={tp2_price:.4f}"
+                f"tp1_price={tp1_price:.4f}" # , tp2_done={pos['tp2_done']}, tp2_price={tp2_price:.4f}
             )
 
             # TP1 => Uit YAML => self.tp1_portion_pct
@@ -841,10 +856,10 @@ class PullbackAccumulateStrategy:
                 return
 
             tp1_price = entry - pos["atr"] * self.tp1_atr_mult
-            tp2_price = entry - pos["atr"] * self.tp2_atr_mult
+            #tp2_price = entry - pos["atr"] * self.tp2_atr_mult
             self.logger.info(
                 f"[INFO-manage-SHORT] {symbol}, tp1_done={pos['tp1_done']}, current_price={current_price}, "
-                f"tp1_price={tp1_price:.4f}, tp2_done={pos['tp2_done']}, tp2_price={tp2_price:.4f}"
+                f"tp1_price={tp1_price:.4f}" # , tp2_done={pos['tp2_done']}, tp2_price={tp2_price:.4f}
             )
 
             # TP1 => Uit YAML => self.tp1_portion_pct
@@ -880,6 +895,12 @@ class PullbackAccumulateStrategy:
         Een deel van een LONG-positie verkopen.
         """
         amt_to_sell = total_amt * portion
+        # Hier extra check:
+        ml = self._get_min_lot(symbol)
+        if amt_to_sell < ml:
+            self.logger.info(f"[sell_portion] skip partial => amt_to_sell={amt_to_sell} < minLot={ml}")
+            return
+
         pos = self.open_positions[symbol]
         entry_price = pos["entry_price"]
         position_id = pos["position_id"]
@@ -983,6 +1004,13 @@ class PullbackAccumulateStrategy:
             current_price = exec_price
         else:
             current_price = self._get_ws_price(symbol)
+
+        # === Min-lot-check ===
+        min_lot = self._get_min_lot(symbol)
+        if amt_to_buy < min_lot:
+            self.logger.info(
+            f"[PullbackStrategy] skip partial BUY => amt_to_buy={amt_to_buy:.4f} < minLot={min_lot:.4f}")
+            return
 
         if current_price <= 0:
             self.logger.warning(f"[PullbackStrategy] _buy_portion => price=0 => skip BUY {symbol}")

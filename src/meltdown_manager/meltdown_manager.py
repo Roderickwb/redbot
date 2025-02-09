@@ -8,9 +8,9 @@ import pandas as pd
 class MeltdownManager:
     """
     Universeel meltdown-mechanisme:
-      - daily_loss check => meltdown if portfolio drop >= daily_loss_pct
+      - daily_loss check => meltdown als portfolio drop >= daily_loss_pct
       - flash_crash => meltdown als >= meltdown_coins_needed coins in meltdown_coins
-        >= flash_crash_pct drop (over meltdown_tf & meltdown_lookback)
+                       >= flash_crash_pct drop (over meltdown_tf & meltdown_lookback)
       - meltdown_active => skip new pos, close all
       - RSI-based re-entry => meltdown eindigt als RSI>rsi_reentry_threshold
     """
@@ -29,7 +29,7 @@ class MeltdownManager:
           }
 
         db_manager => je DatabaseManager
-        logger => optional (valt terug op logging.getLogger("meltdown_manager"))
+        logger => optioneel (valt terug op logging.getLogger("meltdown_manager"))
         """
         self.config = config
         self.db_manager = db_manager
@@ -54,16 +54,9 @@ class MeltdownManager:
 
     def update_meltdown_state(self, strategy, symbol: str) -> bool:
         """
-        Call deze methode 1x per strategy-loop:
-         1) Als meltdown_active=True => check RSI-reentry => meltdown eventueel uit
-         2) Anders check daily_loss & flash_crash => meltdown in
-         3) Return meltdown_active => True => meltdown => skip open pos, close all
-
-        :param strategy: je strategie-instance (Pullback, Breakout, etc.)
-                         => moet ._get_equity_estimate(), .initial_capital, ._fetch_and_indicator(...) etc. hebben.
-        :param symbol:   coin dat in je execute_strategy() wordt verwerkt
-                         (hier alleen relevant voor RSI-check, of je meltdown-coins[0] gebruikt.)
-        :return: bool => meltdown_active (True => meltdown is bezig)
+        1) Als meltdown_active=True => check RSI-reentry => meltdown eventueel uit
+        2) Anders check daily_loss & flash_crash => meltdown in
+        3) Return meltdown_active => True => meltdown => skip open pos, close all
         """
         # 1) meltdown al actief => check RSI-based re-entry
         if self.meltdown_active:
@@ -102,7 +95,6 @@ class MeltdownManager:
         Check of (initial_capital - equity_now)/initial_capital >= daily_loss_pct
         """
         equity_now = strategy._get_equity_estimate()
-        # Zorg dat we decimalarith gebruiken:
         capital_dec = Decimal(str(strategy.initial_capital))
 
         drop_val = capital_dec - equity_now
@@ -111,8 +103,19 @@ class MeltdownManager:
             return False
 
         drop_pct = (drop_val / capital_dec) * Decimal("100")
+
+        # -- Toevoeging om duidelijk te loggen wat er gebeurt --
+        self.logger.info(
+            f"[MeltdownManager] daily_loss_check => equity_now={equity_now:.2f}, "
+            f"initial_capital={capital_dec:.2f}, drop_val={drop_val:.2f}, "
+            f"drop_pct={drop_pct:.2f}, threshold={self.daily_loss_pct}"
+        )
+        # ------------------------------------------------------
+
         if drop_pct >= self.daily_loss_pct:
-            self.logger.warning(f"[MeltdownManager] daily loss {drop_pct:.2f}% >= {self.daily_loss_pct}% => meltdown.")
+            self.logger.warning(
+                f"[MeltdownManager] daily loss {drop_pct:.2f}% >= {self.daily_loss_pct}% => meltdown."
+            )
             return True
         return False
 
@@ -123,7 +126,6 @@ class MeltdownManager:
           if count >= meltdown_coins_needed => meltdown
         """
         drop_count = 0
-
         for coin in self.meltdown_coins:
             df = strategy._fetch_and_indicator(coin, self.meltdown_tf, limit=self.meltdown_lookback)
             if df.empty or len(df) < 2:
@@ -158,7 +160,7 @@ class MeltdownManager:
 
     def _close_all_positions(self, strategy):
         """
-        Alle open positions van deze strategie sluiten
+        Alle open positions van deze strategy sluiten
         """
         self.logger.warning("[MeltdownManager] meltdown => close all open positions.")
         for sym in list(strategy.open_positions.keys()):
@@ -180,8 +182,9 @@ class MeltdownManager:
             return False
 
         last_rsi = df_entry["rsi"].iloc[-1]
-        # last_rsi is float => Decimal-ify
         last_rsi_dec = Decimal(str(last_rsi))
 
-        self.logger.info(f"[MeltdownManager] RSI re-entry check => RSI={last_rsi_dec:.2f}, threshold={self.rsi_reentry_threshold}")
+        self.logger.info(
+            f"[MeltdownManager] RSI re-entry check => RSI={last_rsi_dec:.2f}, threshold={self.rsi_reentry_threshold}"
+        )
         return last_rsi_dec > self.rsi_reentry_threshold

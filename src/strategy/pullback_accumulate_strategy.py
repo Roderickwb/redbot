@@ -181,6 +181,7 @@ class PullbackAccumulateStrategy:
         # Nieuw, om na ene nieuwe candle maar 1x de strategie uit te voeren
         self.last_processed_candle_ts = {}  # [ADDED] dict: {symbol: last_candle_ms we used}
 
+
     # ----------------------------------------------------------------
     # Fees & PnL
     # ----------------------------------------------------------------
@@ -200,6 +201,7 @@ class PullbackAccumulateStrategy:
         else:
             realized_pnl = 0.0
         return fees, realized_pnl
+
 
     # ----------------------------------------------------------------
     # Hoofdstrategie
@@ -382,6 +384,7 @@ class PullbackAccumulateStrategy:
             # CHANGED: Geef dezelfde current_price door
             self._manage_open_position(symbol, current_price, atr_value)
 
+
     # ------------------------------------------------
     #   TREND
     # ------------------------------------------------
@@ -396,6 +399,7 @@ class PullbackAccumulateStrategy:
             return "bear"
         else:
             return "range"
+
 
     # ------------------------------------------------
     #   FAIL-SAFES
@@ -448,6 +452,7 @@ class PullbackAccumulateStrategy:
             self.logger.warning(f"[FailSafe] Flash crash => drop {drop_pct:.2f}% on {self.flash_crash_tf}")
             return True
         return False
+
 
     # ------------------------------------------------
     #   DATA & INDICATORS
@@ -622,6 +627,7 @@ class PullbackAccumulateStrategy:
             return -1
         return 0
 
+
     # ------------------------------------------------
     #   DEPTH TREND
     # ------------------------------------------------
@@ -636,6 +642,7 @@ class PullbackAccumulateStrategy:
             return 0.0
         score = (total_bids - total_asks) / denom
         return float(score)
+
 
     # ------------------------------------------------
     #   ML
@@ -658,6 +665,7 @@ class PullbackAccumulateStrategy:
             last_row.get("volume", 0),
         ]
         return self.ml_engine.predict_signal(features)
+
 
     # ------------------------------------------------
     #   Open/Manage pos
@@ -765,7 +773,9 @@ class PullbackAccumulateStrategy:
         new_trade_id = self.db_manager.cursor.lastrowid
         self.logger.info(f"[PullbackStrategy] new trade row => trade_id={new_trade_id}")
 
-        # [8] self.open_positions[symbol]
+        # [NEW] => SIGNALS LOG: meteen vastleggen bij 'open'
+        self.__record_trade_signals(new_trade_id, event_type="open", symbol=symbol, atr_mult=self.pullback_atr_mult)
+
         desired_amount = amount
         self.open_positions[symbol] = {
             "side": side,
@@ -876,11 +886,15 @@ class PullbackAccumulateStrategy:
             #     pos["tp2_done"] = True
             #     pos["trail_active"] = True
 
+            # TRAILING STOP (AANGEPAST) => meebewegen als de prijs verder daalt
             if pos["trail_active"]:
-                trailing_stop_price = entry + (pos["atr"] * self.trail_atr_mult)
+                # Nieuw: als current_price lager is, update 'trail_high' (ja, naam is verwarrend!)
+                if current_price < pos["trail_high"]:
+                    pos["trail_high"] = current_price
+                trailing_stop_price = pos["trail_high"] + (atr_value * self.trail_atr_mult)
                 self.logger.info(
-                    f"[INFO-trailing-SHORT] {symbol}, entry={entry}, "
-                    f"trail_stop={trailing_stop_price:.4f}, current_price={current_price}"
+                    f"[INFO-trailing-SHORT] {symbol}, trail_high={pos['trail_high']}, "
+                    f"trailing_stop_price={trailing_stop_price:.4f}, current_price={current_price}"
                 )
                 if current_price >= trailing_stop_price:
                     self.logger.info(f"[PullbackStrategy] SHORT TrailingStop => close last 50% {symbol}")
@@ -888,6 +902,7 @@ class PullbackAccumulateStrategy:
                                       exec_price=current_price)
                     if symbol in self.open_positions:
                         del self.open_positions[symbol]
+
 
     # (B) Pas _sell_portion aan met exec_price
     def _sell_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
@@ -968,12 +983,14 @@ class PullbackAccumulateStrategy:
                 self.db_manager.update_trade(db_id, {"status": "closed"})  # [ADDED] finalize open row
                 self.logger.info(f"[PullbackStrategy] Trade {db_id} => status=closed in DB")
 
+            # [NEW] => SIGNALS LOG: 'closed' event
+            self.__record_trade_signals(db_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
+
             del self.open_positions[symbol]
         else:
             # [ADDED] => partial => cumulatief fees/pnl updaten in de 'open' trade row
             db_id = pos.get("db_id", None)
             if db_id:
-                # We lezen de huidige fees/pnl uit DB en tellen deze partial toe
                 old_row = self.db_manager.execute_query(
                     "SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,)
                 )
@@ -987,6 +1004,11 @@ class PullbackAccumulateStrategy:
                         "pnl_eur": new_pnl
                     })
                     self.logger.info(f"[PullbackStrategy] updated open trade {db_id} => partial fees={new_fees}, pnl={new_pnl}")
+
+            # [NEW] => partial SIGNALS
+            db_id = pos.get("db_id", None)
+            if db_id:
+                self.__record_trade_signals(db_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
     # (B) Pas _buy_portion aan met exec_price
     def _buy_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
@@ -1009,7 +1031,7 @@ class PullbackAccumulateStrategy:
         min_lot = self._get_min_lot(symbol)
         if amt_to_buy < min_lot:
             self.logger.info(
-            f"[PullbackStrategy] skip partial BUY => amt_to_buy={amt_to_buy:.4f} < minLot={min_lot:.4f}")
+                f"[PullbackStrategy] skip partial BUY => amt_to_buy={amt_to_buy:.4f} < minLot={min_lot:.4f}")
             return
 
         if current_price <= 0:
@@ -1067,6 +1089,11 @@ class PullbackAccumulateStrategy:
             if db_id:
                 self.db_manager.update_trade(db_id, {"status": "closed"})  # [ADDED] finalize open row
                 self.logger.info(f"[PullbackStrategy] Trade {db_id} => status=closed in DB")
+
+            # [NEW] => SIGNALS LOG: 'closed'
+            if db_id:
+                self.__record_trade_signals(db_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
+
             del self.open_positions[symbol]
         else:
             # [ADDED] => partial => cumulatief fees/pnl updaten in de 'open' trade row
@@ -1086,6 +1113,12 @@ class PullbackAccumulateStrategy:
                     })
                     self.logger.info(f"[PullbackStrategy] updated open trade {db_id} => partial fees={new_fees}, pnl={new_pnl}")
 
+            # [NEW] => partial SIGNALS
+            db_id = pos.get("db_id", None)
+            if db_id:
+                self.__record_trade_signals(db_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
+
+
     # ------------------------------------------------
     #   Hulp: equity, ws price
     # ------------------------------------------------
@@ -1100,7 +1133,15 @@ class PullbackAccumulateStrategy:
             latest_price = self._get_latest_price(sym)
             if latest_price > 0:
                 total_pos_value += (amt * latest_price)
-        return eur_balance + total_pos_value
+
+        # (AANPASSING #1) => aparte logging van winst of verlies t.o.v. self.initial_capital:
+        equity_now = eur_balance + total_pos_value
+        profit_val = equity_now - self.initial_capital
+        profit_pct = (profit_val / self.initial_capital * Decimal("100")) if self.initial_capital > 0 else 0
+        self.logger.info(f"[EquityCheck] equity_now={equity_now:.2f}, init_cap={self.initial_capital}, "
+                         f"profit_val={profit_val:.2f}, profit_pct={profit_pct:.2f}%")
+
+        return equity_now
 
     def _get_latest_price(self, symbol: str) -> Decimal:
         """
@@ -1220,6 +1261,7 @@ class PullbackAccumulateStrategy:
         else:
             self.logger.info(f"[update_position_with_fill] {symbol}: partial fill => {pos['filled_amount']}/{desired} @ {fill_price}")
 
+
     def _load_open_positions_from_db(self):
         """
         Leest alle trades met status='open' uit de DB,
@@ -1269,6 +1311,7 @@ class PullbackAccumulateStrategy:
                 f"[PullbackStrategy] Hersteld open pos => {symbol}, side={side}, amt={amount}, entry={entry_price}"
             )
 
+
     # [NEW] Methode om intra-candle exits te checken voor ALLE open posities
     #       (Elke 5-10s vanuit de executor oproepen.)
     def manage_intra_candle_exits(self):
@@ -1285,6 +1328,7 @@ class PullbackAccumulateStrategy:
                 # We hergebruiken _manage_open_position(...) met de atr in pos["atr"]
                 self._manage_open_position(sym, current_price, pos["atr"])
 
+
     def _get_min_lot(self, symbol: str) -> Decimal:
         """
         Vroeger was dit een dummy. Nu vragen we het op bij de client.
@@ -1294,3 +1338,66 @@ class PullbackAccumulateStrategy:
             return Decimal("1.0")
         # Anders:
         return self.data_client.get_min_lot(symbol)
+
+
+    # ------------------------------------------------------------------------
+    # [NEW] Private methode om trade_signals te loggen, incl. MACD/volume/ATR etc.
+    # ------------------------------------------------------------------------
+    def __record_trade_signals(self, trade_id: Optional[int], event_type: str, symbol: str, atr_mult: Decimal):
+        """
+        Schrijft de beslisindicatoren naar de `trade_signals`-tabel (db_manager).
+        - 'trade_id': de ID van de trade in 'trades'
+        - 'event_type': "open", "partial", "closed", ...
+        - 'symbol': b.v. "BTC-EUR"
+        - 'atr_mult': de pullback_atr_mult op moment van beslissing
+        """
+        if not trade_id:
+            return  # als we geen geldige DB-ID hebben, skip
+
+        try:
+            # 1) Haal indicatoren op (bv. RSI(1d,4h,15m), MACD, volume, etc.)
+            #    Dit kun je zelf verfijnen, hier als voorbeeld:
+            df_15m = self._fetch_and_indicator(symbol, "15m", limit=2)
+            vol_15m = float(df_15m["volume"].iloc[-1]) if (not df_15m.empty) else 0.0
+            macd_15m = float(df_15m["macd"].iloc[-1]) if ("macd" in df_15m.columns and not df_15m.empty) else 0.0
+
+            # 2) RSI(1d,4h,...) als voorbeeld
+            df_daily = self._fetch_and_indicator(symbol, "1d", limit=2)
+            rsi_daily = float(df_daily["rsi"].iloc[-1]) if (not df_daily.empty) else 0.0
+
+            df_4h = self._fetch_and_indicator(symbol, "4h", limit=2)
+            rsi_4h = float(df_4h["rsi"].iloc[-1]) if (not df_4h.empty) else 0.0
+
+            # 3) Depth score
+            depth_instant = self._analyze_depth_trend_instant(symbol)
+
+            # 4) ML
+            ml_val = 0.0
+            if self.ml_model_enabled and df_daily.shape[0] > 0 and (self.ml_engine is not None):
+                ml_val = float(self._ml_predict_signal(df_daily))
+
+            # 5) Opslaan in 'trade_signals'
+            signals_data = {
+                "trade_id": trade_id,
+                "event_type": event_type,
+                "symbol": symbol,
+                "strategy_name": "pullback",
+                "rsi_daily": rsi_daily,
+                "rsi_h4": rsi_4h,
+                "rsi_15m": float(df_15m["rsi"].iloc[-1]) if (not df_15m.empty) else 0.0,
+                "macd_val": macd_15m,
+                "macd_signal": 0.0,  # kun je nog apart uitlezen als je wilt
+                "atr_value": float(atr_mult),   # hier loggen we pullback_atr_mult
+                "depth_score": depth_instant,
+                "ml_signal": ml_val,
+                "timestamp": int(time.time() * 1000)
+            }
+
+            # volume => extra kolom als je wilt
+            # (als je in je DB-kolommen 'volume_15m' wilt, voeg je dat toe)
+            # bijv. signals_data["volume_15m"] = vol_15m
+
+            self.db_manager.save_trade_signals(signals_data)
+            self.logger.debug(f"[__record_trade_signals] trade_id={trade_id}, event={event_type}, symbol={symbol}")
+        except Exception as e:
+            self.logger.error(f"[__record_trade_signals] Fout: {e}")

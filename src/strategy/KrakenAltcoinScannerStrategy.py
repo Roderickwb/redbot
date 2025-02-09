@@ -155,7 +155,8 @@ class KrakenAltcoinScannerStrategy:
             return
 
         # Filter excludes e.d.
-        self.logger.debug(f"[AltcoinScanner] Found {len(dynamic_symbols)} EUR pairs. Filtering exclude/min_baseVol etc.")
+        self.logger.debug(
+            f"[AltcoinScanner] Found {len(dynamic_symbols)} EUR pairs. Filtering exclude/min_baseVol etc.")
         tradable_symbols = []
         for sym in dynamic_symbols:
             if sym in self.exclude_symbols:
@@ -164,7 +165,8 @@ class KrakenAltcoinScannerStrategy:
             # Eventueel extra checks
             tradable_symbols.append(sym)
 
-        self.logger.info(f"[KrakenAltcoinScanner] scanning {len(tradable_symbols)} symbols, timeframe={self.timeframe}.")
+        self.logger.info(
+            f"[KrakenAltcoinScanner] scanning {len(tradable_symbols)} symbols, timeframe={self.timeframe}.")
 
         # 2) Voor elk symbool => check momentum
         for symbol in tradable_symbols:
@@ -264,6 +266,18 @@ class KrakenAltcoinScannerStrategy:
             "strategy_name": "scanner"
         }
         self.db_manager.save_trade(trade_data)
+
+        # [SIGNALS-ADDED] -----------------------------------------------------
+        # We roepen _record_trade_signals aan om een extra rij in 'trade_signals' te bewaren.
+        new_trade_id = self.db_manager.cursor.lastrowid
+        self._record_trade_signals(
+            trade_id=new_trade_id,
+            event_type="open",
+            symbol=symbol,
+            current_price=current_price,
+            note="Scanner => Momentum LONG open"
+        )
+        # ---------------------------------------------------------------------
 
         # Simple SL
         sl_price = current_price * (Decimal("1") - (self.sl_pct / Decimal("100")))
@@ -384,6 +398,17 @@ class KrakenAltcoinScannerStrategy:
         }
         self.db_manager.save_trade(trade_data)
 
+        # [SIGNALS-ADDED] -----------------------------------------------------
+        closed_trade_id = self.db_manager.cursor.lastrowid
+        self._record_trade_signals(
+            trade_id=closed_trade_id,
+            event_type="closed",
+            symbol=symbol,
+            current_price=current_price,
+            note="Scanner => Momentum LONG closed"
+        )
+        # ---------------------------------------------------------------------
+
     # =================================================
     # Helpers
     # =================================================
@@ -393,7 +418,7 @@ class KrakenAltcoinScannerStrategy:
         interval: "1m", "5m", "15m", "60m", etc => we mappen even naar int
         """
         self.logger.debug(f"[AltcoinScanner] _fetch_candles => symbol={symbol}, interval={interval}, limit={limit}")
-        int_map = {"1m":1,"5m":5,"15m":15,"30m":30,"60m":60,"1h":60,"4h":240,"1d":1440}
+        int_map = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "60m": 60, "1h": 60, "4h": 240, "1d": 1440}
         iv = int_map.get(interval, 15)
         df = self._get_kraken_ohlc(symbol, iv, limit)
         if df.empty:
@@ -408,7 +433,7 @@ class KrakenAltcoinScannerStrategy:
         Roept /0/public/OHLC op, mapped => pd.DataFrame(columns=[timestamp, open, high, low, close, volume])
         + skipt evt. "rare" of "corrupt" rows via try/except
         """
-        pair_rest = symbol.replace("-","/")
+        pair_rest = symbol.replace("-", "/")
         url = "https://api.kraken.com/0/public/OHLC"
         params = {"pair": pair_rest, "interval": iv_int}
 
@@ -436,12 +461,12 @@ class KrakenAltcoinScannerStrategy:
                 if len(row) < 8:
                     continue
                 try:
-                    t_s       = float(row[0])
-                    open_val  = float(row[1])
-                    high_val  = float(row[2])
-                    low_val   = float(row[3])
+                    t_s = float(row[0])
+                    open_val = float(row[1])
+                    high_val = float(row[2])
+                    low_val = float(row[3])
                     close_val = float(row[4])
-                    vol_val   = float(row[6])
+                    vol_val = float(row[6])
                 except Exception as e:
                     self.logger.error(f"[AltcoinScanner] parse-error => symbol={symbol}, row={row}, err={e}")
                     continue  # skip dit ene record
@@ -464,7 +489,7 @@ class KrakenAltcoinScannerStrategy:
 
             # Extra safety: to_numeric & dropna
             # (Mocht er toch nog iets corrupt zijn)
-            cols = ["open","high","low","close","volume"]
+            cols = ["open", "high", "low", "close", "volume"]
             for c in cols:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
             df.dropna(subset=cols, inplace=True)
@@ -475,7 +500,7 @@ class KrakenAltcoinScannerStrategy:
             self.logger.error(f"[AltcoinScanner] _get_kraken_ohlc error => {e}")
             return pd.DataFrame()
 
-    def _fetch_all_eur_pairs(self)->list:
+    def _fetch_all_eur_pairs(self) -> list:
         """
         Haalt alle wsname die op /EUR eindigt, bijv. XDG/EUR => symbol = 'XDG-EUR'
         return list of local symbols
@@ -489,11 +514,11 @@ class KrakenAltcoinScannerStrategy:
                 self.logger.debug(f"[AltcoinScanner] _fetch_all_eur_pairs => error => {j['error']}")
                 return []
             result = j.get("result", {})
-            out=[]
+            out = []
             for restname, info in result.items():
-                ws = info.get("wsname","")
+                ws = info.get("wsname", "")
                 if ws.endswith("/EUR"):
-                    sym = ws.replace("/","-")
+                    sym = ws.replace("/", "-")
                     out.append(sym)
             return out
         except Exception as ex:
@@ -522,9 +547,9 @@ class KrakenAltcoinScannerStrategy:
         if not self.client:
             return self.initial_capital
         bals = self.client.get_balance()
-        return Decimal(str(bals.get("EUR","0")))
+        return Decimal(str(bals.get("EUR", "0")))
 
-    def _get_equity_estimate(self)->Decimal:
+    def _get_equity_estimate(self) -> Decimal:
         if not self.client:
             return self.initial_capital
         eur_bal = self._get_eur_balance()
@@ -534,12 +559,13 @@ class KrakenAltcoinScannerStrategy:
             total_val += (pos["amount"] * px)
         return eur_bal + total_val
 
-    def _can_open_new_position(self)->bool:
+    def _can_open_new_position(self) -> bool:
         tot_eq = self._get_equity_estimate()
         bal = self._get_eur_balance()
         invested = tot_eq - bal
         ratio = invested / tot_eq if tot_eq > 0 else Decimal("0")
-        self.logger.debug(f"[AltcoinScanner] _can_open_new_position => ratio={ratio:.2f}, max={self.max_positions_equity_pct}")
+        self.logger.debug(
+            f"[AltcoinScanner] _can_open_new_position => ratio={ratio:.2f}, max={self.max_positions_equity_pct}")
         return ratio < self.max_positions_equity_pct
 
     # [NEW] Methode om intra-candle exits te checken voor ALLE open posities
@@ -564,3 +590,69 @@ class KrakenAltcoinScannerStrategy:
         """
         df = self._fetch_candles(symbol, interval, limit=limit)
         return df
+
+    # [SIGNALS-ADDED] =========================================================
+    def _record_trade_signals(self, trade_id: int, event_type: str, symbol: str,
+                              current_price: Decimal, note: str = ""):
+        """
+        Legt een rij in 'trade_signals' vast met indicatoren die relevant zijn
+        voor deze altcoin-scanner, zoals:
+         - de 'price_change_pct' (over self.lookback in de timeframe self.timeframe)
+         - de 'volume_factor' (recent/avg)
+         - meltdown_active? (optioneel)
+         - current_price op moment van open/close
+         - etc.
+
+        :param trade_id:    ID van de net aangemaakte trade (in 'trades' tabel)
+        :param event_type:  "open", "closed", ...
+        :param symbol:      De coin, bv. "DOGE-EUR"
+        :param current_price: Laatste prijs (Decimal)
+        :param note:        optioneel extra
+        """
+        try:
+            # Haal nogmaals de candles => timeframe + lookback
+            # om 'price_change' en 'volume_factor' te bepalen
+            df = self._fetch_candles(symbol, self.timeframe, limit=(self.lookback + 5))
+            price_change_pct = 0.0
+            vol_factor = 0.0
+
+            if not df.empty and len(df) >= self.lookback:
+                old_close = Decimal(str(df["close"].iloc[-self.lookback]))
+                new_close = Decimal(str(df["close"].iloc[-1]))
+                if old_close > 0:
+                    price_change_pct = float((new_close - old_close) / old_close * Decimal("100"))
+
+                recent_vol = Decimal(str(df["volume"].iloc[-1]))
+                avg_vol = Decimal(str(df["volume"].tail(self.lookback).mean())) if self.lookback > 0 else Decimal("0")
+                if avg_vol > 0:
+                    vol_factor = float(recent_vol / avg_vol)
+
+            meltdown_active = self.meltdown_manager.meltdown_active
+
+            signals_data = {"trade_id": trade_id, "event_type": event_type, "symbol": symbol,
+                            "strategy_name": "scanner", "rsi_daily": price_change_pct, "rsi_h4": vol_factor,
+                            "rsi_15m": None, "macd_val": None, "macd_signal": None, "atr_value": None,
+                            "depth_score": float(0), "ml_signal": float(0), "timestamp": int(time.time() * 1000)}
+
+            # We slaan de momentum-getallen op in 2 'vrije' velden (bijv. rsi_daily, rsi_h4) of in extra
+            # Voor demonstratie doen we het zo:
+
+            # Als je meltdown_active wilt loggen, kun je bijv. ml_signal of depth_score ermee overschrijven:
+            if meltdown_active:
+                signals_data["depth_score"] = float(999)  # dummy => meltdown gaande
+
+            # Desgewenst kun je 'current_price' kwijt in bijv. macd_val:
+            signals_data["macd_val"] = float(current_price)
+
+            # Wil je het commentaar/note ergens opslaan? (Niet in kolommen gedefinieerd, dus laten we het hier.)
+            # signals_data["macd_signal"] = 0.0  # not used
+
+            # tenslotte
+            self.db_manager.save_trade_signals(signals_data)
+            self.logger.info(
+                f"[_record_trade_signals] trade_id={trade_id}, event={event_type}, symbol={symbol}, note={note}"
+            )
+
+        except Exception as e:
+            self.logger.error(f"[_record_trade_signals] Fout: {e}")
+    # =========================================================================

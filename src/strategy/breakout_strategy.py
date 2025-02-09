@@ -364,6 +364,36 @@ class BreakoutStrategy:
         self.open_positions[symbol] = pos_info
         self.logger.info(f"[Breakout] OPEN {side.upper()} {symbol}@{price:.2f}, SL={sl_price:.2f}")
 
+        # ---------------------------------------------------
+        # [NIEUW] => log "open" signals in trade_signals table
+        # ---------------------------------------------------
+        # We maken net als bij de andere strategieën een "trade row".
+        # In de code hierboven hebben we géén ID direct. We loggen in 'trades'
+        #   via "save_trade(...)". Dat doen we normaliter in je code,
+        #   maar zie hier is het (nog) niet zichtbaar. We imiteren dat even:
+        trade_data = {
+            "timestamp": int(time.time() * 1000),
+            "symbol": symbol,
+            "side": side,
+            "price": float(price),
+            "amount": float(amount),
+            "position_id": None,   # breakouts hebben we niet expliciet
+            "position_type": side if side in ("buy","sell") else None,
+            "status": "open",
+            "pnl_eur": 0.0,
+            "fees": 0.0,
+            "trade_cost": float(amount * price),
+            "strategy_name": "breakout"
+        }
+        self.db_manager.save_trade(trade_data)
+
+        # Om het ID te weten (zodat we in 'trade_signals' de foreign key (trade_id) kunnen zetten),
+        #   pakken we de laatst ingevoerde rowid:
+        new_trade_id = self.db_manager.cursor.lastrowid
+
+        # signaal loggen:
+        self._record_trade_signals(trade_id=new_trade_id, event_type="open", symbol=symbol)
+
     def _manage_position(self, symbol: str):
         pos = self.open_positions.get(symbol)
         if not pos:
@@ -461,27 +491,52 @@ class BreakoutStrategy:
         del self.open_positions[symbol]
         self.logger.info(f"[Breakout] Positie {symbol} volledig gesloten.")
 
-    #def _take_partial_profit(self, symbol: str, qty: Decimal, exit_side: str):
-    #    """
-    #    exit_side="sell" => partial exit (LONG)
-    #    exit_side="buy"  => partial exit (SHORT)
-    #    """
-    #    if symbol not in self.open_positions:
-    #        return
+        # def _take_partial_profit(self, symbol: str, qty: Decimal, exit_side: str):
+        #    exit_side="sell" => partial exit (LONG)
+        #    exit_side="buy"  => partial exit (SHORT)
+        #    """
+        #    if symbol not in self.open_positions:
+        #        return
 
-    #    pos = self.open_positions[symbol]
-    #    current_price = self._get_latest_price(symbol)
+        #    pos = self.open_positions[symbol]
+        #    current_price = self._get_latest_price(symbol)
 
-    #    if self.client:
-    #        self.client.place_order(exit_side, symbol, float(qty), order_type="market")
-    #        self.logger.info(f"[LIVE] PARTIAL EXIT => {exit_side.upper()} {qty:.4f} {symbol} @ ~{current_price:.2f}")
-    #    else:
-    #        self.logger.info(f"[Paper] PARTIAL EXIT => {exit_side.upper()} {qty:.4f} {symbol} @ ~{current_price:.2f}")
+        #    if self.client:
+        #        self.client.place_order(exit_side, symbol, float(qty), order_type="market")
+        #        self.logger.info(f"[LIVE] PARTIAL EXIT => {exit_side.upper()} {qty:.4f} {symbol} @ ~{current_price:.2f}")
+        #    else:
+        #        self.logger.info(f"[Paper] PARTIAL EXIT => {exit_side.upper()} {qty:.4f} {symbol} @ ~{current_price:.2f}")
 
-    #    pos["amount"] -= qty
-    #    if pos["amount"] <= Decimal("0"):
-    #        self.logger.info(f"[Breakout] Positie uitgeput => {symbol} closed")
-    #        del self.open_positions[symbol]
+        #    pos["amount"] -= qty
+        #    if pos["amount"] <= Decimal("0"):
+        #        self.logger.info(f"[Breakout] Positie uitgeput => {symbol} closed")
+        #        del self.open_positions[symbol]
+
+        # -----------------------------------------
+        # [NIEUW] => signals loggen (event='closed')
+        # -----------------------------------------
+        # Stel dat je in je 'trades' net ook een close-row opslaat (met status='closed'),
+        # dan kunnen we hier het 'trade_id' pakken (als je dat trackte).
+        # Hier doen we het net als bij open_position: we maken ad-hoc wat info.
+        # Normaliter heb je 'db_manager.save_trade(...)' voor de close, dus daarna:
+        trade_data = {
+            "timestamp": int(time.time() * 1000),
+            "symbol": symbol,
+            "side": "sell" if side=="buy" else "buy",  # tegengestelde order
+            "price": float(self._get_latest_price(symbol)),
+            "amount": float(amt),
+            "position_id": None,
+            "position_type": side,
+            "status": "closed",
+            "pnl_eur": 0.0,
+            "fees": 0.0,
+            "trade_cost": float(amt * self._get_latest_price(symbol)),
+            "strategy_name": "breakout"
+        }
+        self.db_manager.save_trade(trade_data)
+
+        closed_trade_id = self.db_manager.cursor.lastrowid
+        self._record_trade_signals(trade_id=closed_trade_id, event_type="closed", symbol=symbol)
 
     def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
         """
@@ -612,3 +667,64 @@ class BreakoutStrategy:
             curr_price = self._get_latest_price(sym)
             if curr_price > 0:
                 self._manage_position(sym)
+
+    # --------------------------------------------------------------------------
+    # [NEW] Hulpmethode voor het loggen van indicatoren in 'trade_signals'
+    # --------------------------------------------------------------------------
+    def _record_trade_signals(self, trade_id: int, event_type: str, symbol: str):
+        """
+        Logt de beslisindicatoren (bv. RSI daily/h4, MACD op 4h, volume op 4h)
+        in de 'trade_signals' tabel via db_manager.save_trade_signals(...).
+
+        :param trade_id:   ID van de zojuist weggeschreven trade-row in 'trades'
+        :param event_type: "open", "closed", ...
+        :param symbol:     "BTC-EUR"
+        """
+        try:
+            # 1) Haal daily RSI
+            df_daily = self._fetch_and_indicator(symbol, self.daily_timeframe, limit=60)
+            rsi_daily = float(df_daily["rsi"].iloc[-1]) if (not df_daily.empty) else None
+
+            # 2) Haal 4h => RSI + MACD + volume
+            df_4h = self._fetch_and_indicator(symbol, self.main_timeframe, limit=60)
+            if not df_4h.empty:
+                rsi_4h = float(df_4h["rsi"].iloc[-1])
+                macd_val = float(df_4h["macd"].iloc[-1]) if "macd" in df_4h.columns else 0.0
+                macd_sig = float(df_4h["macd_signal"].iloc[-1]) if "macd_signal" in df_4h.columns else 0.0
+                vol_4h = float(df_4h["volume"].iloc[-1])
+            else:
+                rsi_4h = None
+                macd_val = 0.0
+                macd_sig = 0.0
+                vol_4h = 0.0
+
+            meltdown_active = self.meltdown_manager.meltdown_active
+
+            # Bouw dict
+            signals_data = {
+                "trade_id": trade_id,
+                "event_type": event_type,
+                "symbol": symbol,
+                "strategy_name": "breakout",
+                "rsi_daily": rsi_daily,
+                "rsi_h4": rsi_4h,
+                "rsi_15m": None,        # in breakout niet gebruikt
+                "macd_val": macd_val,
+                "macd_signal": macd_sig,
+                "atr_value": None,      # evt. kun je hier 4h-ATR opslaan
+                "depth_score": 0.0,     # breakout gebruikt geen depth-check
+                "ml_signal": 0.0,       # ML niet geactiveerd hier
+                "timestamp": int(time.time() * 1000),
+                # evt. meltdown_active=meltdown_active, ...
+                #  volume => we loggen in macd_val/macd_signal, of apart 'vol_4h'
+            }
+
+            # we kunnen 'volume' in 4h in een eigen kolom opslaan (bvb. 'extra_float1'):
+            # of je past je schema van trade_signals-tabel aan om 'volume' direct op te nemen.
+            # Stel dat je extra kolom 'volume_4h' hebt, dan:
+            # signals_data["volume_4h"] = vol_4h
+
+            self.db_manager.save_trade_signals(signals_data)
+            self.logger.info(f"[BreakoutStrategy] _record_trade_signals => trade_id={trade_id}, event={event_type}")
+        except Exception as e:
+            self.logger.error(f"[BreakoutStrategy] _record_trade_signals fout: {e}")

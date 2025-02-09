@@ -99,6 +99,10 @@ class DatabaseManager:
     # Vernieuwde concurrency-/transactielogica met aparte methodes voor read/write
     # --------------------------------------------------------------------------
 
+    def _db_lock_acquire(self):
+        # (Als je een hulpfunctie wilt, nu niet echt nodig.)
+        pass
+
     def _execute_read_query(self, query, params=(), retries=10, delay=0.2):
         """
         Voert een read-only query uit (SELECT/PRAGMA), zonder BEGIN/COMMIT.
@@ -268,6 +272,9 @@ class DatabaseManager:
 
             self.create_indicators_bitvavo_table()
             self.create_indicators_kraken_table()
+
+            # [NEW] => Ook onze nieuwe table 'trade_signals' aanmaken
+            self.create_trade_signals_table()
 
             logger.info("[create_tables] Alle (oude en nieuwe) tabellen klaar of bijgewerkt.")
         except Exception as e:
@@ -819,7 +826,6 @@ class DatabaseManager:
             fee_amt = fill_data.get("fee_amount", 0.0)
             ts = fill_data.get("timestamp", get_current_utc_timestamp_ms())
             # Oorspronkelijke default "Bitvavo" => vervangen door "Kraken"
-            # exch = fill_data.get("exchange", "Bitvavo")
             exch = fill_data.get("exchange", "Kraken")
 
             params = (order_id, market, side, f_amt, f_price, fee_amt, ts, ts, exch)
@@ -1582,7 +1588,7 @@ class DatabaseManager:
             logger.error(f"[update_trade] Fout: {e}")
 
     #
-    # Extra: de fills-tabel is NIET hetzelfde als trades. Je kunt in je client-code
+    # Extra: de fills-tabel is NIET hetzelfde als trades. Je kunt in je client.py
     # `_handle_fill_update(...)` (Bitvavo) of `_handle_own_trade(...)` (Kraken) aanroepen
     # en direct `save_fill(...)` gebruiken.
     #
@@ -2084,3 +2090,107 @@ class DatabaseManager:
         # Re-use je bestaande trades-logica:
         self.save_trade(trade_data)
         logger.info(f"[save_order] order_data gemapt -> save_trade: {order_data}")
+
+    # --------------------------------------------------------------------------
+    # [NEW] => Toevoegen van trade_signals-table (ML beslisvariabelen)
+    # --------------------------------------------------------------------------
+
+    def create_trade_signals_table(self):
+        """
+        Maakt (indien niet bestaat) de 'trade_signals' tabel aan,
+        waarin we indicatoren/beslisvariabelen per trade-event (open/partial/close) kunnen opslaan.
+
+        Kolommen (voorbeeld):
+          id, trade_id, event_type, symbol, strategy_name,
+          rsi_daily, rsi_h4, rsi_15m, macd_val, macd_signal,
+          atr_value, depth_score, ml_signal,
+          timestamp (ms)
+        FOREIGN KEY(trade_id) REFERENCES trades(id)
+        """
+        try:
+            sql = """
+            CREATE TABLE IF NOT EXISTS trade_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id INTEGER NOT NULL,
+                event_type TEXT,
+                symbol TEXT,
+                strategy_name TEXT,
+                rsi_daily REAL,
+                rsi_h4 REAL,
+                rsi_15m REAL,
+                macd_val REAL,
+                macd_signal REAL,
+                atr_value REAL,
+                depth_score REAL,
+                ml_signal REAL,
+                timestamp INTEGER,
+                FOREIGN KEY(trade_id) REFERENCES trades(id)
+            );
+            """
+            self.cursor.execute(sql)
+            self.connection.commit()
+            logger.info("[create_trade_signals_table] Tabel 'trade_signals' aangemaakt/bestond al.")
+        except Exception as e:
+            logger.error(f"[create_trade_signals_table] Fout: {e}")
+
+    def save_trade_signals(self, signals_data: dict):
+        """
+        Slaat een rij op in 'trade_signals' met diverse indicatoren + trade_id.
+
+        'signals_data' moet minstens 'trade_id' hebben. Overige velden optioneel:
+         {
+           "trade_id": 123,              # FOREIGN KEY naar 'trades'.id
+           "event_type": "open"/"partial"/"close",
+           "symbol": "BTC-EUR",
+           "strategy_name": "pullback",
+           "rsi_daily": ...,
+           "rsi_h4": ...,
+           "rsi_15m": ...,
+           "macd_val": ...,
+           "macd_signal": ...,
+           "atr_value": ...,
+           "depth_score": ...,
+           "ml_signal": ...,
+           "timestamp": int(time.time()*1000)
+         }
+        """
+        try:
+            sql = """
+            INSERT INTO trade_signals (
+              trade_id,
+              event_type,
+              symbol,
+              strategy_name,
+              rsi_daily,
+              rsi_h4,
+              rsi_15m,
+              macd_val,
+              macd_signal,
+              atr_value,
+              depth_score,
+              ml_signal,
+              timestamp
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            vals = (
+                signals_data["trade_id"],
+                signals_data.get("event_type", None),
+                signals_data.get("symbol", None),
+                signals_data.get("strategy_name", None),
+                signals_data.get("rsi_daily", None),
+                signals_data.get("rsi_h4", None),
+                signals_data.get("rsi_15m", None),
+                signals_data.get("macd_val", None),
+                signals_data.get("macd_signal", None),
+                signals_data.get("atr_value", None),
+                signals_data.get("depth_score", None),
+                signals_data.get("ml_signal", None),
+                signals_data.get("timestamp", None)
+            )
+
+            self.execute_query(sql, vals)
+            inserted_id = self.cursor.lastrowid
+            logger.info(f"[save_trade_signals] new row id={inserted_id}, trade_id={signals_data['trade_id']}")
+        except Exception as e:
+            logger.error(f"[save_trade_signals] Fout: {e}")

@@ -361,6 +361,7 @@ class PullbackAccumulateStrategy:
                         and macd_signal_score <= self.macd_bull_threshold
                         and ml_signal >= 0
                         and depth_score >= self.depth_threshold_bull):
+                    self.logger.info(f"### EXTRA LOG ### [OPEN LONG] {symbol} at {current_price}")
                     self._open_position(symbol, side="buy", current_price=current_price,
                                         atr_value=atr_value, extra_invest=invest_extra_flag)
                     if invest_extra_flag:
@@ -376,6 +377,7 @@ class PullbackAccumulateStrategy:
                         and macd_signal_score >= self.macd_bear_threshold
                         and ml_signal <= 0
                         and depth_score <= self.depth_threshold_bear):
+                    self.logger.info(f"### EXTRA LOG ### [OPEN SHORT] {symbol} at {current_price}")
                     self._open_position(symbol, side="sell", current_price=current_price,
                                         atr_value=atr_value, extra_invest=invest_extra_flag)
                     if invest_extra_flag:
@@ -399,60 +401,6 @@ class PullbackAccumulateStrategy:
             return "bear"
         else:
             return "range"
-
-
-    # ------------------------------------------------
-    #   FAIL-SAFES
-    # ------------------------------------------------
-    # def _check_fail_safes(self, symbol: str) -> bool:
-    #     if self._daily_loss_exceeded():
-    #         return True
-    #     if self._flash_crash_detected(symbol):
-    #         return True
-    #     return False
-
-    # def _daily_loss_exceeded(self) -> bool:
-    #    if not self.order_client:
-    #        return False
-
-    #    bal = self.order_client.get_balance()
-    #    eur_balance = Decimal(str(bal.get("EUR", "100")))
-    #   drop_pct = (self.initial_capital - eur_balance) / self.initial_capital * Decimal("100")
-
-    #   if drop_pct >= self.max_daily_loss_pct:
-    #        self.logger.warning(f"[FailSafe] daily loss {drop_pct:.2f}% >= {self.max_daily_loss_pct}% => STOP.")
-    #        return True
-    #    return False
-
-    def _flash_crash_detected(self, symbol: str) -> bool:
-        """
-        Checkt of er een flash-crash is in self.flash_crash_tf met 3 candles.
-        """
-        df_fc = self._fetch_and_indicator(symbol, self.flash_crash_tf, limit=3)
-        if df_fc.empty or len(df_fc) < 3:
-            return False
-
-        first_close_val = df_fc["close"].iloc[0]
-        last_close_val = df_fc["close"].iloc[-1]
-        if pd.isna(first_close_val) or pd.isna(last_close_val):
-            self.logger.warning("[FailSafe] flash_crash: close-waarde is NaN => skip.")
-            return False
-
-        try:
-            first_dec = Decimal(str(first_close_val))
-            last_dec = Decimal(str(last_close_val))
-        except InvalidOperation:
-            return False
-
-        if first_dec == 0:
-            return False
-
-        drop_pct = (first_dec - last_dec) / first_dec * Decimal("100")
-        if drop_pct >= self.flash_crash_drop_pct:
-            self.logger.warning(f"[FailSafe] Flash crash => drop {drop_pct:.2f}% on {self.flash_crash_tf}")
-            return True
-        return False
-
 
     # ------------------------------------------------
     #   DATA & INDICATORS
@@ -692,6 +640,12 @@ class PullbackAccumulateStrategy:
         self.logger.info(
             f"[PullbackStrategy] OPEN => side={side}, {symbol}@{current_price}, extra_invest={extra_invest}")
 
+        # ### EXTRA LOGS ###
+        if side == "sell":
+            self.logger.info(f"### EXTRA LOG ### [OPEN SHORT] {symbol} at {current_price}")
+        else:
+            self.logger.info(f"### EXTRA LOG ### [OPEN LONG] {symbol} at {current_price}")
+
         # [2] Bepaal EUR balance
         eur_balance = Decimal("100")
         if self.order_client:
@@ -904,14 +858,27 @@ class PullbackAccumulateStrategy:
                         del self.open_positions[symbol]
 
 
-    # (B) Pas _sell_portion aan met exec_price
+    # (B) Pas _sell_portion aan met exec_price + leftover-check
     def _sell_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
         """
         Een deel van een LONG-positie verkopen.
         """
+        # 1) Bepaal hoeveel je wilt verkopen
         amt_to_sell = total_amt * portion
-        # Hier extra check:
+
+        # 2) Controleer leftover als we niet de volle mep sluiten
+        leftover_after_sell = total_amt - amt_to_sell
         ml = self._get_min_lot(symbol)
+
+        # Als leftover_after_sell > 0 maar kleiner dan minLot, forceer hele closure
+        if portion < 1 and leftover_after_sell > 0 and leftover_after_sell < ml:
+            self.logger.info(
+                f"[sell_portion] leftover {leftover_after_sell} < minLot={ml}, force entire close => portion=1.0"
+            )
+            amt_to_sell = total_amt
+            portion = Decimal("1.0")
+
+        # 3) Check of amt_to_sell < minLot => dan skip
         if amt_to_sell < ml:
             self.logger.info(f"[sell_portion] skip partial => amt_to_sell={amt_to_sell} < minLot={ml}")
             return
@@ -973,6 +940,7 @@ class PullbackAccumulateStrategy:
                 f"[Paper] SELL {symbol} => {portion * 100:.1f}%, amt={amt_to_sell:.4f}, reason={reason}, (fees={fees:.2f}, pnl={realized_pnl:.2f})"
             )
 
+        # 4) Werk de positie in memory bij
         self.open_positions[symbol]["amount"] -= amt_to_sell
         if self.open_positions[symbol]["amount"] <= Decimal("0"):
             self.logger.info(f"[PullbackStrategy] Full position closed => {symbol}")
@@ -1010,12 +978,32 @@ class PullbackAccumulateStrategy:
             if db_id:
                 self.__record_trade_signals(db_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
-    # (B) Pas _buy_portion aan met exec_price
+    # (B) Pas _buy_portion aan met exec_price + leftover-check
     def _buy_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
         """
         Een deel van een SHORT-positie sluiten => buy
         """
+        # ### EXTRA LOG
+        self.logger.info(f"### BUY portion => closing SHORT? reason={reason} symbol={symbol}")
+
+        # 1) Bepaal hoeveel je wilt kopen
         amt_to_buy = total_amt * portion
+
+        # 2) Controleer leftover
+        leftover_after_buy = total_amt - amt_to_buy
+        min_lot = self._get_min_lot(symbol)
+        if portion < 1 and leftover_after_buy > 0 and leftover_after_buy < min_lot:
+            self.logger.info(
+                f"[buy_portion] leftover {leftover_after_buy} < minLot={min_lot}, force entire close => portion=1.0"
+            )
+            amt_to_buy = total_amt
+            portion = Decimal("1.0")
+
+        if amt_to_buy < min_lot:
+            self.logger.info(
+                f"[PullbackStrategy] skip partial BUY => amt_to_buy={amt_to_buy:.4f} < minLot={min_lot:.4f}")
+            return
+
         pos = self.open_positions[symbol]
         entry_price = pos["entry_price"]
         position_id = pos["position_id"]
@@ -1026,13 +1014,6 @@ class PullbackAccumulateStrategy:
             current_price = exec_price
         else:
             current_price = self._get_ws_price(symbol)
-
-        # === Min-lot-check ===
-        min_lot = self._get_min_lot(symbol)
-        if amt_to_buy < min_lot:
-            self.logger.info(
-                f"[PullbackStrategy] skip partial BUY => amt_to_buy={amt_to_buy:.4f} < minLot={min_lot:.4f}")
-            return
 
         if current_price <= 0:
             self.logger.warning(f"[PullbackStrategy] _buy_portion => price=0 => skip BUY {symbol}")

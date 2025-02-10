@@ -33,6 +33,10 @@ cat .env
 redbot   5678  0.0  0.1  ... grep python # betekend dat die al gestopt is
 kill 1234 # pip staat hierboen achter de 0.1 op de ....
 
+# in SQlite verwijder alle trades en of trade_signals
+DELETE FROM trades;
+DELETE FROM trade_signals;
+
 
 
 # We gaan drie smaken onderscheiden:

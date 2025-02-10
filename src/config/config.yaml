@@ -35,10 +35,10 @@ intervals:
 ### PULLBACK_ACCUMULATE_STRATEGY ###
 pullback_accumulate_strategy:
   # STAP 1 DE GROTE TREND: CHECK DIRECTION
-  daily_bull_rsi: 55
-  daily_bear_rsi: 45
-  h4_bull_rsi: 55
-  h4_bear_rsi: 45
+  daily_bull_rsi: 50
+  daily_bear_rsi: 50
+  h4_bull_rsi: 50
+  h4_bear_rsi: 50
 
   # Deze bestonden al (voorbeeld) gaat om de pullback 15M candle:
   rsi_bull_threshold: 40   # RSI <= 40 => oversold => bullisch pullback
@@ -48,11 +48,11 @@ pullback_accumulate_strategy:
   depth_threshold_bull: -0.3 # orderboek-analyse om te checken of er voldoende volume is om een trend te ondersteuen idealiter > 0)
   depth_threshold_bear: 0.3
 
-  macd_bull_threshold: 0  # minder streng is -1
-  macd_bear_threshold: 0   # minder stregn is +1
+  macd_bull_threshold: -1  # minder streng is -1
+  macd_bear_threshold: 1   # minder stregn is +1
 
   # bepaald hoever de pullback van de weerstand of support ,oet bewegen om in te stappen = pullback = true
-  pullback_atr_mult: 1.5
+  pullback_atr_mult: 0.5 # normaal 1.5
 
   ml_model_enabled: true
 
@@ -161,22 +161,36 @@ altcoin_scanner_strategy:
   # Scanner-instellingen
   timeframe: "15m"
   lookback: 6
-  price_change_threshold: 5.0
-  volume_threshold_factor: 1.5
+
+  # PRICELIMIT: pump_min/max => in LAATSTE 'pump_lookback_candles'
+  pump_min_pct: 5
+  pump_max_pct: 10
+  pump_lookback_candles: 3   # 4 * 15m => 60min
+
+  # RSI
+  rsi_15m_threshold: 70      # RSI(15m) moet < 70
+
+  # ATR:
+  atr_window: 14
+  sl_atr_mult: 1.5           # bv. 1.5 => SL = current_price - (1.5 * ATR)
+
+  # volume
+  volume_threshold_factor: 2.0
   min_base_volume: 5000
 
-  # Positie-management
-  max_positions_equity_pct: "0.50"
+  position_size_pct: 0.03
+  max_positions_equity_pct: 0.50
 
+  # trailing
+  trailing_enabled: true
+  trailing_pct: 2.0
+  trailing_atr_mult: 1.0
+
+  # positie management
   min_lot_multiplier: 1.1  # min. 2.1× minLot
   max_position_pct: 0.1   # max 5% van je capital
   max_position_eur: 15  # of direct een vast bedrag
 
-  sl_pct: 2.0               # 2% SL => full close
-  trailing_pct: 3.0         # 3% trailing => full close
-  # geen partial (of partial_tp_enabled: false)
-
-  trailing_enabled: true
   initial_capital: 250
 
 ### MELTDOWN MANAGER ###

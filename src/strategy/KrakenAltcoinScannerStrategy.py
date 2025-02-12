@@ -168,6 +168,14 @@ class KrakenAltcoinScannerStrategy:
             self.logger.warning("[AltcoinScanner] geen dynamische EUR-paren => stop.")
             return
 
+        # [NIEUW] Filter None/lege symbolen eruit
+        valid_symbols = []
+        for i, sym in enumerate(dynamic_symbols):
+            if not sym:  # sym is None of ""
+                self.logger.warning(f"[KrakenAltcoinScanner] symbol is None/empty => skip. index={i}")
+                continue
+            valid_symbols.append(sym)
+
         # Filter excludes e.d.
         self.logger.debug(
             f"[AltcoinScanner] Found {len(dynamic_symbols)} EUR pairs. Filtering exclude/min_baseVol etc.")
@@ -432,6 +440,12 @@ class KrakenAltcoinScannerStrategy:
         self.logger.debug(f"[AltcoinScanner] _fetch_candles => symbol={symbol}, interval={interval}, limit={limit}")
         int_map = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "60m": 60, "1h": 60, "4h": 240, "1d": 1440}
         iv = int_map.get(interval, 15)
+
+        # [NIEUW] check of symbol leeg is
+        if not symbol:
+            self.logger.warning(f"[AltcoinScanner] _fetch_candles => symbol is None/empty => return empty DF.")
+            return pd.DataFrame()
+
         df = self._get_kraken_ohlc(symbol, iv, limit)
         if df.empty:
             self.logger.debug(f"[AltcoinScanner] symbol={symbol}, interval={interval}, => empty DF.")
@@ -451,6 +465,12 @@ class KrakenAltcoinScannerStrategy:
         Roept /0/public/OHLC op, mapped => pd.DataFrame(columns=[timestamp, open, high, low, close, volume])
         + skipt evt. "rare" of "corrupt" rows via try/except
         """
+
+        # [NIEUW] Check of symbol=None of lege string => meteen return leeg DF
+        if not symbol:
+            self.logger.error("[AltcoinScanner] _get_kraken_ohlc => symbol=None/empty => return empty DF.")
+            return pd.DataFrame()
+
         pair_rest = symbol.replace("-", "/")
         url = "https://api.kraken.com/0/public/OHLC"
         params = {"pair": pair_rest, "interval": iv_int}
@@ -462,6 +482,7 @@ class KrakenAltcoinScannerStrategy:
             if data.get("error"):
                 self.logger.debug(f"[AltcoinScanner] _get_kraken_ohlc => error => {data['error']}")
                 return pd.DataFrame()
+
             result = data.get("result", {})
             # Zoek de key in result die (meestal) <pair_rest> of <restName> bevat
             found_key = None
@@ -501,6 +522,7 @@ class KrakenAltcoinScannerStrategy:
             df = pd.DataFrame(outlist)
             if df.empty:
                 return df
+
             # Beperk tot 'limit' laatste candles
             if len(df) > limit:
                 df = df.iloc[-limit:]

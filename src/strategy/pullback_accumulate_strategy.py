@@ -125,7 +125,7 @@ class PullbackAccumulateStrategy:
         self.pullback_atr_mult = Decimal(str(self.strategy_config.get("pullback_atr_mult", "1.0")))
         self.tp1_atr_mult = Decimal(str(self.strategy_config.get("tp1_atr_mult", "1.0")))
         self.trail_atr_mult = Decimal(str(self.strategy_config.get("trailing_atr_mult", "1.0")))
-        self.stop_loss_pct = Decimal(str(self.strategy_config.get("stop_loss_pct", "0.01")))
+        self.sl_atr_mult = Decimal(str(self.strategy_config.get("sl_atr_mult", "1.0")))
 
         # R-concept: we hanteren R = 1 × ATR als basis (zie code in manage_open_position).
         # Let op: Je kunt R = x × ATR doen als je wilt, bv. R = 1.2 × ATR, maar nu laten we 'm op 1.0 × ATR.
@@ -184,20 +184,39 @@ class PullbackAccumulateStrategy:
          5) manage pos of open pos
         """
         meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
+
+        # Check of er een open positie is voor dit symbool
+        has_position = (symbol in self.open_positions)
+
         if meltdown_active:
-            self.logger.warning(f"[Pullback] meltdown => skip new trades for {symbol}.")
+            self.logger.warning(f"[Pullback] meltdown => skip opening new trades for {symbol}.")
+
+            # Blijf wel open posities managen
+            if has_position:
+                current_price = self._get_ws_price(symbol)
+                if current_price <= 0:
+                    self.logger.warning(f"[Pullback] meltdown: current_price=0 => skip manage pos.")
+                    return
+                atr_value = self.open_positions[symbol]["atr"]  # of opnieuw berekenen via _calculate_atr(...)
+                self._manage_open_position(symbol, current_price, atr_value)
             return
 
-        # [CONCRETE FIX 1-A]  In execute_strategy, direct na meltdown-check
+        # -- ER IS GEEN MELTDOWN, GA DOOR --
+        self.logger.info(f"[PullbackStrategy] Start for {symbol}")
+
+        # Concurrency-check / check of we al open trades hebben in DB
         existing_db_trades = self.db_manager.execute_query(
             "SELECT id FROM trades WHERE symbol=? AND (status='open' OR status='partial') LIMIT 1",
             (symbol,)
         )
         if existing_db_trades:
             self.logger.info(f"[execute_strategy] Already have open/partial trades in DB for {symbol} => skip opening.")
+            # Wel managen als we die open positie nog in self.open_positions hebben
+            if has_position:
+                current_price = self._get_ws_price(symbol)
+                atr_value = self.open_positions[symbol]["atr"]
+                self._manage_open_position(symbol, current_price, atr_value)
             return
-
-        self.logger.info(f"[PullbackStrategy] Start for {symbol}")
 
         # --- (2) Trend => 4h RSI als simplistische check
         df_h4 = self._fetch_and_indicator(symbol, self.trend_timeframe, limit=200)
@@ -420,7 +439,7 @@ class PullbackAccumulateStrategy:
 
         # Vaste (percentage-based) stoploss
         if side == "buy":
-            stop_loss_price = entry * (Decimal("1.0") - self.stop_loss_pct)
+            stop_loss_price = entry - (atr_value * self.sl_atr_mult)
             if current_price <= stop_loss_price:
                 self.logger.info(f"[ManagePos] LONG STOPLOSS => close entire {symbol}")
                 self._sell_portion(symbol, amount, portion=Decimal("1.0"), reason="StopLoss", exec_price=current_price)
@@ -452,7 +471,7 @@ class PullbackAccumulateStrategy:
                         del self.open_positions[symbol]
 
         else:  # SHORT
-            stop_loss_price = entry * (Decimal("1.0") + self.stop_loss_pct)
+            stop_loss_price = entry + (one_r * self.sl_atr_mult)
             if current_price >= stop_loss_price:
                 self.logger.info(f"[ManagePos] SHORT STOPLOSS => close entire {symbol}")
                 self._buy_portion(symbol, amount, portion=Decimal("1.0"), reason="StopLoss", exec_price=current_price)
@@ -900,6 +919,11 @@ class PullbackAccumulateStrategy:
         for sym in list(self.open_positions.keys()):
             pos = self.open_positions[sym]
             current_price = self._get_ws_price(sym)
+            # [NIEUW] Log de entry_price samen met symbol, side en current_price
+            self.logger.info(
+                f"[manage_intra_candle_exits] symbol={sym}, side={pos['side']}, entry={pos['entry_price']}, current={current_price}"
+            )
+
             if current_price > 0:
                 self._manage_open_position(sym, current_price, pos["atr"])
 
@@ -1063,16 +1087,17 @@ class PullbackAccumulateStrategy:
         score = (total_bids - total_asks) / denom
         return float(score)
 
-    def __record_trade_signals(self, trade_id: Optional[int], event_type: str, symbol: str, atr_mult: Decimal):
+    def __record_trade_signals(self, trade_id: Optional[int], event_type: str, symbol: str, atr_mult: Decimal,
+                               macd_15m=None):
         if not trade_id:
             return
         try:
-            df_15m = self._fetch_and_indicator(symbol, "15m", limit=2)
+            df_15m = self._fetch_and_indicator(symbol, "15m", limit=30)
             vol_15m = float(df_15m["volume"].iloc[-1]) if (not df_15m.empty) else 0.0
-            macd_15m = float(df_15m["macd"].iloc[-1]) if ("macd" in df_15m.columns and not df_15m.empty) else 0.0
+            macd_signal_15m = float(df_15m["macd_signal"].iloc[-1]) if "macd_signal" in df_15m.columns else 0.0
 
             # 4h
-            df_4h = self._fetch_and_indicator(symbol, "4h", limit=2)
+            df_4h = self._fetch_and_indicator(symbol, "4h", limit=30)
             rsi_4h = float(df_4h["rsi"].iloc[-1]) if (not df_4h.empty) else 0.0
 
             depth_instant = self._analyze_depth_trend_instant(symbol)
@@ -1088,7 +1113,7 @@ class PullbackAccumulateStrategy:
                 "strategy_name": "pullback",
                 "rsi_15m": float(df_15m["rsi"].iloc[-1]) if (not df_15m.empty) else 0.0,
                 "macd_val": macd_15m,
-                "macd_signal": 0.0,
+                "macd_signal": macd_signal_15m,  # gebruik de gemeten value
                 "atr_value": float(atr_mult),
                 "depth_score": depth_instant,
                 "ml_signal": ml_val,

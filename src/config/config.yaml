@@ -37,8 +37,8 @@ pullback_accumulate_strategy:
   # STAP 1 DE GROTE TREND: CHECK DIRECTION
   daily_bull_rsi: 50
   daily_bear_rsi: 50
-  h4_bull_rsi: 55
-  h4_bear_rsi: 45
+  h4_bull_rsi: 60
+  h4_bear_rsi: 40
 
   # Optioneel worden nu niet gebruik maar kan op de 15M candle:
   rsi_bull_threshold: 40   # RSI <= 40 => oversold => bullisch pullback
@@ -72,7 +72,7 @@ pullback_accumulate_strategy:
   sl_atr_mult: 1        # SL => full close
   tp1_atr_mult: 1       # 50% close
   tp1_portion_pct: 0.50
-  trailing_atr_mult: 0.75  # voor de rolling 50%
+  trailing_atr_mult: 1  # voor de rolling 50%
   initial_capital: 250
 
   use_depth_trend: true

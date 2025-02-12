@@ -9,6 +9,10 @@ from datetime import datetime, timedelta, timezone
 from src.meltdown_manager.meltdown_manager import MeltdownManager
 from src.logger.logger import setup_logger
 
+# Voor RSI/ATR - als je eigen indicator code hebt, kun je die importeren.
+from src.indicator_analysis.indicators import IndicatorAnalysis
+from ta.volatility import AverageTrueRange
+
 
 class KrakenAltcoinScannerStrategy:
     """
@@ -47,16 +51,16 @@ class KrakenAltcoinScannerStrategy:
         else:
             self.logger = self._setup_logger("kraken_altcoin_scanner", self.log_file)
 
-        # (2) Haal meltdown-config op
+        # (2) meltdown-config
         meltdown_cfg = config.get("meltdown_manager", {})
-        # (3) Maak meltdown_manager
+        # (3) meltdown_manager
         self.meltdown_manager = MeltdownManager(meltdown_cfg, db_manager=db_manager, logger=self.logger)
 
         # Welke coins uitsluiten
         self.exclude_symbols = config.get("exclude_symbols", [])
         # timeframe om te scannen (bv. "15m")
         self.timeframe = config.get("timeframe", "15m")
-        # lookback = #candles
+        # lookback => #candles
         self.lookback = int(config.get("lookback", 6))
 
         # thresholds
@@ -67,6 +71,8 @@ class KrakenAltcoinScannerStrategy:
         # pos-management
         self.position_size_pct = Decimal(str(config.get("position_size_pct", "0.03")))
         self.max_positions_equity_pct = Decimal(str(config.get("max_positions_equity_pct", "0.50")))
+
+        # ~~ sl_pct = (oude) fallback ~~
         self.sl_pct = Decimal(str(config.get("sl_pct", 2.0)))
 
         # ~~self.tp_pct = Decimal(str(config.get("tp_pct", 5.0)))~~  (UITGECOMMENTARIEERD)
@@ -77,7 +83,7 @@ class KrakenAltcoinScannerStrategy:
         # ~~self.partial_tp_enabled = bool(config.get("partial_tp_enabled", False))~~
         # ~~self.partial_tp_pct = Decimal(str(config.get("partial_tp_pct", 0.25)))~~
 
-        # (NIEUW) => extra keys uit YAML (momenteel niet actief gebruikt):
+        # (NIEUW) => extra keys uit YAML
         self.min_lot_multiplier = Decimal(str(config.get("min_lot_multiplier", "1.1")))
         self.sl_atr_mult = Decimal(str(config.get("sl_atr_mult", "1.0")))
         self.trailing_atr_mult = Decimal(str(config.get("trailing_atr_mult", "1.0")))
@@ -86,8 +92,16 @@ class KrakenAltcoinScannerStrategy:
         self.open_positions = {}
 
         # initieel kapitaal (indien client=None => paper)
-        # [CHANGED] lees uit YAML (default=100):
         self.initial_capital = Decimal(str(config.get("initial_capital", "100")))
+
+        # -- Toegevoegde "pump-limit" en RSI(15m) param --
+        self.pump_min_pct = Decimal(str(config.get("pump_min_pct", "5")))          # bv. +5%
+        self.pump_max_pct = Decimal(str(config.get("pump_max_pct", "10")))        # bv. +10%
+        self.pump_lookback_candles = int(config.get("pump_lookback_candles", 4))  # bv. 4 => 60m if 15m candle
+        self.rsi_15m_threshold = float(config.get("rsi_15m_threshold", 70.0))     # RSI < 70
+
+        # ATR
+        self.atr_window = int(config.get("atr_window", 14))
 
         self.logger.info("[KrakenAltcoinScanner] init met config OK.")
 
@@ -166,9 +180,10 @@ class KrakenAltcoinScannerStrategy:
             tradable_symbols.append(sym)
 
         self.logger.info(
-            f"[KrakenAltcoinScanner] scanning {len(tradable_symbols)} symbols, timeframe={self.timeframe}.")
+            f"[KrakenAltcoinScanner] scanning {len(tradable_symbols)} symbols, timeframe={self.timeframe}."
+        )
 
-        # 2) Voor elk symbool => check momentum
+        # 2) Voor elk symbool => check momentum (pump-limit + RSI-check + volume)
         for symbol in tradable_symbols:
             # skip als reeds open
             if symbol in self.open_positions:
@@ -180,13 +195,13 @@ class KrakenAltcoinScannerStrategy:
                 self.logger.info("[KrakenAltcoinScanner] max positions => skip scanning.")
                 break
 
-            # fetch candles (direct van REST => OHLC)
-            df = self._fetch_candles(symbol, self.timeframe, limit=(self.lookback + 10))
-            if df.empty or len(df) < self.lookback:
+            # fetch candles (direct van REST => OHLC) => pump_lookback_candles
+            df = self._fetch_candles(symbol, self.timeframe, limit=(self.pump_lookback_candles + 5))
+            if df.empty or len(df) < self.pump_lookback_candles:
                 self.logger.debug(f"[AltcoinScanner] symbol={symbol} => not enough candles => skip.")
                 continue
 
-            old_close = Decimal(str(df["close"].iloc[-self.lookback]))
+            old_close = Decimal(str(df["close"].iloc[-self.pump_lookback_candles]))
             new_close = Decimal(str(df["close"].iloc[-1]))
             self.logger.debug(f"[AltcoinScanner] symbol={symbol}, old_close={old_close}, new_close={new_close}")
 
@@ -196,27 +211,39 @@ class KrakenAltcoinScannerStrategy:
 
             price_change_pct = (new_close - old_close) / old_close * Decimal("100")
 
+            # pump_min/max
+            if price_change_pct < self.pump_min_pct:
+                self.logger.debug(f"[AltcoinScanner] {symbol}: +{price_change_pct:.2f}% < {self.pump_min_pct}% => skip.")
+                continue
+            if price_change_pct > self.pump_max_pct:
+                self.logger.debug(f"[AltcoinScanner] {symbol}: +{price_change_pct:.2f}% > {self.pump_max_pct}% => overshoot => skip.")
+                continue
+
             # volume spike check
             recent_vol = Decimal(str(df["volume"].iloc[-1]))
-            avg_vol = Decimal(str(df["volume"].tail(self.lookback).mean())) if self.lookback > 0 else Decimal("0")
-            if avg_vol > 0:
-                vol_factor = recent_vol / avg_vol
-            else:
-                vol_factor = Decimal("0")
-
-            self.logger.debug(
-                f"[AltcoinScanner] symbol={symbol}, price_change={price_change_pct:.2f}%, "
-                f"volume factor={vol_factor:.2f}, thresholds => {self.price_change_threshold}% & {self.volume_threshold_factor}x"
-            )
-
-            if (price_change_pct >= self.price_change_threshold) and (vol_factor >= self.volume_threshold_factor):
-                self.logger.info(
-                    f"[AltcoinScanner] {symbol} => {price_change_pct:.2f}% up in last {self.lookback}, "
-                    f"volume x{vol_factor:.2f}, => opening position"
+            avg_vol = Decimal(str(df["volume"].tail(self.pump_lookback_candles).mean())) if self.pump_lookback_candles>0 else Decimal("0")
+            if avg_vol <= 0:
+                continue
+            vol_factor = recent_vol / avg_vol
+            if vol_factor < self.volume_threshold_factor:
+                self.logger.debug(
+                    f"[AltcoinScanner] {symbol} => vol_factor={vol_factor:.2f} < {self.volume_threshold_factor} => skip"
                 )
-                self._open_position(symbol, new_close)
-            else:
-                self.logger.debug(f"[AltcoinScanner] symbol={symbol} => no momentum => skip")
+                continue
+
+            # RSI-check => RSI(15m) < rsi_15m_threshold
+            rsi_val = self._get_rsi_15m(symbol)
+            if rsi_val is None:
+                self.logger.debug(f"[AltcoinScanner] {symbol} => RSI(15m)=None => skip.")
+                continue
+            if rsi_val >= self.rsi_15m_threshold:
+                self.logger.debug(f"[AltcoinScanner] {symbol} => RSI(15m)={rsi_val:.1f} >= {self.rsi_15m_threshold} => skip.")
+                continue
+
+            self.logger.info(
+                f"[AltcoinScanner] {symbol} => +{price_change_pct:.2f}% in last {self.pump_lookback_candles}, vol x{vol_factor:.2f}, RSI={rsi_val:.1f} => opening pos"
+            )
+            self._open_position(symbol, new_close)
 
         # Manage open positions
         for sym in list(self.open_positions.keys()):
@@ -236,11 +263,12 @@ class KrakenAltcoinScannerStrategy:
 
         amt = trade_cap / current_price
 
-        # check min-lot
+        # check minLot * min_lot_multiplier
         min_lot = self._get_min_lot(symbol)
-        if amt < min_lot:
+        needed_amt = min_lot * self.min_lot_multiplier
+        if amt < needed_amt:
             self.logger.warning(
-                f"[AltcoinScanner] symbol={symbol} => calculated amt={amt:.6f} < minLot={min_lot} => skip open pos."
+                f"[AltcoinScanner] symbol={symbol} => amt={amt:.6f} < needed={needed_amt} (minLot*mult) => skip open pos."
             )
             return
 
@@ -250,7 +278,7 @@ class KrakenAltcoinScannerStrategy:
         else:
             self.logger.info(f"[Paper] BUY {symbol}, amt={amt:.4f} @ ~{current_price:.4f}")
 
-        # Log in DB
+        # Log in DB => 'trades'
         trade_data = {
             "timestamp": int(time.time() * 1000),
             "symbol": symbol,
@@ -266,35 +294,41 @@ class KrakenAltcoinScannerStrategy:
             "strategy_name": "scanner"
         }
         self.db_manager.save_trade(trade_data)
-
-        # [SIGNALS-ADDED] -----------------------------------------------------
-        # We roepen _record_trade_signals aan om een extra rij in 'trade_signals' te bewaren.
         new_trade_id = self.db_manager.cursor.lastrowid
+
+        # == ATR-based StopLoss ==
+        atr_val = self._calculate_atr(symbol, self.timeframe, window=self.atr_window)
+        if atr_val > 0:
+            sl_price = current_price - (atr_val * self.sl_atr_mult)
+        else:
+            sl_price = current_price * Decimal("0.98")  # fallback (2%)
+        self.logger.info(
+            f"[AltcoinScanner] OPEN LONG {symbol} => ATR={atr_val}, SL={sl_price:.4f}"
+        )
+
+        # RSI(15m) => voor logging in trade_signals
+        rsi_val = self._get_rsi_15m(symbol)
+
+        # Log signals => we geven atr_val, rsi_val mee als extra
         self._record_trade_signals(
             trade_id=new_trade_id,
             event_type="open",
             symbol=symbol,
             current_price=current_price,
-            note="Scanner => Momentum LONG open"
+            note="Scanner => Momentum LONG open",
+            atr_value=atr_val,
+            rsi_value=rsi_val
         )
-        # ---------------------------------------------------------------------
 
-        # Simple SL
-        sl_price = current_price * (Decimal("1") - (self.sl_pct / Decimal("100")))
-
-        # ~~TP => current_price * (Decimal("1") + self.tp_pct/100)~~ (UITGECOMMENTARIEERD)
-        # ~~We laten "take_profit" weg~~
-
+        # Sla pos info op in memory
         self.open_positions[symbol] = {
             "side": "buy",
             "entry_price": current_price,
             "amount": amt,
             "stop_loss": sl_price,
-            # "take_profit": tp_price,  # (UITGECOMMENTARIEERD)
-            # "partial_tp_done": False, # partial-TP ook uit
             "highest_price": current_price
         }
-        self.logger.info(f"[AltcoinScanner] OPEN LONG {symbol} => SL={sl_price:.4f} (TP uit code verwijderd).")
+        self.logger.info(f"[AltcoinScanner] Position opened => side=BUY, symbol={symbol}, SL={sl_price:.4f}")
 
     # =================================================
     # Manage positie => check SL ~~TP/partial/trailing~~
@@ -317,52 +351,25 @@ class KrakenAltcoinScannerStrategy:
             self._close_position(symbol)
             return
 
-        # ~~check take-profit~~ (UITGECOMMENTARIEERD)
-        # if curr_price >= pos["take_profit"]:
-        #     self.logger.info(f"[AltcoinScanner] {symbol} => TP geraakt => close pos")
-        #     self._close_position(symbol)
-        #     return
+        # ~~check partial-TP => UITGECOMMENTARIEERD~~
+        # if self.partial_tp_enabled and ... etc.
 
-        # ~~ partial-TP halverwege => uitcommentarieerd ~~
-        # if self.partial_tp_enabled and (not pos["partial_tp_done"]):
-        #     half_target = pos["entry_price"] + (pos["take_profit"] - pos["entry_price"]) / Decimal("2")
-        #     if curr_price >= half_target:
-        #         part_qty = pos["amount"] * self.partial_tp_pct
-        #         self.logger.info(f"[AltcoinScanner] partial TP => {symbol}, sell {part_qty:.4f}")
-        #         if self.client:
-        #             self.client.place_order("sell", symbol, float(part_qty), order_type="market")
-        #
-        #         # DB-log van partial exit
-        #         trade_data = {
-        #             "timestamp": int(time.time() * 1000),
-        #             "symbol": symbol,
-        #             "side": "sell",
-        #             "price": float(curr_price),
-        #             "amount": float(part_qty),
-        #             "position_id": None,
-        #             "position_type": "long",
-        #             "status": "partial",
-        #             "pnl_eur": 0.0,
-        #             "fees": 0.0,
-        #             "trade_cost": float(part_qty * curr_price),
-        #             "strategy_name": "scanner"
-        #         }
-        #         self.db_manager.save_trade(trade_data)
-        #
-        #         pos["amount"] -= part_qty
-        #         pos["partial_tp_done"] = True
-
-        # trailing
         if self.trailing_enabled:
+            # Option: we doen ATR-trail of pct-trail.
+            # Hier laten we ATR-trail zien:
             if curr_price > pos["highest_price"]:
                 pos["highest_price"] = curr_price
-            # trailing SL = highest_price * (1 - trailing%/100)
-            trail_sl = pos["highest_price"] * (Decimal("1") - (self.trailing_pct / Decimal("100")))
-            if trail_sl > pos["stop_loss"]:
+            atr_trail = self._calculate_atr(symbol, self.timeframe, self.atr_window)
+            if atr_trail > 0:
+                new_sl = pos["highest_price"] - (atr_trail * self.trailing_atr_mult)
+            else:
+                new_sl = pos["highest_price"] * Decimal("0.98")
+
+            if new_sl > pos["stop_loss"]:
                 old_sl = pos["stop_loss"]
-                pos["stop_loss"] = trail_sl
+                pos["stop_loss"] = new_sl
                 self.logger.info(
-                    f"[AltcoinScanner] trailing SL updated => old={old_sl:.4f}, new={trail_sl:.4f} for {symbol}"
+                    f"[AltcoinScanner] trailing SL updated => old={old_sl:.4f}, new={new_sl:.4f} for {symbol}"
                 )
 
     # =================================================
@@ -380,8 +387,8 @@ class KrakenAltcoinScannerStrategy:
             self.logger.info(f"[Paper] CLOSE LONG => SELL {symbol} amt={amt:.4f}")
         self.logger.info(f"[AltcoinScanner] Positie {symbol} volledig gesloten.")
 
-        # (NIEUW) DB-log van volledige sluiting
         current_price = self._get_latest_price(symbol)
+        # Log in DB => 'trades'
         trade_data = {
             "timestamp": int(time.time() * 1000),
             "symbol": symbol,
@@ -397,17 +404,22 @@ class KrakenAltcoinScannerStrategy:
             "strategy_name": "scanner"
         }
         self.db_manager.save_trade(trade_data)
-
-        # [SIGNALS-ADDED] -----------------------------------------------------
         closed_trade_id = self.db_manager.cursor.lastrowid
+
+        # ATR & RSI for logging
+        atr_val = self._calculate_atr(symbol, self.timeframe, self.atr_window)
+        rsi_val = self._get_rsi_15m(symbol)
+
+        # [SIGNALS-ADDED]
         self._record_trade_signals(
             trade_id=closed_trade_id,
             event_type="closed",
             symbol=symbol,
             current_price=current_price,
-            note="Scanner => Momentum LONG closed"
+            note="Scanner => Momentum LONG closed",
+            atr_value=atr_val,
+            rsi_value=rsi_val
         )
-        # ---------------------------------------------------------------------
 
     # =================================================
     # Helpers
@@ -424,6 +436,12 @@ class KrakenAltcoinScannerStrategy:
         if df.empty:
             self.logger.debug(f"[AltcoinScanner] symbol={symbol}, interval={interval}, => empty DF.")
             return df
+
+        if "timestamp" not in df.columns:
+            self.logger.warning(f"[AltcoinScanner] symbol={symbol} => NO 'timestamp' column => skip.")
+            self.logger.debug(f"df columns are: {df.columns}")
+            return pd.DataFrame()
+
         # sort
         df.sort_values("timestamp", inplace=True)
         return df
@@ -487,8 +505,7 @@ class KrakenAltcoinScannerStrategy:
             if len(df) > limit:
                 df = df.iloc[-limit:]
 
-            # Extra safety: to_numeric & dropna
-            # (Mocht er toch nog iets corrupt zijn)
+            # Extra safety
             cols = ["open", "high", "low", "close", "volume"]
             for c in cols:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -530,7 +547,7 @@ class KrakenAltcoinScannerStrategy:
         Eenvoudige 'ticker' fallback => je kunt ook ws-prijs
         via self.client.get_latest_ws_price(...) gebruiken
         """
-        # 1) check of client has get_latest_ws_price
+        # 1) live ticker
         if hasattr(self.client, "get_latest_ws_price"):
             px = self.client.get_latest_ws_price(symbol)
             if px > 0:
@@ -538,7 +555,7 @@ class KrakenAltcoinScannerStrategy:
 
         # 2) fallback => 1m candle
         df_1m = self._fetch_candles(symbol, "1m", limit=1)
-        if not df_1m.empty:
+        if not df_1m.empty and "close" in df_1m.columns:
             last_close = df_1m["close"].iloc[-1]
             return Decimal(str(last_close))
         return Decimal("0")
@@ -565,7 +582,8 @@ class KrakenAltcoinScannerStrategy:
         invested = tot_eq - bal
         ratio = invested / tot_eq if tot_eq > 0 else Decimal("0")
         self.logger.debug(
-            f"[AltcoinScanner] _can_open_new_position => ratio={ratio:.2f}, max={self.max_positions_equity_pct}")
+            f"[AltcoinScanner] _can_open_new_position => ratio={ratio:.2f}, max={self.max_positions_equity_pct}"
+        )
         return ratio < self.max_positions_equity_pct
 
     # [NEW] Methode om intra-candle exits te checken voor ALLE open posities
@@ -593,25 +611,22 @@ class KrakenAltcoinScannerStrategy:
 
     # [SIGNALS-ADDED] =========================================================
     def _record_trade_signals(self, trade_id: int, event_type: str, symbol: str,
-                              current_price: Decimal, note: str = ""):
+                              current_price: Decimal, note: str = "",
+                              atr_value: Decimal = None,
+                              rsi_value: float = None):
         """
         Legt een rij in 'trade_signals' vast met indicatoren die relevant zijn
         voor deze altcoin-scanner, zoals:
-         - de 'price_change_pct' (over self.lookback in de timeframe self.timeframe)
-         - de 'volume_factor' (recent/avg)
-         - meltdown_active? (optioneel)
-         - current_price op moment van open/close
-         - etc.
+         - 'price_change_pct'
+         - 'volume_factor'
+         - meltdown_active?
+         - 'current_price'
+         - plus nu ATR/RSI
 
-        :param trade_id:    ID van de net aangemaakte trade (in 'trades' tabel)
-        :param event_type:  "open", "closed", ...
-        :param symbol:      De coin, bv. "DOGE-EUR"
-        :param current_price: Laatste prijs (Decimal)
-        :param note:        optioneel extra
+        We halen nogmaals self.lookback-candles om die 'price_change' en 'volume_factor'
+        te berekenen, en voegen atr_value/rsi_value direct toe.
         """
         try:
-            # Haal nogmaals de candles => timeframe + lookback
-            # om 'price_change' en 'volume_factor' te bepalen
             df = self._fetch_candles(symbol, self.timeframe, limit=(self.lookback + 5))
             price_change_pct = 0.0
             vol_factor = 0.0
@@ -629,30 +644,64 @@ class KrakenAltcoinScannerStrategy:
 
             meltdown_active = self.meltdown_manager.meltdown_active
 
-            signals_data = {"trade_id": trade_id, "event_type": event_type, "symbol": symbol,
-                            "strategy_name": "scanner", "rsi_daily": price_change_pct, "rsi_h4": vol_factor,
-                            "rsi_15m": None, "macd_val": None, "macd_signal": None, "atr_value": None,
-                            "depth_score": float(0), "ml_signal": float(0), "timestamp": int(time.time() * 1000)}
+            signals_data = {
+                "trade_id": trade_id,
+                "event_type": event_type,
+                "symbol": symbol,
+                "strategy_name": "scanner",
+                "rsi_daily": price_change_pct,   # legacy naming
+                "rsi_h4": vol_factor,           # legacy naming
+                "rsi_15m": float(rsi_value) if rsi_value else 0.0,
+                "macd_val": float(current_price),
+                "macd_signal": None,
+                "atr_value": float(atr_value) if atr_value else 0.0,
+                "depth_score": float(999) if meltdown_active else 0.0,
+                "ml_signal": 0.0,
+                "timestamp": int(time.time() * 1000)
+            }
 
-            # We slaan de momentum-getallen op in 2 'vrije' velden (bijv. rsi_daily, rsi_h4) of in extra
-            # Voor demonstratie doen we het zo:
-
-            # Als je meltdown_active wilt loggen, kun je bijv. ml_signal of depth_score ermee overschrijven:
-            if meltdown_active:
-                signals_data["depth_score"] = float(999)  # dummy => meltdown gaande
-
-            # Desgewenst kun je 'current_price' kwijt in bijv. macd_val:
-            signals_data["macd_val"] = float(current_price)
-
-            # Wil je het commentaar/note ergens opslaan? (Niet in kolommen gedefinieerd, dus laten we het hier.)
-            # signals_data["macd_signal"] = 0.0  # not used
-
-            # tenslotte
             self.db_manager.save_trade_signals(signals_data)
             self.logger.info(
-                f"[_record_trade_signals] trade_id={trade_id}, event={event_type}, symbol={symbol}, note={note}"
+                f"[_record_trade_signals] trade_id={trade_id}, event={event_type}, symbol={symbol}, "
+                f"ATR={atr_value}, RSI={rsi_value}, note={note}"
             )
 
         except Exception as e:
             self.logger.error(f"[_record_trade_signals] Fout: {e}")
     # =========================================================================
+
+    # =================================================
+    #   RSI/ATR in memory
+    # =================================================
+    def _get_rsi_15m(self, symbol: str, rsi_window=14) -> float:
+        """
+        Haalt ~30 candles van 15m op, berekent RSI => return float rsi.
+        """
+        df_rsi = self._fetch_candles(symbol, "15m", limit=30)
+        if df_rsi.empty or len(df_rsi) < rsi_window:
+            return None
+
+        df_rsi.sort_values("timestamp", inplace=True)
+        df_rsi = IndicatorAnalysis.calculate_indicators(df_rsi, rsi_window=rsi_window)
+        if "rsi" not in df_rsi.columns:
+            return None
+        return float(df_rsi["rsi"].iloc[-1])
+
+    def _calculate_atr(self, symbol: str, interval: str, window=14) -> Decimal:
+        """
+        Haal b.v. 50 candles in memory => bereken ATR => return Decimal
+        """
+        df_atr = self._fetch_candles(symbol, interval, limit=50)
+        if df_atr.empty or len(df_atr) < window:
+            return Decimal("0")
+
+        df_atr.sort_values("timestamp", inplace=True)
+        # We roepen hier again IndicatorAnalysis of direct TA:
+        atr_obj = AverageTrueRange(
+            high=df_atr["high"], low=df_atr["low"], close=df_atr["close"], window=window
+        )
+        series_atr = atr_obj.average_true_range()
+        val = series_atr.iloc[-1]
+        if pd.isna(val):
+            return Decimal("0")
+        return Decimal(str(val))

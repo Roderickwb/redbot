@@ -188,6 +188,15 @@ class PullbackAccumulateStrategy:
             self.logger.warning(f"[Pullback] meltdown => skip new trades for {symbol}.")
             return
 
+        # [CONCRETE FIX 1-A]  In execute_strategy, direct na meltdown-check
+        existing_db_trades = self.db_manager.execute_query(
+            "SELECT id FROM trades WHERE symbol=? AND (status='open' OR status='partial') LIMIT 1",
+            (symbol,)
+        )
+        if existing_db_trades:
+            self.logger.info(f"[execute_strategy] Already have open/partial trades in DB for {symbol} => skip opening.")
+            return
+
         self.logger.info(f"[PullbackStrategy] Start for {symbol}")
 
         # --- (2) Trend => 4h RSI als simplistische check
@@ -605,6 +614,9 @@ class PullbackAccumulateStrategy:
             "position_type": position_type,
             "db_id": new_trade_id
         }
+        # [CONCRETE FIX 2-A] => Zet meteen de werkelijke hoeveelheid in 'amount' en 'filled_amount'
+        self.open_positions[symbol]["amount"] = Decimal(str(amount))
+        self.open_positions[symbol]["filled_amount"] = Decimal(str(amount))
 
     def _buy_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
         """

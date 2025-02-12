@@ -12,6 +12,10 @@ cd ~/redbot
 source venv/bin/activate
 streamlit run src/dashboard/dashboard.py
 
+# Gebruik van Linux‐tools: grep, less, tail -f
+tail -f pullback_strategy.log toont je live de laatste logregels.
+grep -i "OPEN SHORT" pullback_strategy.log filtert direct alleen de regels met dat keyword.
+less +F pullback_strategy.log opent het log in “scrollbare” modus, en Shift+F gaat naar de live tail.
 
 # check of bot nog draait
 ps aux | grep main.pycd 

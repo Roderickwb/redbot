@@ -20,6 +20,10 @@ less +F pullback_strategy.log opent het log in “scrollbare” modus, en Shift+
 # check of bot nog draait
 ps aux | grep main.pycd 
 
+Kill pip
+
+pkill -9 python
+
 # git pull Pi
 cd ~/redbot
 ls -a

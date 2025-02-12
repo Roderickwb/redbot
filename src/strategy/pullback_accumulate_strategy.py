@@ -994,13 +994,31 @@ class PullbackAccumulateStrategy:
                 if col in df.columns:
                     df.drop(columns=col, inplace=True, errors='ignore')
 
-            df.columns = ['timestamp', 'market', 'interval', 'open', 'high', 'low', 'close', 'volume']
+            # 1) Hernoem kolommen (nu gebruiken we 'timestamp_ms' voor de oorspronkelijke ms-tijd)
+            df.columns = ["timestamp_ms", "market", "interval", "open", "high", "low", "close", "volume"]
+
+            # 2) Eventueel onnodige kolommen droppen (optioneel). Voorbeeld:
+            # for col in ["datetime_utc", "exchange"]:
+            #     if col in df.columns:
+            #         df.drop(columns=col, inplace=True, errors="ignore")
+
+            # 3) Zorg dat open, high, low, close, volume numeriek zijn
             for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = df[col].astype(float, errors="raise")
 
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-            df.set_index("timestamp", inplace=True)
+            # 4) Maak een datetime‐kolom die je index wordt, maar behoud de kolom
+            df["datetime_utc"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
+
+            # 5) Zet 'datetime_utc' als index, maar behoud die kolom (drop=False)
+            df.set_index("datetime_utc", inplace=True, drop=False)
+
+            # 6) Sorteer op de index (nu is 'datetime_utc' de index)
             df.sort_index(inplace=True)
+
+            # Je DataFrame heeft nu:
+            # - Een index = datetime_utc
+            # - Kolommen: ["timestamp_ms", "market", "interval", "open", "high", "low", "close", "volume", "datetime_utc"]
+            #   waar "timestamp_ms" numeriek is, en "datetime_utc" als kolom + index
 
             df = IndicatorAnalysis.calculate_indicators(df, rsi_window=self.rsi_window)
             macd_ind = MACD(close=df['close'], window_slow=self.macd_slow,

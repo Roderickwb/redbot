@@ -91,7 +91,7 @@ class PullbackAccumulateStrategy:
 
         # Logger
         self.logger = setup_logger("pullback_strategy", PULLBACK_STRATEGY_LOG_FILE,
-                                   logging.INFO)  # kan weer naar DEBUG indien nodig
+                                   logging.DEBUG)  # kan weer naar INFO indien nodig
         if config_path:
             self.logger.info("[PullbackAccumulateStrategy] init with config_path=%s", config_path)
         else:

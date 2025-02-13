@@ -342,43 +342,78 @@ class PullbackAccumulateStrategy:
         else:
             return "range"
 
-    def _detect_pullback(self, df: pd.DataFrame, current_price: Decimal, direction: str, atr_value: Decimal) -> bool:
+    def _detect_pullback(self,
+                         df: pd.DataFrame,
+                         current_price: Decimal,
+                         direction: str,
+                         atr_value: Decimal) -> bool:
         """
-        Ongewijzigd ten opzichte van jouw ATR-based pullback:
-         - Berekent recent high/low in rolling_window
-         - Vergelijkt difference met pullback_atr_mult * ATR
+        Simpele pullback-check op basis van ATR.
+        Zonder databasecalls, maar met logging van de afstand / drempel,
+        zodat er geen 'unused variable' waarschuwingen zijn.
         """
+
+        # 1) Check genoeg candles
         if len(df) < self.pullback_rolling_window:
             self.logger.info(f"[Pullback] <{self.pullback_rolling_window} candles => skip.")
             return False
 
+        # 2) Alleen relevant in bull/bear; bij 'range' => return False
+        if direction not in ("bull", "bear"):
+            return False
+
+        # Voor straks
+        pullback_distance = Decimal("0")
+        atr_threshold = Decimal("0")
+        ratio = Decimal("0")
+
+        # 3) Bull-richting
         if direction == "bull":
             recent_high = df["high"].rolling(self.pullback_rolling_window).max().iloc[-1]
             if recent_high <= 0:
                 return False
+
             pullback_distance = Decimal(str(recent_high)) - current_price
             atr_threshold = atr_value * self.pullback_atr_mult
-            if pullback_distance >= atr_threshold:
-                self.logger.info(
-                    f"[Pullback-bull] distance={pullback_distance:.4f} >= (ATR*{self.pullback_atr_mult})={atr_threshold}, => True"
-                )
-                return True
-            return False
 
-        elif direction == "bear":
+            if atr_threshold != 0:
+                ratio = pullback_distance / atr_threshold
+
+            # Log de waarden om 'unused variable' te vermijden
+            self.logger.info(
+                f"[Pullback-bull] distance={pullback_distance:.4f}, "
+                f"threshold={atr_threshold:.4f}, ratio={ratio:.2f}"
+            )
+
+            # Echte check: >= 1 => “pullback genoeg”
+            if ratio >= 1:
+                self.logger.info("[Pullback-bull] => DETECTED!")
+                return True
+            else:
+                return False
+
+        # 4) Bear-richting
+        else:  # direction == "bear"
             recent_low = df["low"].rolling(self.pullback_rolling_window).min().iloc[-1]
             if recent_low <= 0:
                 return False
+
             rally_distance = current_price - Decimal(str(recent_low))
             atr_threshold = atr_value * self.pullback_atr_mult
-            if rally_distance >= atr_threshold:
-                self.logger.info(
-                    f"[Pullback-bear] distance={rally_distance:.4f} >= (ATR*{self.pullback_atr_mult})={atr_threshold}, => True"
-                )
+
+            if atr_threshold != 0:
+                ratio = rally_distance / atr_threshold
+
+            self.logger.info(
+                f"[Pullback-bear] distance={rally_distance:.4f}, "
+                f"threshold={atr_threshold:.4f}, ratio={ratio:.2f}"
+            )
+
+            if ratio >= 1:
+                self.logger.info("[Pullback-bear] => DETECTED!")
                 return True
-            return False
-        else:
-            return False
+            else:
+                return False
 
     # [NIEUW] Eenvoudige check: 9EMA, 20EMA, pullback in uptrend => price zakt door 9ema maar boven 20ema
     def _check_ema_pullback_15m(self, df: pd.DataFrame, direction: str) -> bool:

@@ -276,6 +276,8 @@ class DatabaseManager:
             # [NEW] => Ook onze nieuwe table 'trade_signals' aanmaken
             self.create_trade_signals_table()
 
+            self.create_trades_table()  # <--- Hier wordt dus óók je trades-tabel geüpdatet!
+
             logger.info("[create_tables] Alle (oude en nieuwe) tabellen klaar of bijgewerkt.")
         except Exception as e:
             logger.error(f"[create_tables] Error: {e}")
@@ -774,6 +776,20 @@ class DatabaseManager:
                             logger.info(f"[create_trades_table] Kolom '{col_name}' bestaat al, skip.")
                         else:
                             logger.error(f"[create_trades_table] Fout bij kolom {col_name}: {e}")
+
+                # ============================
+                # HIER ONZE NIEUWE KLEINE STAP
+                # ============================
+                if 'is_master' not in columns:
+                    try:
+                        self.cursor.execute("ALTER TABLE trades ADD COLUMN is_master INT DEFAULT 0")
+                        self.connection.commit()
+                        logger.info("[create_trades_table] Kolom 'is_master' (INT) toegevoegd met default=0.")
+                    except sqlite3.OperationalError as e:
+                        if "duplicate column name" in str(e).lower():
+                            logger.info("[create_trades_table] Kolom 'is_master' bestaat al, skip.")
+                        else:
+                            logger.error(f"[create_trades_table] Fout bij kolom 'is_master': {e}")
 
             logger.info("[create_trades_table] Tabel 'trades' is nu volledig opgebouwd.")
         except Exception as e:
@@ -1521,10 +1537,11 @@ class DatabaseManager:
             query = """
                 INSERT INTO trades
                 (timestamp, datetime_utc, symbol, side, price, amount,
-                 position_id, position_type, status, pnl_eur, fees, trade_cost, exchange, strategy_name)
+                 position_id, position_type, status, pnl_eur, fees, trade_cost, exchange, strategy_name, is_master)
                 VALUES (
                   ?,
                   datetime(?/1000, 'unixepoch'),
+                  ?,
                   ?,
                   ?,
                   ?,
@@ -1545,6 +1562,7 @@ class DatabaseManager:
             exchange_val = trade_data.get('exchange', 'Kraken')
             # strategy_name (optioneel)
             strategy_val = trade_data.get('strategy_name', None)
+            is_master_val = trade_data.get('is_master', 0)  # default=0
 
             params = (
                 tstamp,
@@ -1560,7 +1578,8 @@ class DatabaseManager:
                 trade_data.get('fees', 0.0),
                 trade_data.get('trade_cost', 0.0),
                 exchange_val,
-                strategy_val
+                strategy_val,
+                is_master_val
             )
             self.execute_query(query, params)
             logger.info(f"[save_trade] Trade data opgeslagen: {trade_data}")

@@ -206,11 +206,20 @@ class PullbackAccumulateStrategy:
 
         # Concurrency-check / check of we al open trades hebben in DB
         existing_db_trades = self.db_manager.execute_query(
-            "SELECT id FROM trades WHERE symbol=? AND (status='open' OR status='partial') LIMIT 1",
+            """
+            SELECT id 
+              FROM trades
+             WHERE symbol=? 
+               AND is_master=1
+               AND status IN ('open','partial')
+             LIMIT 1
+            """,
             (symbol,)
         )
         if existing_db_trades:
-            self.logger.info(f"[execute_strategy] Already have open/partial trades in DB for {symbol} => skip opening.")
+            self.logger.info(
+                f"[execute_strategy] Already have open/partial MASTER trade in DB for {symbol} => skip opening.")
+
             # Wel managen als we die open positie nog in self.open_positions hebben
             if has_position:
                 current_price = self._get_ws_price(symbol)

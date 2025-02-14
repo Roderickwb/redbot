@@ -52,7 +52,7 @@ pullback_accumulate_strategy:
   macd_bear_threshold: 1   # minder stregn is +1
 
   # bepaald hoever de pullback van de weerstand of support ,oet bewegen om in te stappen = pullback = true
-  pullback_atr_mult: 1 # normaal 1.5
+  pullback_atr_mult: 1.5 # normaal 1.5
 
   ml_model_enabled: true
 
@@ -69,8 +69,8 @@ pullback_accumulate_strategy:
   max_position_pct: 0.1   # max 5% van je capital
   max_position_eur: 15  # of direct een vast bedrag
 
-  sl_atr_mult: 1        # SL => full close
-  tp1_atr_mult: 1       # 50% close
+  sl_atr_mult: 1.5        # SL => full close
+  tp1_atr_mult: 1.5       # 50% close
   tp1_portion_pct: 0.50
   trailing_atr_mult: 1  # voor de rolling 50%
   initial_capital: 250
@@ -113,8 +113,8 @@ breakout_strategy:
   sl_pct: 2
 
   min_lot_multiplier: 1.1
-  sl_atr_mult: 1.0
-  trailing_atr_mult: 1.0
+  sl_atr_mult: 1.5
+  trailing_atr_mult: 1.5
   # geen partial => alles in 1 keer
 
   max_position_pct: 0.1   # max 5% van je capital

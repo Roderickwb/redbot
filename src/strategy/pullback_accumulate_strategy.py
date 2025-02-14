@@ -716,7 +716,7 @@ class PullbackAccumulateStrategy:
         # PnL
         raw_pnl = (entry_price - current_price) * amt_to_buy
         trade_cost = current_price * amt_to_buy
-        fees = float(trade_cost * Decimal("0.0025"))
+        fees = float(trade_cost * Decimal("0.004"))
         realized_pnl = float(raw_pnl) - fees
 
         # ========== Bestaand "status" op child-trade basis ==========

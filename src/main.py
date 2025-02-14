@@ -17,7 +17,7 @@ from src.database_manager.database_manager import DatabaseManager
 from src.trading_engine.executor import Executor
 
 # Stel de "main" logger in (RotatingFileHandler via setup_logger)
-logger = setup_logger(name="main", log_file=MAIN_LOG_FILE, level=logging.DEBUG)
+logger = setup_logger(name="main", log_file=MAIN_LOG_FILE, level=logging.INFO)
 logger.info("Main logger geconfigureerd.")
 
 # Globale DatabaseManager
@@ -40,10 +40,10 @@ def main():
     load_dotenv()
 
     # Debugprint om te checken (console)
-    print("[DEBUG] BITVAVO_API_KEY =", os.getenv("BITVAVO_API_KEY"))
-    print("[DEBUG] BITVAVO_API_SECRET =", os.getenv("BITVAVO_API_SECRET"))
-    print("[DEBUG] KRAKEN_API_KEY =", os.getenv("KRAKEN_API_KEY"))
-    print("[DEBUG] KRAKEN_API_SECRET =", os.getenv("KRAKEN_API_SECRET"))
+    #print("[DEBUG] BITVAVO_API_KEY =", os.getenv("BITVAVO_API_KEY"))
+    #print("[DEBUG] BITVAVO_API_SECRET =", os.getenv("BITVAVO_API_SECRET"))
+    #print("[DEBUG] KRAKEN_API_KEY =", os.getenv("KRAKEN_API_KEY"))
+    #print("[DEBUG] KRAKEN_API_SECRET =", os.getenv("KRAKEN_API_SECRET"))
 
     # === Bepaal environment (Bitvavo) ===
     ENVIRONMENT = os.getenv("ENVIRONMENT", "paper").lower()
@@ -85,7 +85,7 @@ def main():
     if not BITVAVO_API_KEY or not BITVAVO_API_SECRET:
         logger.warning("BITVAVO_API_KEY/SECRET niet gevonden of leeg.")
 
-    database_logger = setup_database_logger(logfile="logs/database_manager.log", level=logging.DEBUG)
+    database_logger = setup_database_logger(logfile="logs/database_manager.log", level=logging.INFO)
 
     # === Stap 4) Maak tabellen aan ===
     db_manager.create_tables()

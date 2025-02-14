@@ -22,6 +22,10 @@ from src.logger.logger import setup_kraken_logger
 
 import requests
 
+# [QUEUE CHANGE START]
+import queue  # <-- Toevoegen voor queue.Queue
+# [QUEUE CHANGE END]
+
 logger = setup_kraken_logger(logfile="logs/kraken_client.log", level=logging.DEBUG)
 
 
@@ -224,6 +228,11 @@ class KrakenMixedClient:
         self.ws_private_running = False
         self.ws_private_thread = None
 
+        # [QUEUE CHANGE START]
+        # Maak een nieuwe Queue voor fills
+        self.trade_fills_queue = queue.Queue()
+        # [QUEUE CHANGE END]
+
         # channel_id => (local_pair, interval_str, iv_int)
         self.channel_id_map = {}
 
@@ -247,14 +256,146 @@ class KrakenMixedClient:
         self.poll_thread_15m = None
         self.poll_15m_running = False
 
+    # [LIVE TRADE CHANGE START]
     def get_balance(self) -> dict:
         """
         Voor meltdown_manager of strategies:
-        - Hier zou je een echte REST-call maken naar /0/private/Balance (als real trading).
-        - Of je retourneert een fictief/paper-saldo.
-        Voor nu doen we een 'stub': 1000 EUR.
+        Deze versie probeert ECHT /0/private/Balance op te vragen
+        als self.api_key en self.api_secret niet leeg zijn.
+        Anders fallback => {"EUR":"100"} (paper).
         """
-        return {"EUR": "100"}
+        if not self.api_key or not self.api_secret:
+            logger.debug("[KrakenMixedClient] get_balance => no key/secret => fallback 100 EUR.")
+            return {"EUR": "100"}  # fallback als paper
+
+        path = "/0/private/Balance"
+        url = "https://api.kraken.com" + path
+        nonce = str(int(time.time() * 1000))
+
+        payload = {"nonce": nonce}
+        postdata_str = urllib.parse.urlencode(payload)
+
+        # HMAC signing
+        sha256_digest = hashlib.sha256((nonce + postdata_str).encode("utf-8")).digest()
+        hmac_key = base64.b64decode(self.api_secret)
+        to_sign = path.encode('utf-8') + sha256_digest
+        signature = hmac.new(hmac_key, to_sign, hashlib.sha512)
+        sigdigest = base64.b64encode(signature.digest()).decode()
+
+        headers = {
+            "API-Key": self.api_key,
+            "API-Sign": sigdigest,
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+
+        self._check_rate_limit()
+        self._increment_call()
+        resp = safe_post(url, data=payload, headers=headers)
+        if not resp:
+            logger.error("[KrakenMixedClient] get_balance => geen response => return {}")
+            return {}
+
+        j = resp.json()
+        err = j.get("error", [])
+        if err:
+            logger.error(f"[KrakenMixedClient] get_balance => error={err}")
+            return {}
+
+        result = j.get("result", {})
+        # Bv. {"ZEUR": "100.123", "XXBT": "0.01", ...}
+        # event. parse => "EUR": ...
+        newdict = {}
+        for k, v in result.items():
+            if k == "ZEUR":
+                newdict["EUR"] = v
+            elif k.startswith("X"):
+                # "XXBT" => "XBT", "XETH" => "ETH"? net wat je wilt
+                sym = k[1:]
+                newdict[sym] = v
+            else:
+                newdict[k] = v
+
+        logger.debug(f"[KrakenMixedClient] get_balance => {newdict}")
+        return newdict
+    # [LIVE TRADE CHANGE END]
+
+    # [LIVE TRADE CHANGE START]
+    def place_order(self, side: str, symbol: str, volume: float,
+                    ordertype="market", price=None) -> dict:
+        """
+        Plaatst een echte order via /0/private/AddOrder op Kraken.
+        :param side: 'buy' of 'sell'
+        :param symbol: bv. "BTC-EUR" (local)
+        :param volume: float (aantal coins)
+        :param ordertype: 'market' (of 'limit')
+        :param price: alleen bij 'limit'
+        :return: {"order_id": "...", "description": {...}}
+        """
+        if not self.api_key or not self.api_secret:
+            # Als geen keys => paper => return pseudo-result
+            logger.warning("[KrakenMixedClient] place_order => no key => paper fallback.")
+            return {"order_id": "FAKE_ORDER", "description": {}}
+
+        # Vind de REST name
+        ws_ = self.kraken_ws_map.get(symbol)
+        rest_ = self.kraken_rest_map.get(ws_, "")
+        if not rest_:
+            logger.error(f"[KrakenMixedClient] place_order => no rest mapping for {symbol} => skip.")
+            return {}
+
+        path = "/0/private/AddOrder"
+        url = "https://api.kraken.com" + path
+        nonce = str(int(time.time() * 1000))
+
+        payload = {
+            "nonce": nonce,
+            "pair": rest_,
+            "type": side,
+            "ordertype": ordertype,
+            "volume": str(volume)
+        }
+        if ordertype == "limit" and price is not None:
+            payload["price"] = str(price)
+
+        postdata_str = urllib.parse.urlencode(payload)
+
+        # Sign
+        sha256_digest = hashlib.sha256((nonce + postdata_str).encode("utf-8")).digest()
+        hmac_key = base64.b64decode(self.api_secret)
+        to_sign = path.encode('utf-8') + sha256_digest
+        signature = hmac.new(hmac_key, to_sign, hashlib.sha512)
+        sigdigest = base64.b64encode(signature.digest()).decode()
+
+        headers = {
+            "API-Key": self.api_key,
+            "API-Sign": sigdigest,
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+
+        self._check_rate_limit()
+        self._increment_call()
+        resp = safe_post(url, data=payload, headers=headers)
+        if not resp:
+            logger.error("[KrakenMixedClient] place_order => no response => return {}")
+            return {}
+
+        j = resp.json()
+        err = j.get("error", [])
+        if err:
+            logger.error(f"[KrakenMixedClient] place_order => error={err}")
+            return {}
+
+        r = j.get("result", {})
+        txids = r.get("txid", [])
+        if not txids:
+            logger.warning("[KrakenMixedClient] place_order => geen txid in result => return {}")
+            return {}
+
+        order_id = txids[0]
+        descr = r.get("descr", {})
+        logger.info(f"[KrakenMixedClient] Placed {ordertype} order => side={side}, symbol={symbol}, vol={volume}, order_id={order_id}")
+        return {"order_id": order_id, "description": descr}
+    # [LIVE TRADE CHANGE END]
 
     def _check_rate_limit(self):
         now = time.time()
@@ -382,8 +523,7 @@ class KrakenMixedClient:
     # -------------------------------------------
     # (A) Publieke WS code
     # -------------------------------------------
-    # De rest van de code is ongewijzigd, behalve wat je hierboven al ziet
-    # (extra poll threads, minLot toegevoegingen etc.)
+    # (NIET AANGEPAST, behalve debug)
     # -------------------------------------------
 
     def _start_ws(self):
@@ -600,8 +740,6 @@ class KrakenMixedClient:
         candle = (ts_ms, local_pair, interval_str, open_p, high_p, low_p, close_p, volume)
 
         # [ADDED] => skip fallback tot candle min. 20s oud na officiele eind
-        #          (dus current_time_ms - ts_ms >= 20000)
-        #    if we do normal is_candle_closed => ok, else skip fallback
         if is_candle_closed(ts_ms, interval_str):
             logger.info(
                 f"[Candle CLOSED] WS => {local_pair} {interval_str}, start_ts={ts_ms}, recognized closed at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
@@ -808,35 +946,50 @@ class KrakenMixedClient:
         price = cost / vol if vol > 0 else float(fill_data.get("price", "0"))
         logger.info(f"[PrivateWS] ownTrade => txid={txid}, side={side}, vol={vol}, price={price}, fee={fee}")
 
-        # 1) fill => in 'fills' met exchange="Kraken"
-        fill_row = {
-            "order_id": txid,
-            "market": pair,
+        # [QUEUE CHANGE START]
+        # In plaats van direct DB-manager calls, push in self.trade_fills_queue
+        fill_event = {
+            "txid": txid,
             "side": side,
-            "fill_amount": vol,
-            "fill_price": price,
-            "fee_amount": fee,
-            "timestamp": ms_,
-            "exchange": "Kraken"
+            "vol": vol,
+            "cost": cost,
+            "fee": fee,
+            "pair": pair,
+            "timestamp_ms": ms_,
+            "price": price
         }
-        self.db_manager.save_fill(fill_row)
+        self.trade_fills_queue.put(fill_event)
+        # [QUEUE CHANGE END]
+
+        # 1) fill => in 'fills' met exchange="Kraken"
+        #fill_row = {
+        #    "order_id": txid,
+        #    "market": pair,
+        #    "side": side,
+        #    "fill_amount": vol,
+        #    "fill_price": price,
+        #    "fee_amount": fee,
+        #    "timestamp": ms_,
+        #    "exchange": "Kraken"
+        #}
+        #self.db_manager.save_fill(fill_row)
 
         # 2) trade => in 'trades' met exchange="Kraken"
-        trade_data = {
-            "symbol": pair,
-            "side": side,
-            "amount": vol,
-            "price": price,
-            "timestamp": ms_,
-            "position_id": txid,
-            "position_type": "unknown",
-            "status": "closed",
-            "pnl_eur": 0.0,
-            "fees": fee,
-            "trade_cost": cost,
-            "exchange": "Kraken"
-        }
-        self.db_manager.save_trade(trade_data)
+        #trade_data = {
+        #    "symbol": pair,
+        #    "side": side,
+        #    "amount": vol,
+        #    "price": price,
+        #    "timestamp": ms_,
+        #    "position_id": txid,
+        #    "position_type": "unknown",
+        #    "status": "closed",
+        #    "pnl_eur": 0.0,
+        #    "fees": fee,
+        #    "trade_cost": cost,
+        #    "exchange": "Kraken"
+        #}
+        #self.db_manager.save_trade(trade_data)
         # Indien van toepassing, roep hier ook een functie aan voor position-updates.
 
     def _on_ws_private_error(self, ws, error):

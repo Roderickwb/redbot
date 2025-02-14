@@ -651,7 +651,8 @@ class PullbackAccumulateStrategy:
             "pnl_eur": pnl_eur,
             "fees": fees,
             "trade_cost": trade_cost,
-            "strategy_name": "pullback"
+            "strategy_name": "pullback",
+            "is_master": 1
         }
         self.db_manager.save_trade(trade_data)
 
@@ -682,188 +683,226 @@ class PullbackAccumulateStrategy:
         self.open_positions[symbol]["filled_amount"] = Decimal(str(amount))
 
     def _buy_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
-        """
-        [idem: ongewijzigd, behoud van functionaliteit; zie boven in je code]
-        """
-        self.logger.info(f"### BUY portion => closing SHORT? reason={reason} symbol={symbol}")
+        self.logger.info(f"### BUY portion => reason={reason}, symbol={symbol}")
+
+        # ========== Bestaande portion & leftover-logic ==========
         amt_to_buy = total_amt * portion
         leftover_after_buy = total_amt - amt_to_buy
         min_lot = self._get_min_lot(symbol)
         if portion < 1 and leftover_after_buy > 0 and leftover_after_buy < min_lot:
-            self.logger.info(f"[buy_portion] leftover {leftover_after_buy} < minLot={min_lot}, force entire close => portion=1.0")
+            self.logger.info(
+                f"[buy_portion] leftover {leftover_after_buy} < minLot={min_lot}, force entire close => portion=1.0")
             amt_to_buy = total_amt
             portion = Decimal("1.0")
         if amt_to_buy < min_lot:
-            self.logger.info(f"[PullbackStrategy] skip partial BUY => amt_to_buy={amt_to_buy:.4f} < minLot={min_lot:.4f}")
+            self.logger.info(
+                f"[PullbackStrategy] skip partial BUY => amt_to_buy={amt_to_buy:.4f} < minLot={min_lot:.4f}")
             return
+
         pos = self.open_positions[symbol]
         entry_price = pos["entry_price"]
         position_id = pos["position_id"]
         position_type = pos["position_type"]
+        db_id = pos.get("db_id", None)
 
         if exec_price is not None:
             current_price = exec_price
         else:
             current_price = self._get_ws_price(symbol)
-
         if current_price <= 0:
             self.logger.warning(f"[PullbackStrategy] _buy_portion => price=0 => skip BUY {symbol}")
             return
 
+        # PnL
         raw_pnl = (entry_price - current_price) * amt_to_buy
         trade_cost = current_price * amt_to_buy
         fees = float(trade_cost * Decimal("0.0025"))
         realized_pnl = float(raw_pnl) - fees
 
-        self.logger.info(
-            f"[INFO {reason}] {symbol}: portion={portion}, amt_to_buy={amt_to_buy:.6f}, entry={entry_price}, "
-            f"current_price={current_price}, trade_cost={trade_cost}, fees={fees:.2f}"
-        )
+        # ========== Bestaand "status" op child-trade basis ==========
         if portion < 1:
-            trade_status = "partial"
+            child_status = "partial"
         else:
-            trade_status = "closed"
+            child_status = "closed"
 
+        self.logger.info(
+            f"[INFO {reason}] {symbol}: portion={portion}, amt_to_buy={amt_to_buy:.4f}, entry={entry_price}, "
+            f"current_price={current_price}, trade_cost={trade_cost}, fees={fees:.2f}, child_status={child_status}"
+        )
+
+        # Plaats live/paper order
         if self.order_client:
             self.order_client.place_order("buy", symbol, float(amt_to_buy), order_type="market")
             self.logger.info(
-                f"[LIVE/PAPER] BUY {symbol} => {portion * 100:.1f}%, amt={amt_to_buy:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
-            )
-            trade_data = {
-                "symbol": symbol,
-                "side": "buy",
-                "amount": float(amt_to_buy),
-                "price": float(current_price),
-                "timestamp": int(time.time() * 1000),
-                "position_id": position_id,
-                "position_type": position_type,
-                "status": trade_status,
-                "pnl_eur": realized_pnl,
-                "fees": fees,
-                "trade_cost": float(trade_cost),
-                "strategy_name": "pullback"
-            }
-            self.db_manager.save_trade(trade_data)
-        else:
-            self.logger.info(
-                f"[Paper] BUY {symbol} => {portion * 100:.1f}%, amt={amt_to_buy:.4f}, reason={reason}, (fees={fees:.2f}, pnl={realized_pnl:.2f})"
+                f"[LIVE/PAPER] BUY {symbol} => portion={portion}, amt={amt_to_buy:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
             )
 
-        self.open_positions[symbol]["amount"] -= amt_to_buy
-        if self.open_positions[symbol]["amount"] <= Decimal("0"):
+        # ========== 1) SCHRIJF EEN CHILD-TRADE RIJ ==========
+        child_data = {
+            "symbol": symbol,
+            "side": "buy",
+            "amount": float(amt_to_buy),
+            "price": float(current_price),
+            "timestamp": int(time.time() * 1000),
+            "position_id": position_id,
+            "position_type": position_type,
+            "status": child_status,  # 'partial' of 'closed' => child
+            "pnl_eur": realized_pnl,
+            "fees": fees,
+            "trade_cost": float(trade_cost),
+            "strategy_name": "pullback",
+            "is_master": 0  # <--- BELANGRIJK: child
+        }
+        self.db_manager.save_trade(child_data)
+
+        # ========== 2) Overgebleven leftover-code voor MASTER-update ==========
+        # (hierin update je pos["amount"], check leftover, update master in DB, etc.)
+        pos["amount"] -= amt_to_buy
+        leftover_amt = pos["amount"]
+
+        if leftover_amt <= Decimal("0"):
             self.logger.info(f"[PullbackStrategy] Full short position closed => {symbol}")
-            db_id = pos.get("db_id", None)
             if db_id:
-                self.db_manager.update_trade(db_id, {"status": "closed"})
-                self.logger.info(f"[PullbackStrategy] Trade {db_id} => status=closed in DB")
-            if db_id:
+                # Meestal "master" => closed
+                old_row = self.db_manager.execute_query(
+                    "SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1",
+                    (db_id,)
+                )
+                if old_row:
+                    old_fees, old_pnl = old_row[0]
+                    new_fees = old_fees + fees
+                    new_pnl = old_pnl + realized_pnl
+                    self.db_manager.update_trade(db_id, {
+                        "status": "closed",
+                        "fees": new_fees,
+                        "pnl_eur": new_pnl
+                    })
+                    self.logger.info(f"[PullbackStrategy] Master trade {db_id} => status=closed in DB")
                 self.__record_trade_signals(db_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
             del self.open_positions[symbol]
         else:
-            db_id = pos.get("db_id", None)
             if db_id:
                 old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,))
                 if old_row:
                     old_fees, old_pnl = old_row[0]
                     new_fees = old_fees + fees
                     new_pnl = old_pnl + realized_pnl
-                    self.db_manager.update_trade(db_id, {"status": "partial", "fees": new_fees, "pnl_eur": new_pnl})
-                    self.logger.info(f"[PullbackStrategy] updated open trade {db_id} => partial fees={new_fees}, pnl={new_pnl}")
-            if db_id:
-                self.__record_trade_signals(db_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
+                    self.db_manager.update_trade(db_id, {
+                        "status": "partial",
+                        "fees": new_fees,
+                        "pnl_eur": new_pnl
+                    })
+                    self.logger.info(
+                        f"[PullbackStrategy] updated open trade {db_id} => partial fees={new_fees}, pnl={new_pnl}")
+            self.__record_trade_signals(db_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
     def _sell_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
-        """
-        [idem: ongewijzigd]
-        """
+        self.logger.info(f"### SELL portion => reason={reason}, symbol={symbol}")
+
         amt_to_sell = total_amt * portion
         leftover_after_sell = total_amt - amt_to_sell
-        ml = self._get_min_lot(symbol)
+        min_lot = self._get_min_lot(symbol)
 
-        if portion < 1 and leftover_after_sell > 0 and leftover_after_sell < ml:
-            self.logger.info(f"[sell_portion] leftover {leftover_after_sell} < minLot={ml}, force entire close => portion=1.0")
+        if portion < 1 and leftover_after_sell > 0 and leftover_after_sell < min_lot:
+            self.logger.info(
+                f"[sell_portion] leftover {leftover_after_sell} < minLot={min_lot}, force entire close => portion=1.0")
             amt_to_sell = total_amt
             portion = Decimal("1.0")
 
-        if amt_to_sell < ml:
-            self.logger.info(f"[sell_portion] skip partial => amt_to_sell={amt_to_sell} < minLot={ml}")
+        if amt_to_sell < min_lot:
+            self.logger.info(f"[sell_portion] skip partial => amt_to_sell={amt_to_sell} < minLot={min_lot}")
             return
 
         pos = self.open_positions[symbol]
         entry_price = pos["entry_price"]
         position_id = pos["position_id"]
         position_type = pos["position_type"]
+        db_id = pos.get("db_id", None)
 
+        # Bepaal exec_price
         if exec_price is not None:
             current_price = exec_price
         else:
             current_price = self._get_ws_price(symbol)
-
         if current_price <= 0:
             self.logger.warning(f"[PullbackStrategy] _sell_portion => price=0 => skip SELL {symbol}")
             return
 
+        # realized PnL
         raw_pnl = (current_price - entry_price) * amt_to_sell
         trade_cost = current_price * amt_to_sell
         fees = float(trade_cost * Decimal("0.0025"))
         realized_pnl = float(raw_pnl) - fees
 
-        self.logger.info(
-            f"[INFO {reason}] {symbol}: portion={portion}, amt_to_sell={amt_to_sell:.6f}, "
-            f"entry={entry_price}, current_price={current_price}, trade_cost={trade_cost}, fees={fees:.2f}"
-        )
+        # portion-logic => child_status
         if portion < 1:
-            trade_status = "partial"
+            child_status = "partial"
         else:
-            trade_status = "closed"
+            child_status = "closed"
 
+        self.logger.info(
+            f"[INFO {reason}] {symbol}: portion={portion}, amt_to_sell={amt_to_sell:.4f}, "
+            f"entry={entry_price}, current_price={current_price}, trade_cost={trade_cost:.2f}, fees={fees:.2f}"
+        )
+
+        # Plaats order
         if self.order_client:
             self.order_client.place_order("sell", symbol, float(amt_to_sell), order_type="market")
             self.logger.info(
-                f"[LIVE/PAPER] SELL {symbol} => {portion * 100:.1f}%, amt={amt_to_sell:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
-            )
-            trade_data = {
-                "symbol": symbol,
-                "side": "sell",
-                "amount": float(amt_to_sell),
-                "price": float(current_price),
-                "timestamp": int(time.time() * 1000),
-                "position_id": position_id,
-                "position_type": position_type,
-                "status": trade_status,
-                "pnl_eur": realized_pnl,
-                "fees": fees,
-                "trade_cost": float(trade_cost),
-                "strategy_name": "pullback"
-            }
-            self.db_manager.save_trade(trade_data)
-        else:
-            self.logger.info(
-                f"[Paper] SELL {symbol} => {portion * 100:.1f}%, amt={amt_to_sell:.4f}, reason={reason}, (fees={fees:.2f}, pnl={realized_pnl:.2f})"
+                f"[LIVE/PAPER] SELL {symbol} => portion={portion * 100:.1f}%, amt={amt_to_sell:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
             )
 
-        self.open_positions[symbol]["amount"] -= amt_to_sell
-        if self.open_positions[symbol]["amount"] <= Decimal("0"):
+        # =========== (A) Child–trade (is_master=0) ===========
+        child_data = {
+            "symbol": symbol,
+            "side": "sell",
+            "amount": float(amt_to_sell),
+            "price": float(current_price),
+            "timestamp": int(time.time() * 1000),
+            "position_id": position_id,
+            "position_type": position_type,
+            "status": child_status,  # 'partial' / 'closed'
+            "pnl_eur": realized_pnl,
+            "fees": fees,
+            "trade_cost": float(trade_cost),
+            "strategy_name": "pullback",
+            "is_master": 0
+        }
+        self.db_manager.save_trade(child_data)
+
+        # =========== (B) leftover => update master ===========
+        pos["amount"] -= amt_to_sell
+        leftover_amt = pos["amount"]
+
+        if leftover_amt <= Decimal("0"):
             self.logger.info(f"[PullbackStrategy] Full position closed => {symbol}")
-            db_id = pos.get("db_id", None)
-            if db_id:
-                self.db_manager.update_trade(db_id, {"status": "closed"})
-                self.logger.info(f"[PullbackStrategy] Trade {db_id} => status=closed in DB")
-            if db_id:
-                self.__record_trade_signals(db_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
-            del self.open_positions[symbol]
-        else:
-            db_id = pos.get("db_id", None)
             if db_id:
                 old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,))
                 if old_row:
                     old_fees, old_pnl = old_row[0]
                     new_fees = old_fees + fees
                     new_pnl = old_pnl + realized_pnl
-                    self.db_manager.update_trade(db_id, {"status": "partial", "fees": new_fees, "pnl_eur": new_pnl})
-                    self.logger.info(f"[PullbackStrategy] updated open trade {db_id} => partial fees={new_fees}, pnl={new_pnl}")
+                    self.db_manager.update_trade(db_id, {"status": "closed", "fees": new_fees, "pnl_eur": new_pnl})
+                    self.logger.info(f"[PullbackStrategy] Master trade {db_id} => status=closed in DB")
+
+                self.__record_trade_signals(db_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
+            del self.open_positions[symbol]
+        else:
             if db_id:
-                self.__record_trade_signals(db_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
+                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,))
+                if old_row:
+                    old_fees, old_pnl = old_row[0]
+                    new_fees = old_fees + fees
+                    new_pnl = old_pnl + realized_pnl
+                    self.db_manager.update_trade(db_id, {
+                        "status": "partial",
+                        "fees": new_fees,
+                        "pnl_eur": new_pnl
+                    })
+                    self.logger.info(
+                        f"[PullbackStrategy] updated master trade {db_id} => partial => fees={new_fees}, pnl={new_pnl}")
+
+            self.__record_trade_signals(db_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
     # [Hulp-code, ongewijzigd]
     @staticmethod

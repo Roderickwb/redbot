@@ -362,7 +362,6 @@ class BreakoutStrategy:
             "lowest_price": price if side == "sell" else Decimal("999999")
         }
         self.open_positions[symbol] = pos_info
-        self.logger.info(f"[Breakout] OPEN {side.upper()} {symbol}@{price:.2f}, SL={sl_price:.2f}")
 
         # ---------------------------------------------------
         # [NIEUW] => log "open" signals in trade_signals table
@@ -383,16 +382,22 @@ class BreakoutStrategy:
             "pnl_eur": 0.0,
             "fees": 0.0,
             "trade_cost": float(amount * price),
-            "strategy_name": "breakout"
+            "strategy_name": "breakout",
+            "is_master": 1
         }
         self.db_manager.save_trade(trade_data)
 
         # Om het ID te weten (zodat we in 'trade_signals' de foreign key (trade_id) kunnen zetten),
         #   pakken we de laatst ingevoerde rowid:
         new_trade_id = self.db_manager.cursor.lastrowid
+        self.logger.info(f"[Breakout] Master trade {symbol} => db_id={new_trade_id} is open.")
+
+        # Sla DB-id op in pos_info, zodat we 'm bij closing kunnen updaten
+        pos_info["db_id"] = new_trade_id
 
         # signaal loggen:
         self._record_trade_signals(trade_id=new_trade_id, event_type="open", symbol=symbol)
+        self.logger.info(f"[Breakout] OPEN {side.upper()} {symbol}@{price:.2f}, SL={sl_price:.2f}")
 
     def _manage_position(self, symbol: str):
         pos = self.open_positions.get(symbol)
@@ -488,6 +493,7 @@ class BreakoutStrategy:
             else:
                 self.logger.info(f"[Paper] CLOSE SHORT => BUY {symbol} amt={amt:.4f}")
 
+        # Verwijder uit open_positions
         del self.open_positions[symbol]
         self.logger.info(f"[Breakout] Positie {symbol} volledig gesloten.")
 
@@ -519,24 +525,53 @@ class BreakoutStrategy:
         # dan kunnen we hier het 'trade_id' pakken (als je dat trackte).
         # Hier doen we het net als bij open_position: we maken ad-hoc wat info.
         # Normaliter heb je 'db_manager.save_trade(...)' voor de close, dus daarna:
-        trade_data = {
+
+        # (A) Child–trade: 1 row => 'closed', is_master=0
+        current_price = self._get_latest_price(symbol)
+        raw_pnl = (current_price - pos["entry_price"]) * Decimal(str(amt))
+        trade_cost = float(current_price * amt)
+        fees = float(trade_cost * Decimal("0.0025"))
+        realized_pnl = float(raw_pnl) - fees
+
+        child_data = {
             "timestamp": int(time.time() * 1000),
             "symbol": symbol,
-            "side": "sell" if side=="buy" else "buy",  # tegengestelde order
-            "price": float(self._get_latest_price(symbol)),
+            "side": "sell" if side == "buy" else "buy",  # tegengestelde order
+            "price": float(current_price),
             "amount": float(amt),
             "position_id": None,
-            "position_type": side,
+            "position_type": side,  # "buy"/"sell"
             "status": "closed",
-            "pnl_eur": 0.0,
-            "fees": 0.0,
-            "trade_cost": float(amt * self._get_latest_price(symbol)),
-            "strategy_name": "breakout"
+            "pnl_eur": realized_pnl,
+            "fees": fees,
+            "trade_cost": trade_cost,
+            "strategy_name": "breakout",
+            "is_master": 0  # Child-trade
         }
-        self.db_manager.save_trade(trade_data)
+        self.db_manager.save_trade(child_data)
+        child_trade_id = self.db_manager.cursor.lastrowid
+        self.logger.info(f"[Breakout] Child trade => id={child_trade_id}, closed => realized_pnl={realized_pnl:.2f}")
 
-        closed_trade_id = self.db_manager.cursor.lastrowid
-        self._record_trade_signals(trade_id=closed_trade_id, event_type="closed", symbol=symbol)
+        # (B) Updaten van je master-trade => status='closed'
+        master_id = pos.get("db_id", None)
+        if master_id:
+            old_row = self.db_manager.execute_query(
+                "SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1",
+                (master_id,)
+            )
+            if old_row:
+                old_fees, old_pnl = old_row[0]
+                new_fees = old_fees + fees
+                new_pnl = old_pnl + realized_pnl
+                self.db_manager.update_trade(master_id, {
+                    "status": "closed",
+                    "fees": new_fees,
+                    "pnl_eur": new_pnl
+                })
+                self.logger.info(f"[Breakout] Master trade={master_id} updated => closed + PnL={new_pnl:.2f}")
+
+            # Signaal
+            self._record_trade_signals(trade_id=master_id, event_type="closed", symbol=symbol)
 
     def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
         """

@@ -52,7 +52,7 @@ pullback_accumulate_strategy:
   macd_bear_threshold: 1   # minder stregn is +1
 
   # bepaald hoever de pullback van de weerstand of support ,oet bewegen om in te stappen = pullback = true
-  pullback_atr_mult: 1.5 # normaal 1.5
+  pullback_atr_mult: 1.2 # normaal 1.5
 
   ml_model_enabled: true
 

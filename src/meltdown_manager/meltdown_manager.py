@@ -2,8 +2,16 @@
 
 import time
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import pandas as pd
+
+from src.logger.logger import setup_logger
+
+try:
+    from logger import setup_logger
+except ImportError:
+    setup_logger = None  # Fallback als je geen logger.py hebt; pas dit naar wens aan.
+
 
 class MeltdownManager:
     """
@@ -34,7 +42,23 @@ class MeltdownManager:
         self.config = config
         self.db_manager = db_manager
 
-        self.logger = logger if logger else logging.getLogger("meltdown_manager")
+        # Automatisch een eigen logger aanmaken als er geen is meegegeven
+        if logger is None:
+            if setup_logger:
+                logger = setup_logger(
+                    name="meltdown_manager",
+                    log_file="logs/meltdown_manager.log",
+                    level=logging.DEBUG,  # Hoger debug-niveau
+                    max_bytes=5_000_000,
+                    backup_count=5,
+                    use_json=False
+                )
+            else:
+                # Valt terug op de standaard logger als setup_logger niet beschikbaar is
+                logger = logging.getLogger("meltdown_manager")
+                logger.setLevel(logging.DEBUG)
+
+        self.logger = logger
         self.logger.info("[MeltdownManager] init ...")
 
         # meltdown state
@@ -47,7 +71,7 @@ class MeltdownManager:
         self.flash_crash_pct = Decimal(str(self.config.get("flash_crash_pct", "20")))
         self.rsi_reentry_threshold = Decimal(str(self.config.get("rsi_reentry_threshold", "30")))
 
-        self.meltdown_coins = self.config.get("meltdown_coins", ["BTC-EUR","ETH-EUR","XRP-EUR"])
+        self.meltdown_coins = self.config.get("meltdown_coins", ["BTC-EUR", "ETH-EUR", "XRP-EUR"])
         self.meltdown_coins_needed = int(self.config.get("meltdown_coins_needed", 2))
         self.meltdown_tf = self.config.get("meltdown_tf", "5m")
         self.meltdown_lookback = int(self.config.get("meltdown_lookback", 3))
@@ -182,7 +206,17 @@ class MeltdownManager:
             return False
 
         last_rsi = df_entry["rsi"].iloc[-1]
-        last_rsi_dec = Decimal(str(last_rsi))
+
+        # Fix voor NaN / None / invalid decimal
+        if last_rsi is None or pd.isna(last_rsi):
+            self.logger.warning(f"[MeltdownManager] RSI re-entry check => ongeldige (NaN/None) RSI: {last_rsi}")
+            return False
+
+        try:
+            last_rsi_dec = Decimal(str(last_rsi))
+        except InvalidOperation:
+            self.logger.warning(f"[MeltdownManager] RSI re-entry check => ongeldige RSI-string: {last_rsi}")
+            return False
 
         self.logger.info(
             f"[MeltdownManager] RSI re-entry check => RSI={last_rsi_dec:.2f}, threshold={self.rsi_reentry_threshold}"

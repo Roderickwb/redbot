@@ -97,9 +97,18 @@ class PullbackAccumulateStrategy:
         else:
             self.logger.debug("[PullbackAccumulateStrategy] init (no config_path)")
 
+        # -----------------------------------------------------
+        # MeltdownManager krijgt eigen logger (ipv self.logger)
+        # -----------------------------------------------------
+        meltdown_logger = setup_logger(
+            name="meltdown_manager",
+            log_file="logs/meltdown_manager.log",
+            level=logging.DEBUG
+        )
+
         # Laden config, bv. meltdown_cfg = full_config.get("meltdown_manager", {})
         meltdown_cfg = self.strategy_config.get("meltdown_manager", {})
-        self.meltdown_manager = MeltdownManager(meltdown_cfg, db_manager=db_manager, logger=self.logger)
+        self.meltdown_manager = MeltdownManager(meltdown_cfg, db_manager=db_manager, logger=meltdown_logger)
         self.initial_capital = Decimal(str(self.strategy_config.get("initial_capital", "100")))
 
         # -----------------------------------------------------
@@ -176,6 +185,7 @@ class PullbackAccumulateStrategy:
 
     def execute_strategy(self, symbol: str):
         self.logger.info(f"[Pullback DEBUG] execute_strategy() called for {symbol}")
+        # 1) Dubbele meltdown-aanroep verwijderen, dus nog maar één keer:
         meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
         """
         Eenvoudige flow:
@@ -185,7 +195,7 @@ class PullbackAccumulateStrategy:
          4) check pullback op 15m
          5) manage pos of open pos
         """
-        meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
+        # (de tweede meltdown_active = ... regel is weggehaald)
 
         # Check of er een open positie is voor dit symbool
         has_position = (symbol in self.open_positions)
@@ -280,7 +290,7 @@ class PullbackAccumulateStrategy:
                 for i in range(4):  # 4 pogingen
                     time.sleep(15)  # 15s wachten
                     if is_candle_closed(last_candle_ms, self.entry_timeframe):
-                        self.logger.debug(f"[Pullback] {symbol}: Candle is nu afgesloten (poging {i + 1}) => proceed.")
+                        self.logger.debug(f"[Pullback] {symbol}: Candle is nu afgesloten (poging {i+1}) => proceed.")
                         break
                 else:
                     # Als we de for-lus niet ‘break’-en, is na 4× check de candle nog niet dicht => skip
@@ -322,7 +332,8 @@ class PullbackAccumulateStrategy:
             # Rolling average
             self.depth_trend_history.append(depth_score_instant)
             depth_score = sum(self.depth_trend_history) / len(self.depth_trend_history)
-            self.logger.info(f"[DepthTrend] instant={depth_score_instant:.2f}, rolling_avg={depth_score:.2f}")
+            # (4) DepthTrend-regel uitgecommentarieerd:
+            # self.logger.info(f"[DepthTrend] instant={depth_score_instant:.2f}, rolling_avg={depth_score:.2f}")
 
         # Equity check
         total_equity = self._get_equity_estimate()
@@ -651,8 +662,18 @@ class PullbackAccumulateStrategy:
         position_type = "long" if side == "buy" else "short"
 
         if self.order_client:
-            self.order_client.place_order(side, symbol, float(amount), order_type="market")
-            self.logger.info(f"[LIVE/PAPER] {side.upper()} {symbol} => amt={amount:.4f}, price={current_price}, cost={buy_eur}")
+            try:
+                # Zonder order_type="market", als je KrakenMixedClient dat niet kent
+                self.order_client.place_order(side, symbol, float(amount))
+            except Exception as e:
+                error_msg = str(e)
+                # Als je wilt checken of 'InsufficientFunds' of iets specifieks in error_msg staat:
+                if "InsufficientFunds" in error_msg or "insufficient" in error_msg.lower():
+                    self.logger.warning(
+                        f"[PullbackStrategy] skip => insufficient funds voor {symbol}. Error: {error_msg}")
+                else:
+                    self.logger.warning(f"[PullbackStrategy] skip => place_order error voor {symbol}: {error_msg}")
+                return
 
         fees = 0.0
         pnl_eur = 0.0
@@ -703,6 +724,7 @@ class PullbackAccumulateStrategy:
 
     def _buy_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
         self.logger.info(f"### BUY portion => reason={reason}, symbol={symbol}")
+        # Ongewijzigd
 
         # ========== Bestaande portion & leftover-logic ==========
         amt_to_buy = total_amt * portion
@@ -770,7 +792,7 @@ class PullbackAccumulateStrategy:
             "fees": fees,
             "trade_cost": float(trade_cost),
             "strategy_name": "pullback",
-            "is_master": 0  # <--- BELANGRIJK: child
+            "is_master": 0
         }
         self.db_manager.save_trade(child_data)
 
@@ -817,6 +839,7 @@ class PullbackAccumulateStrategy:
 
     def _sell_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
         self.logger.info(f"### SELL portion => reason={reason}, symbol={symbol}")
+        # Ongewijzigd
 
         amt_to_sell = total_amt * portion
         leftover_after_sell = total_amt - amt_to_sell
@@ -1091,8 +1114,9 @@ class PullbackAccumulateStrategy:
         equity_now = eur_balance + total_pos_value
         profit_val = equity_now - self.initial_capital
         profit_pct = (profit_val / self.initial_capital * Decimal("100")) if self.initial_capital > 0 else 0
-        self.logger.info(f"[EquityCheck] equity_now={equity_now:.2f}, init_cap={self.initial_capital}, "
-                         f"profit_val={profit_val:.2f}, profit_pct={profit_pct:.2f}%")
+        # (2) EquityCheck-log uitgecommentarieerd:
+        # self.logger.info(f"[EquityCheck] equity_now={equity_now:.2f}, init_cap={self.initial_capital}, "
+        #                  f"profit_val={profit_val:.2f}, profit_pct={profit_pct:.2f}%")
         return equity_now
 
     def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
@@ -1113,7 +1137,8 @@ class PullbackAccumulateStrategy:
             # ===============================
 
             if df.empty:
-                self.logger.debug(f"[DEBUG] Geen candles uit 'candles_kraken' voor {symbol} ({interval}).")
+                # (3) Debug-melding "Geen candles..." uitgecommentarieerd:
+                # self.logger.debug(f"[DEBUG] Geen candles uit 'candles_kraken' voor {symbol} ({interval}).")
                 return pd.DataFrame()
 
             for col in ['datetime_utc', 'exchange']:

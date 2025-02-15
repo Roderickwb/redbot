@@ -5,6 +5,7 @@ import logging
 from decimal import Decimal, InvalidOperation
 import pandas as pd
 
+# We nemen aan dat je deze functie WEL hebt, uit je eigen logger.py
 from src.logger.logger import setup_logger
 
 try:
@@ -37,26 +38,21 @@ class MeltdownManager:
           }
 
         db_manager => je DatabaseManager
-        logger => optioneel (valt terug op logging.getLogger("meltdown_manager"))
+        logger => optioneel. Als None, maakt deze class zélf meltdown_manager.log aan.
         """
         self.config = config
         self.db_manager = db_manager
 
-        # Automatisch een eigen logger aanmaken als er geen is meegegeven
+        # Als er geen logger is doorgegeven, maken we er zelf een
         if logger is None:
-            if setup_logger:
-                logger = setup_logger(
-                    name="meltdown_manager",
-                    log_file="logs/meltdown_manager.log",
-                    level=logging.DEBUG,  # Hoger debug-niveau
-                    max_bytes=5_000_000,
-                    backup_count=5,
-                    use_json=False
-                )
-            else:
-                # Valt terug op de standaard logger als setup_logger niet beschikbaar is
-                logger = logging.getLogger("meltdown_manager")
-                logger.setLevel(logging.DEBUG)
+            logger = setup_logger(
+                name="meltdown_manager",
+                log_file="logs/meltdown_manager.log",
+                level=logging.DEBUG,  # Hoger debug-niveau
+                max_bytes=5_000_000,
+                backup_count=5,
+                use_json=False
+            )
 
         self.logger = logger
         self.logger.info("[MeltdownManager] init ...")
@@ -67,14 +63,14 @@ class MeltdownManager:
         self.meltdown_start_time = 0.0
 
         # parameters
-        self.daily_loss_pct = Decimal(str(self.config.get("daily_loss_pct", "20")))
-        self.flash_crash_pct = Decimal(str(self.config.get("flash_crash_pct", "20")))
-        self.rsi_reentry_threshold = Decimal(str(self.config.get("rsi_reentry_threshold", "30")))
+        self.daily_loss_pct = Decimal(str(config.get("daily_loss_pct", "20")))
+        self.flash_crash_pct = Decimal(str(config.get("flash_crash_pct", "20")))
+        self.rsi_reentry_threshold = Decimal(str(config.get("rsi_reentry_threshold", "30")))
 
-        self.meltdown_coins = self.config.get("meltdown_coins", ["BTC-EUR", "ETH-EUR", "XRP-EUR"])
-        self.meltdown_coins_needed = int(self.config.get("meltdown_coins_needed", 2))
-        self.meltdown_tf = self.config.get("meltdown_tf", "5m")
-        self.meltdown_lookback = int(self.config.get("meltdown_lookback", 3))
+        self.meltdown_coins = config.get("meltdown_coins", ["BTC-EUR", "ETH-EUR", "XRP-EUR"])
+        self.meltdown_coins_needed = int(config.get("meltdown_coins_needed", 2))
+        self.meltdown_tf = config.get("meltdown_tf", "5m")
+        self.meltdown_lookback = int(config.get("meltdown_lookback", 3))
 
     def update_meltdown_state(self, strategy, symbol: str) -> bool:
         """
@@ -126,7 +122,8 @@ class MeltdownManager:
             self.logger.warning("[MeltdownManager] initial_capital <= 0 => skip daily loss check.")
             return False
 
-        drop_pct = (drop_val / capital_dec) * Decimal("100")
+        drop_val = capital_dec - equity_now
+        drop_pct = (drop_val / capital_dec) * Decimal("100") if capital_dec > 0 else Decimal("0")
 
         # -- Toevoeging om duidelijk te loggen wat er gebeurt --
         self.logger.info(
@@ -162,7 +159,7 @@ class MeltdownManager:
             try:
                 first_dec = Decimal(str(first_close_val))
                 last_dec = Decimal(str(last_close_val))
-            except:
+            except InvalidOperation:
                 continue
 
             if first_dec <= 0:
@@ -177,9 +174,11 @@ class MeltdownManager:
         # meltdown als >= meltdown_coins_needed
         if drop_count >= self.meltdown_coins_needed:
             self.logger.warning(
-                f"[MeltdownManager] flash_crash => {drop_count}/{len(self.meltdown_coins)} coins >= {self.flash_crash_pct}% drop => meltdown."
+                f"[MeltdownManager] flash_crash => {drop_count}/{len(self.meltdown_coins)} "
+                f"coins >= {self.flash_crash_pct}% drop => meltdown."
             )
             return True
+
         return False
 
     def _close_all_positions(self, strategy):
@@ -209,16 +208,17 @@ class MeltdownManager:
 
         # Fix voor NaN / None / invalid decimal
         if last_rsi is None or pd.isna(last_rsi):
-            self.logger.warning(f"[MeltdownManager] RSI re-entry check => ongeldige (NaN/None) RSI: {last_rsi}")
+            self.logger.warning(f"[MeltdownManager] RSI re-entry => ongeldige RSI: {last_rsi}")
             return False
 
         try:
             last_rsi_dec = Decimal(str(last_rsi))
         except InvalidOperation:
-            self.logger.warning(f"[MeltdownManager] RSI re-entry check => ongeldige RSI-string: {last_rsi}")
+            self.logger.warning(f"[MeltdownManager] RSI re-entry => ongeldige RSI-string: {last_rsi}")
             return False
 
         self.logger.info(
-            f"[MeltdownManager] RSI re-entry check => RSI={last_rsi_dec:.2f}, threshold={self.rsi_reentry_threshold}"
+            f"[MeltdownManager] RSI re-entry check => RSI={last_rsi_dec:.2f}, "
+            f"threshold={self.rsi_reentry_threshold}"
         )
         return last_rsi_dec > self.rsi_reentry_threshold

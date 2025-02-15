@@ -613,7 +613,7 @@ class PullbackAccumulateStrategy:
 
 
     # ----------------------------------------------------------------
-    # Voorbeeld: _open_position
+    # Open_position
     # ----------------------------------------------------------------
     def _open_position(self, symbol: str, side: str, current_price: Decimal,
                        atr_value: Decimal, extra_invest=False):
@@ -624,7 +624,8 @@ class PullbackAccumulateStrategy:
             self.logger.warning(f"[PullbackStrategy] Already have an open position for {symbol}, skip opening.")
             return
 
-        self.logger.info(f"[PullbackStrategy] OPEN => side={side}, {symbol}@{current_price}, extra_invest={extra_invest}")
+        self.logger.info(
+            f"[PullbackStrategy] OPEN => side={side}, {symbol}@{current_price}, extra_invest={extra_invest}")
 
         if side == "sell":
             self.logger.info(f"### EXTRA LOG ### [OPEN SHORT] {symbol} at {current_price}")
@@ -635,6 +636,16 @@ class PullbackAccumulateStrategy:
         if self.order_client:
             bal = self.order_client.get_balance()
             eur_balance = Decimal(str(bal.get("EUR", "100")))
+
+            # [NIEUW] Spot‐only check: als side=='sell' => we hebben de coin nodig in de wallet
+            if side == "sell":
+                coin_name = symbol.split("-")[0]  # bijv. "TRX" uit "TRX-EUR"
+                coin_balance = Decimal(str(bal.get(coin_name, "0")))
+                if coin_balance <= 0:
+                    self.logger.warning(
+                        f"[PullbackStrategy] No {coin_name} in wallet => skip short {symbol}."
+                    )
+                    return
 
         if current_price is None or current_price <= 0:
             self.logger.warning(f"[PullbackStrategy] current_price={current_price} => skip open pos for {symbol}")
@@ -663,11 +674,11 @@ class PullbackAccumulateStrategy:
 
         if self.order_client:
             try:
-                # Zonder order_type="market", als je KrakenMixedClient dat niet kent
+                # Zonder 'order_type="market"' als jouw KrakenMixedClient dat niet kent
                 self.order_client.place_order(side, symbol, float(amount))
             except Exception as e:
                 error_msg = str(e)
-                # Als je wilt checken of 'InsufficientFunds' of iets specifieks in error_msg staat:
+                # check of er 'insufficient' in de fout staat:
                 if "InsufficientFunds" in error_msg or "insufficient" in error_msg.lower():
                     self.logger.warning(
                         f"[PullbackStrategy] skip => insufficient funds voor {symbol}. Error: {error_msg}")

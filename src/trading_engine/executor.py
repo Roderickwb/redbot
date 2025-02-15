@@ -149,7 +149,7 @@ class Executor:
                 self.kraken_order_client = FakeClient(pairs=kraken_pairs)
             else:
                 self.logger.info("[Executor] Kraken REAL => hier evt. echte private client.")
-                # self.kraken_order_client = KrakenPrivateClient(...)
+                self.kraken_order_client = self.kraken_data_client
 
         # -----------------------------
         # EXECUTOR-config
@@ -287,8 +287,8 @@ class Executor:
                     if self.pullback_strategy_kraken:
                         kraken_pairs = self.kraken_data_client.pairs
                         for symbol in kraken_pairs:
-                            if self._has_new_closed_candle("candles_kraken", symbol, "5m"):
-                                self.logger.debug(f"[Executor] NEW CLOSED 5m => pullback_strategy_kraken({symbol}).")
+                            if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
+                                self.logger.debug(f"[Executor] NEW CLOSED 15m => pullback_strategy_kraken({symbol}).")
                                 self.pullback_strategy_kraken.execute_strategy(symbol)
 
                     # 2) Breakout => 15m in "candles_kraken"

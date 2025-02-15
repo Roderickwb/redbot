@@ -93,9 +93,9 @@ class PullbackAccumulateStrategy:
         self.logger = setup_logger("pullback_strategy", PULLBACK_STRATEGY_LOG_FILE,
                                    logging.DEBUG)  # kan weer naar INFO indien nodig
         if config_path:
-            self.logger.info("[PullbackAccumulateStrategy] init with config_path=%s", config_path)
+            self.logger.debug("[PullbackAccumulateStrategy] init with config_path=%s", config_path)
         else:
-            self.logger.info("[PullbackAccumulateStrategy] init (no config_path)")
+            self.logger.debug("[PullbackAccumulateStrategy] init (no config_path)")
 
         # Laden config, bv. meltdown_cfg = full_config.get("meltdown_manager", {})
         meltdown_cfg = self.strategy_config.get("meltdown_manager", {})
@@ -175,6 +175,8 @@ class PullbackAccumulateStrategy:
 
 
     def execute_strategy(self, symbol: str):
+        self.logger.info(f"[Pullback DEBUG] execute_strategy() called for {symbol}")
+        meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
         """
         Eenvoudige flow:
          1) meltdown-check

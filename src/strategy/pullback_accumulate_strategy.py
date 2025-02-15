@@ -45,8 +45,7 @@ def is_candle_closed(last_candle_ms: int, timeframe: str) -> bool:
     try:
         value = int(timeframe[:-1])
     except ValueError:
-        # Als de parsing mislukt, gaan we ervan uit dat de candle niet afgesloten is
-        return False
+        return False  # Mislukte parsing => niet afgesloten
 
     if unit == "m":
         duration_ms = value * 60 * 1000
@@ -280,26 +279,11 @@ class PullbackAccumulateStrategy:
         else:
             last_candle_ms = int(last_timestamp)
 
+        # -------------- Nieuw: skip direct als candle niet gesloten --------------
         if not is_candle_closed(last_candle_ms, self.entry_timeframe):
-            self.logger.debug(f"[Pullback] {symbol}: Laatste candle nog niet afgesloten => we wachten enkele keren.")
-            # We checken hier tot 4x met telkens 15s pauze,
-            # maar alleen als we *net* voorbij de kwartiergrens zitten:
-            current_minute = time.gmtime().tm_min % 15  # bijv. 0..14
-            # Alleen in de eerste minuut (0..1) doen we deze extra check:
-            if current_minute <= 1:
-                for i in range(4):  # 4 pogingen
-                    time.sleep(15)  # 15s wachten
-                    if is_candle_closed(last_candle_ms, self.entry_timeframe):
-                        self.logger.debug(f"[Pullback] {symbol}: Candle is nu afgesloten (poging {i+1}) => proceed.")
-                        break
-                else:
-                    # Als we de for-lus niet ‘break’-en, is na 4× check de candle nog niet dicht => skip
-                    self.logger.debug(f"[Pullback] {symbol}: Candle nog steeds niet afgesloten => return.")
-                    return
-            else:
-                # We zitten niet (meer) in de eerste minuut => skip
-                self.logger.debug(f"[Pullback] {symbol}: Candle niet afgesloten en niet in eerste minuut => return.")
-                return
+            self.logger.debug(f"[Pullback] {symbol}: Candle NOT closed => skip => pass #2 later.")
+            return "skip_not_closed"
+        # -------------------------------------------------------------------------
 
         prev_candle_ts = self.last_processed_candle_ts.get(symbol, None)
         if prev_candle_ts == last_candle_ms:
@@ -507,9 +491,7 @@ class PullbackAccumulateStrategy:
         side = pos["side"]
         entry = pos["entry_price"]
         amount = pos["amount"]
-
-        # [NIEUW] R = atr_value (1×ATR)
-        one_r = atr_value  # je kunt dit factor > 1 doen als je wilt
+        one_r = atr_value
 
         # Vaste (percentage-based) stoploss
         if side == "buy":

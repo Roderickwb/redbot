@@ -131,10 +131,8 @@ class Executor:
         if self.use_kraken:
             self.logger.info("[Executor] Kraken => init from kraken_cfg.")
 
-            # 1) Bepaal of we private WS willen (als niet paper)
-            #    Je kunt zelf beslissen. Hier doen we: als kraken_paper=False => use_private_ws=True
-            #    Of je maakt er gewoon "use_private_ws=True" van, net wat je wilt
-            use_private_ws = (not self.kraken_paper)  # = True als je ECHT wil traden
+            # Als kraken_paper=False => use_private_ws=True
+            use_private_ws = (not self.kraken_paper)
 
             self.kraken_data_client = KrakenMixedClient(
                 db_manager=self.db_manager,
@@ -165,9 +163,7 @@ class Executor:
         }
         self.config = self.yaml_config.get("executor_config", default_executor_cfg)
 
-        # -----------------------------
-        # ML-engine + strategieën
-        # -----------------------------
+        # ML-engine
         self.ml_engine = MLEngine(
             db_manager=self.db_manager,
             model_path="models/pullback_model.pkl"
@@ -197,7 +193,7 @@ class Executor:
         )
         """
 
-        # == BREAKOUT (Kraken) ==
+        # BREAKOUT (Kraken)
         self.breakout_strategy_kraken = None
         if self.kraken_order_client:
             self.breakout_strategy_kraken = BreakoutStrategy(
@@ -206,7 +202,7 @@ class Executor:
                 config_path="src/config/config.yaml"
             )
 
-        # == ALTCOIN SCANNER (Kraken) ==
+        # ALTCOIN SCANNER (Kraken)
         self.altcoin_scanner_kraken = None
         if self.use_kraken and self.kraken_data_client:
             # We lezen 'altcoin_scanner_strategy' uit je config
@@ -219,9 +215,7 @@ class Executor:
                 logger=None
             )
 
-        # == PULLBACK (Kraken) ==
-        # --------------------------------------------------------
-        # HIER is je “Pullback Accumulate” voor KRAKEN (5m)
+        # PULLBACK (Kraken) (15m by default)
         self.pullback_strategy_kraken = None
         if self.kraken_order_client:
             self.pullback_strategy_kraken = PullbackAccumulateStrategy(
@@ -271,81 +265,56 @@ class Executor:
                 # 1) Verwerk evt. Bitvavo WS events
                 self._process_ws_events()
 
-                # =========== BITVAVO (UIT) ===========
-                """
-                # Voorbeeld: als je Bitvavo-strategieën had geactiveerd:
-                for symbol in self.bitvavo_pairs:
-                    if self._has_new_closed_candle("candles_bitvavo", symbol, "5m"):
-                        self.pullback_strategy_bitvavo.execute_strategy(symbol)
-                    if self._has_new_closed_candle("candles_bitvavo", symbol, "15m"):
-                        self.breakout_strategy_bitvavo.execute_strategy(symbol)
-                """
+                # 2) ROEP ONZE TWEE-PASS PULLBACK (15m) AAN (zie de nieuwe methode hieronder)
+                self.run_once_pullback_15m()
 
-                # =========== KRAKEN STRATEGIES ===========
-                if self.kraken_data_client:
-                    # 1) Pullback => 5m in "candles_kraken"
-                    if self.pullback_strategy_kraken:
-                        kraken_pairs = self.kraken_data_client.pairs
-                        for symbol in kraken_pairs:
-                            if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
-                                self.logger.debug(f"[Executor] NEW CLOSED 15m => pullback_strategy_kraken({symbol}).")
-                                self.pullback_strategy_kraken.execute_strategy(symbol)
+                # 3) Breakout => old _has_new_closed_candle approach
+                if self.breakout_strategy_kraken and self.kraken_data_client:
+                    for symbol in self.kraken_data_client.pairs:
+                        if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
+                            self.logger.debug(f"[Executor] NEW CLOSED 15m => breakout_kraken({symbol}).")
+                            self.breakout_strategy_kraken.execute_strategy(symbol)
 
-                    # 2) Breakout => 15m in "candles_kraken"
-                    if self.breakout_strategy_kraken:
-                        for symbol in self.kraken_data_client.pairs:
-                            if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
-                                self.logger.debug(f"[Executor] NEW CLOSED 15m => breakout_kraken({symbol}).")
-                                self.breakout_strategy_kraken.execute_strategy(symbol)
+                # 4) AltcoinScanner => unchanged
+                if self.altcoin_scanner_kraken and self.kraken_data_client:
+                    any_new_candle = False
+                    for symbol in self.kraken_data_client.pairs:
+                        if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
+                            self.logger.info(f"[Executor] FOUND new closed 15m candle for {symbol} => alt_scanner_kraken!")
+                            any_new_candle = True
+                            break
+                    if any_new_candle:
+                        self.logger.info("[Executor] Call altcoin_scanner_kraken.execute_strategy()")
+                        self.altcoin_scanner_kraken.execute_strategy()
+                    else:
+                        self.logger.debug("[Executor] No new closed 15m candle => skip altcoin_scanner_kraken")
 
-                    # 3) AltcoinScanner => 15m
-                    #    Check of ANY symbol net een nieuwe 15m-candle heeft
-                    if self.altcoin_scanner_kraken:
-                        any_new_candle = False
-                        for symbol in self.kraken_data_client.pairs:
-                            if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
-                                self.logger.info(f"[Executor] FOUND new closed 15m candle for {symbol} => alt_scanner_kraken!")
-                                any_new_candle = True
-                                break
-                        if any_new_candle:
-                            self.logger.info("[Executor] Call altcoin_scanner_kraken.execute_strategy()")
-                            self.altcoin_scanner_kraken.execute_strategy()
-                        else:
-                            self.logger.debug("[Executor] No new closed 15m candle => skip altcoin_scanner_kraken")
+                # 5) Intra-candle checks => HIER STAAN JE LOGGERS NOG STEEDS
+                if self.altcoin_scanner_kraken:
+                    self.logger.debug("[Executor] altcoin_scanner_kraken.manage_intra_candle_exits() called.")
+                    self.altcoin_scanner_kraken.manage_intra_candle_exits()
 
-                    # ========== [NEW] Intra-candle check ==============
-                    # Hier roep je elke 5s de 'manage_intra_candle_exits()' aan,
-                    # zodat SL/TP direct kan worden uitgevoerd op basis van de
-                    # 'ticker'/live-prijs.
-                    if self.altcoin_scanner_kraken:
-                        self.logger.debug("[Executor] altcoin_scanner_kraken.manage_intra_candle_exits() called.")
-                        self.altcoin_scanner_kraken.manage_intra_candle_exits()
+                if self.breakout_strategy_kraken:
+                    self.logger.debug("[Executor] breakout_strategy_kraken.manage_intra_candle_exits() called.")
+                    self.breakout_strategy_kraken.manage_intra_candle_exits()
 
-                    if self.breakout_strategy_kraken:
-                        # Indien je breakout_strat ook intraday wilt laten checken
-                        self.logger.debug("[Executor] breakout_strategy_kraken.manage_intra_candle_exits() called.")
-                        self.breakout_strategy_kraken.manage_intra_candle_exits()
+                if self.pullback_strategy_kraken:
+                    self.logger.info("[Executor] pullback_strategy_kraken.manage_intra_candle_exits() called.")
+                    self.pullback_strategy_kraken.manage_intra_candle_exits()
 
-                    if self.pullback_strategy_kraken:
-                        self.logger.info("[Executor] pullback_strategy_kraken.manage_intra_candle_exits() called.")
-                        self.pullback_strategy_kraken.manage_intra_candle_exits()
-
-                # 4) DB-check 1× per 10 min
-                #if loop_count % 120 == 0:
-                self._hourly_db_checks()
+                # 6) Elk uur DB-check
+                if loop_count % 120 == 0:
+                    self._hourly_db_checks()
 
                 time.sleep(5)
 
         except KeyboardInterrupt:
             self.logger.info("[Executor] Bot handmatig gestopt (Ctrl+C).")
-
         except requests.exceptions.ConnectionError as ce:
-            # Hier vangen we specifically ConnectionErrors op en loggen, en we kunnen beslissen door te gaan:
             self.logger.error(f"[Executor] Netwerkfout => {ce}, wachten en doorgaan")
             time.sleep(5)
         except Exception as e:
             self.logger.exception(f"[Executor] Fout in run-lus: {e}")
-
         finally:
             self.logger.info("[Executor] shutting down.")
 
@@ -358,8 +327,35 @@ class Executor:
             if self.kraken_data_client:
                 self.logger.info("[Executor] Stop KrakenMixedClient.")
                 self.kraken_data_client.stop()
-
             self.logger.info("[Executor] alles gestopt.")
+
+    def run_once_pullback_15m(self):
+        """
+        Nieuw: voer de PullbackAccumulateStrategy uit in twee passes (15m).
+         - Pass #1: check all pairs => skip_not_closed => coins_skipped
+         - time.sleep(20)
+         - Pass #2: check only coins_skipped
+        """
+        if not self.pullback_strategy_kraken or not self.kraken_data_client:
+            return
+
+        coins = self.kraken_data_client.pairs
+        coins_skipped = []
+
+        self.logger.info("[Executor] PASS #1 => Pullback (15m) for all coins.")
+        for symbol in coins:
+            result = self.pullback_strategy_kraken.execute_strategy(symbol)
+            if result == "skip_not_closed":
+                coins_skipped.append(symbol)
+
+        if coins_skipped:
+            self.logger.info(f"[Executor] PASS #1 skip_not_closed={coins_skipped} => second pass in 20s.")
+            time.sleep(20)
+            self.logger.info("[Executor] PASS #2 => re-check the coins_skipped.")
+            for symbol in coins_skipped:
+                self.pullback_strategy_kraken.execute_strategy(symbol)
+        else:
+            self.logger.info("[Executor] No coins skipped => no second pass needed.")
 
     def run_daily_tasks(self):
         self.logger.info("[Executor] run_daily_tasks() gestart.")
@@ -437,7 +433,8 @@ class Executor:
     #       én of die candle closed is. Return True als strategy nog niet heeft verwerkt.
     def _has_new_closed_candle(self, table_name, symbol, interval) -> bool:
         """
-        Haal de nieuwste candle op en check of hij 'closed' is en nog niet verwerkt.
+        Ongewijzigd: wordt nog gebruikt door breakout en alt-scanner.
+        Voor pullback (15m) niet meer gebruikt, want we doen 2-pass skip-not-closed.
         """
         df = self.db_manager.fetch_data(table_name, limit=1, market=symbol, interval=interval)
 
@@ -449,8 +446,7 @@ class Executor:
 
         newest_ts = df["timestamp"].iloc[0]
         self.logger.debug(
-            f"[_has_new_closed_candle] table={table_name}, sym={symbol}, interval={interval}, "
-            f"newest_ts={newest_ts}"
+            f"[_has_new_closed_candle] table={table_name}, sym={symbol}, interval={interval}, newest_ts={newest_ts}"
         )
 
         # Check of candle closed

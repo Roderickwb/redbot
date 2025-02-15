@@ -73,7 +73,7 @@ pullback_accumulate_strategy:
   tp1_atr_mult: 1.5       # 50% close
   tp1_portion_pct: 0.50
   trailing_atr_mult: 1  # voor de rolling 50%
-  initial_capital: 250
+  initial_capital: 100
 
   use_depth_trend: true
   pivot_points_window: 20

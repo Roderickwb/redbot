@@ -629,6 +629,14 @@ class PullbackAccumulateStrategy:
                     )
                     return
 
+                # Check of we wél wat coin hebben, maar te weinig voor min trade
+                needed_coins = self._get_min_lot(symbol) * self.min_lot_multiplier
+                if coin_balance < needed_coins:
+                    self.logger.warning(
+                        f"[PullbackStrategy] Not enough {coin_name} to short => have={coin_balance}, need={needed_coins:.2f} => skip."
+                    )
+                    return
+
         if current_price is None or current_price <= 0:
             self.logger.warning(f"[PullbackStrategy] current_price={current_price} => skip open pos for {symbol}")
             return

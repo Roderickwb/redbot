@@ -265,8 +265,17 @@ class Executor:
                 # 1) Verwerk evt. Bitvavo WS events
                 self._process_ws_events()
 
-                # 2) ROEP ONZE TWEE-PASS PULLBACK (15m) AAN (zie de nieuwe methode hieronder)
-                self.run_once_pullback_15m()
+                # 2) Check of er een "new closed 15m candle" is voor minimaal 1 coin => run pullback
+                new_15m_found = False
+                if self.kraken_data_client:
+                    for symbol in self.kraken_data_client.pairs:
+                        if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
+                            new_15m_found = True
+                            # we kúnnen hier breaken of niet;
+                            # break  # je mag hier break doen omdat we maar 1x needs to run
+                    if new_15m_found:
+                        self.logger.info("[Executor] Found new closed 15m => run 2-pass Pullback now.")
+                        self.run_once_pullback_15m()
 
                 # 3) Breakout => old _has_new_closed_candle approach
                 if self.breakout_strategy_kraken and self.kraken_data_client:

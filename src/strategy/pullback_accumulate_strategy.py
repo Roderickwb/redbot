@@ -729,7 +729,7 @@ class PullbackAccumulateStrategy:
             "position_type": position_type,
             "db_id": new_trade_id
         }
-        # [CONCRETE FIX 2-A] => Zet meteen de werkelijke hoeveelheid in 'amount' en 'filled_amount'
+        # [CONCRETE FIX 2-A] => Zet meteen de werkelijke hoeveelheid in 'amount' en 'filled_amount'"
         self.open_positions[symbol]["amount"] = Decimal(str(amount))
         self.open_positions[symbol]["filled_amount"] = Decimal(str(amount))
 

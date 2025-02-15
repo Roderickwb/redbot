@@ -1063,7 +1063,7 @@ class PullbackAccumulateStrategy:
         if not self.order_client:
             return self.initial_capital
         bal = self.order_client.get_balance()
-        eur_balance = Decimal(str(bal.get("EUR", "1000")))
+        eur_balance = Decimal(str(bal.get("EUR", "250")))
         total_pos_value = Decimal("0")
         for sym, pos_info in self.open_positions.items():
             amt = pos_info["amount"]

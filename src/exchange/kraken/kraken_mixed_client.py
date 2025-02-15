@@ -296,12 +296,14 @@ class KrakenMixedClient:
             return {}
 
         j = resp.json()
+        logger.debug(f"[KrakenMixedClient] get_balance => raw JSON response: {j}")
         err = j.get("error", [])
         if err:
             logger.error(f"[KrakenMixedClient] get_balance => error={err}")
             return {}
 
         result = j.get("result", {})
+        logger.debug(f"[KrakenMixedClient] get_balance => raw Kraken result => {result}")
         # Bv. {"ZEUR": "100.123", "XXBT": "0.01", ...}
         # event. parse => "EUR": ...
         newdict = {}

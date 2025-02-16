@@ -73,7 +73,7 @@ pullback_accumulate_strategy:
   tp1_atr_mult: 1.5       # 50% close
   tp1_portion_pct: 0.50
   trailing_atr_mult: 1  # voor de rolling 50%
-  initial_capital: 100
+  initial_capital: 350
 
   use_depth_trend: true
   pivot_points_window: 20
@@ -198,7 +198,7 @@ altcoin_scanner_strategy:
   max_position_pct: 0.1   # max 5% van je capital
   max_position_eur: 15  # of direct een vast bedrag
 
-  initial_capital: 250
+  initial_capital: 350
 
 ### MELTDOWN MANAGER ###
 meltdown_manager:

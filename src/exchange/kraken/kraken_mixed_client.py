@@ -265,8 +265,8 @@ class KrakenMixedClient:
         Anders fallback => {"EUR":"100"} (paper).
         """
         if not self.api_key or not self.api_secret:
-            logger.debug("[KrakenMixedClient] get_balance => no key/secret => fallback 100 EUR.")
-            return {"EUR": "100"}  # fallback als paper
+            logger.debug("[KrakenMixedClient] get_balance => no key/secret => fallback 350 EUR.")
+            return {"EUR": "350"}  # fallback als paper
 
         path = "/0/private/Balance"
         url = "https://api.kraken.com" + path

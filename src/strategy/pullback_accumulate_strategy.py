@@ -568,6 +568,39 @@ class PullbackAccumulateStrategy:
                     if symbol in self.open_positions:
                         del self.open_positions[symbol]
 
+    def _close_position(self, symbol: str, reason: str = "ForcedClose"):
+        """
+        Forceert het sluiten van de volledige positie,
+        zet status=closed in de DB, en verwijdert self.open_positions[symbol].
+        """
+        if symbol not in self.open_positions:
+            self.logger.warning(f"[_close_position] {symbol} staat niet in open_positions => skip.")
+            return
+
+        pos = self.open_positions[symbol]
+        side = pos["side"]
+        amount = pos["amount"]  # leftover
+        entry_price = pos["entry_price"]
+        db_id = pos.get("db_id", None)
+
+        self.logger.info(f"[_close_position] => side={side}, leftover={amount}, reason={reason}")
+
+        # 1) Sluit via buy_portion (voor short) of sell_portion (voor long)
+        if side == "buy":
+            self._sell_portion(symbol, amount, portion=Decimal("1.0"), reason=reason)
+        else:  # short
+            self._buy_portion(symbol, amount, portion=Decimal("1.0"), reason=reason)
+
+        # 2) DB‐verzekeren: als om wat voor reden leftover>0 is, forceren we status=closed
+        if db_id:
+            self.db_manager.update_trade(db_id, {"status": "closed"})
+            self.logger.info(f"[_close_position] trade {db_id} => status=closed in DB (forced).")
+
+        # 3) Verwijder uit self.open_positions
+        if symbol in self.open_positions:
+            del self.open_positions[symbol]
+            self.logger.info(f"[_close_position] open_positions => {symbol} verwijderd.")
+
     # [AANPASSING] Kleine helper-functie om ATR te berekenen
     def _calculate_atr(self, df, window=14) -> Optional[Decimal]:
         # 1) check of df een DataFrame is:
@@ -1032,6 +1065,15 @@ class PullbackAccumulateStrategy:
             entry_price = Decimal(str(row["price"]))
             position_id = row.get("position_id", None)
             position_type = row.get("position_type", None)
+            db_id = row.get("id", None)
+
+            # --> FAIlSAFE: als 'amount' == 0 => forceren we 'closed'
+            if amount <= 0:
+                db_id = row.get("id", None)
+                if db_id:
+                    self.db_manager.update_trade(db_id, {"status": "closed"})
+                    self.logger.info(f"[_load_open_positions_from_db] {symbol} => leftover=0 => set DB closed.")
+                continue
 
             pos_data = {
                 "side": side,
@@ -1044,6 +1086,7 @@ class PullbackAccumulateStrategy:
                 "trail_high": entry_price,
                 "position_id": position_id,
                 "position_type": position_type,
+                "db_id": db_id
             }
             df_main = self._fetch_and_indicator(symbol, self.main_timeframe, limit=200)
             atr_value = self._calculate_atr(df_main, self.atr_window)

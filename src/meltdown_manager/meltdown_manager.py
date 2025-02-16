@@ -182,13 +182,17 @@ class MeltdownManager:
         return False
 
     def _close_all_positions(self, strategy):
-        """
-        Alle open positions van deze strategy sluiten
-        """
         self.logger.warning("[MeltdownManager] meltdown => close all open positions.")
         for sym in list(strategy.open_positions.keys()):
             self.logger.warning(f"[MeltdownManager] meltdown => close {sym}")
-            strategy._close_position(sym)
+            pos = strategy.open_positions[sym]
+            side = pos["side"]
+            amt = pos["amount"]
+            if side == "buy":
+                # self.logger.info("... call strategy._sell_portion(...) ...")
+                strategy._sell_portion(sym, amt, portion=Decimal("1.0"), reason="Meltdown")
+            else:
+                strategy._buy_portion(sym, amt, portion=Decimal("1.0"), reason="Meltdown")
 
     def _check_reentry_rsi(self, strategy, symbol: str) -> bool:
         """

@@ -235,14 +235,18 @@ class Executor:
         # Dictionary om per (table, symbol, interval) de laatst verwerkte candle-ts te onthouden
         self.last_closed_ts = {}
 
+    # =============================================================================
+    # ORIGINELE run() => commentaarblok, zodat ALLE code + commentaar bewaard blijft
+    # =============================================================================
+    """
     def run(self):
-        """
+        \"\"\"
         Hoofd-loop:
           - Start Bitvavo-WS
           - Start KrakenMixedClient
           - Periodiek strategies callen (Bitvavo + Kraken)
           - Event-loops
-        """
+        \"\"\"
         self.logger.info("[Executor] run() gestart.")
 
         # A) Bitvavo-WS
@@ -271,8 +275,6 @@ class Executor:
                     for symbol in self.kraken_data_client.pairs:
                         if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
                             new_15m_found = True
-                            # we kúnnen hier breaken of niet;
-                            # break  # je mag hier break doen omdat we maar 1x needs to run
                     if new_15m_found:
                         self.logger.info("[Executor] Found new closed 15m => run 2-pass Pullback now.")
                         self.run_once_pullback_15m()
@@ -337,6 +339,112 @@ class Executor:
                 self.logger.info("[Executor] Stop KrakenMixedClient.")
                 self.kraken_data_client.stop()
             self.logger.info("[Executor] alles gestopt.")
+    """
+
+    # =========================================================================
+    # [NIEUW] => TIMED run() elke 15m, met 3 passes Pullback en Breakout/AltScanner
+    # =========================================================================
+    def run(self):
+        """
+        Nieuwe run-lus: elke 15 minuten (xx:00,xx:15,xx:30,xx:45) => 3x Pullback
+        + Breakout + AltcoinScanner + Intra-candle checks.
+        De rest van de code (db-checks, meltdown, etc.) blijft ongewijzigd.
+        """
+        self.logger.info("[Executor] run() gestart => TIMED approach for 15m strategy.")
+
+        # A) Bitvavo-WS
+        if self.use_websocket and self.ws_client:
+            self.ws_client.start_websocket()
+            self.logger.info("[Executor] Bitvavo WS client thread gestart.")
+
+        # B) Start Kraken (WS + poll)
+        if self.use_kraken and self.kraken_data_client:
+            self.logger.info("[Executor] KrakenMixedClient => start()")
+            self.kraken_data_client.start()
+
+        self.logger.debug("[Executor] TIMED run() => enter main timed loop")
+
+        loop_count = 0
+        try:
+            while True:
+                # 1) Wacht tot volgende kwartier (xx:00, xx:15, xx:30, xx:45)
+                self._sleep_until_next_quarter_hour()
+
+                loop_count += 1
+
+                # -- Drie passes voor Pullback (15m) --
+                self.logger.info("[Executor] *** 15m boundary => PASS #1 (Pullback) ***")
+                self.run_once_pullback_15m()
+
+                time.sleep(20)
+                self.logger.info("[Executor] *** PASS #2 (Pullback) ***")
+                self.run_once_pullback_15m()
+
+                time.sleep(20)
+                self.logger.info("[Executor] *** PASS #3 (Pullback) ***")
+                self.run_once_pullback_15m()
+
+                # -- Breakout => old _has_new_closed_candle approach --
+                if self.breakout_strategy_kraken and self.kraken_data_client:
+                    for symbol in self.kraken_data_client.pairs:
+                        if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
+                            self.logger.debug(f"[Executor] TIMED => breakout_kraken({symbol}).")
+                            self.breakout_strategy_kraken.execute_strategy(symbol)
+
+                # -- AltcoinScanner => unchanged --
+                if self.altcoin_scanner_kraken and self.kraken_data_client:
+                    any_new_candle = False
+                    for symbol in self.kraken_data_client.pairs:
+                        if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
+                            self.logger.info(
+                                f"[Executor] TIMED => FOUND new closed 15m candle for {symbol} => alt_scanner_kraken!"
+                            )
+                            any_new_candle = True
+                            break
+                    if any_new_candle:
+                        self.logger.info("[Executor] TIMED => Call altcoin_scanner_kraken.execute_strategy()")
+                        self.altcoin_scanner_kraken.execute_strategy()
+                    else:
+                        self.logger.debug("[Executor] TIMED => No new closed 15m candle => skip altcoin_scanner_kraken")
+
+                # -- Intra-candle checks => ongewijzigd
+                if self.altcoin_scanner_kraken:
+                    self.logger.debug("[Executor] altcoin_scanner_kraken.manage_intra_candle_exits() called.")
+                    self.altcoin_scanner_kraken.manage_intra_candle_exits()
+
+                if self.breakout_strategy_kraken:
+                    self.logger.debug("[Executor] breakout_strategy_kraken.manage_intra_candle_exits() called.")
+                    self.breakout_strategy_kraken.manage_intra_candle_exits()
+
+                if self.pullback_strategy_kraken:
+                    self.logger.info("[Executor] pullback_strategy_kraken.manage_intra_candle_exits() called.")
+                    self.pullback_strategy_kraken.manage_intra_candle_exits()
+
+                # Elk uur DB-check
+                if loop_count % 4 == 0:
+                    self._hourly_db_checks()
+
+                # Verwerk evt. Bitvavo WS events tussendoor
+                self._process_ws_events()
+
+        except KeyboardInterrupt:
+            self.logger.info("[Executor] Bot handmatig gestopt (Ctrl+C).")
+        except requests.exceptions.ConnectionError as ce:
+            self.logger.error(f"[Executor] Netwerkfout => {ce}, wachten en doorgaan")
+            time.sleep(5)
+        except Exception as e:
+            self.logger.exception(f"[Executor] Fout in run-lus: {e}")
+        finally:
+            self.logger.info("[Executor] shutting down.")
+            # 1) Stop Bitvavo
+            if self.ws_client:
+                self.logger.info("[Executor] Stop Bitvavo WS.")
+                self.ws_client.stop_websocket()
+            # 2) Stop Kraken
+            if self.kraken_data_client:
+                self.logger.info("[Executor] Stop KrakenMixedClient.")
+                self.kraken_data_client.stop()
+            self.logger.info("[Executor] alles gestopt.")
 
     def run_once_pullback_15m(self):
         """
@@ -344,6 +452,7 @@ class Executor:
          - Pass #1: check all pairs => skip_not_closed => coins_skipped
          - time.sleep(20)
          - Pass #2: check only coins_skipped
+        (Deze methode is ongewijzigd uit je oorspronkelijke code.)
         """
         if not self.pullback_strategy_kraken or not self.kraken_data_client:
             return
@@ -484,3 +593,33 @@ class Executor:
                 f"[_has_new_closed_candle] newest_ts={newest_ts} <= last_seen_ts={last_seen_ts}, skip."
             )
             return False
+
+    # [NIEUW] hulpfunctie om naar het eerstvolgende kwartiermoment te wachten
+    def _sleep_until_next_quarter_hour(self):
+        now = datetime.now()
+        minute = now.minute
+        second = now.second
+        microsecond = now.microsecond
+
+        # Bepaal de eerstvolgende "kwartier": 0, 15, 30 of 45
+        if minute < 15:
+            target_min = 15
+        elif minute < 30:
+            target_min = 30
+        elif minute < 45:
+            target_min = 45
+        else:
+            target_min = 60  # => nieuw uur
+
+        if target_min == 60:
+            next_hour = now.hour + 1
+            next_dt = now.replace(hour=(next_hour % 24), minute=0, second=0, microsecond=0)
+        else:
+            next_dt = now.replace(minute=target_min, second=0, microsecond=0)
+
+        delta = (next_dt - now).total_seconds()
+        if delta < 0:
+            delta += 900  # 15 * 60
+
+        self.logger.info(f"[Executor] Sleep {delta:.1f}s until next quarter-hour => {next_dt}")
+        time.sleep(delta)

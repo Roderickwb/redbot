@@ -241,7 +241,8 @@ class PullbackAccumulateStrategy:
             return
 
         # STAP 2: Check of er >100 EUR vrij is, sla surplus op
-        free_eur = self.order_client.get_free_balance("EUR")
+        bal_dict = self.order_client.get_balance()
+        free_eur = Decimal(bal_dict.get("EUR", "0"))
         if free_eur > 100:
             self.surplus_above_100 = free_eur - 100
             self.logger.info(f"[SurplusCheck] Found EUR {free_eur:.2f}, surplus={self.surplus_above_100:.2f}")

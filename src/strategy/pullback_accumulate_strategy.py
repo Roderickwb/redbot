@@ -175,7 +175,9 @@ class PullbackAccumulateStrategy:
         self.invested_extra = False
         self.depth_trend_history = deque(maxlen=5)
 
-        # Laad event. open pos. uit DB
+        # STAP 1: Maak variabele aan om surplus op te slaan
+        self.surplus_above_100 = Decimal("0")  # <-- NIEUW
+
         self._load_open_positions_from_db()
 
         # Nieuw, om na ene nieuwe candle maar 1x de strategie uit te voeren
@@ -238,7 +240,15 @@ class PullbackAccumulateStrategy:
                 self._manage_open_position(symbol, current_price, atr_value)
             return
 
-        # --- (2) Trend => 4h RSI als simplistische check
+        # STAP 2: Check of er >100 EUR vrij is, sla surplus op
+        free_eur = self.order_client.get_free_balance("EUR")
+        if free_eur > 100:
+            self.surplus_above_100 = free_eur - 100
+            self.logger.info(f"[SurplusCheck] Found EUR {free_eur:.2f}, surplus={self.surplus_above_100:.2f}")
+        else:
+            self.surplus_above_100 = Decimal("0")
+
+        # (3) Trend => 4h RSI
         df_h4 = self._fetch_and_indicator(symbol, self.trend_timeframe, limit=200)
         if df_h4.empty:
             self.logger.warning(f"[PullbackStrategy] No 4h data => skip {symbol}")
@@ -322,9 +332,9 @@ class PullbackAccumulateStrategy:
         # Equity check
         total_equity = self._get_equity_estimate()
         invest_extra_flag = False
-        if (total_equity >= self.initial_capital * self.accumulate_threshold) and not self.invested_extra:
-            invest_extra_flag = True
-            self.logger.info("[PullbackStrategy] +25%% => next pullback => invest extra in %s", symbol)
+        #if (total_equity >= self.initial_capital * self.accumulate_threshold) and not self.invested_extra:
+        #    invest_extra_flag = True
+        #    self.logger.info("[PullbackStrategy] +25%% => next pullback => invest extra in %s", symbol)
 
         has_position = (symbol in self.open_positions)
         self.logger.info(f"[Decision Info] symbol={symbol}, direction={direction}, pullback={pullback_detected},"
@@ -652,6 +662,14 @@ class PullbackAccumulateStrategy:
             return
 
         buy_eur = needed_eur_for_min
+
+        # STAP 4: Als extra_invest True is, voeg surplus toe aan buy_eur
+        if extra_invest and self.surplus_above_100 > 0:
+            self.logger.info(f"[PullbackStrategy] Adding surplus {self.surplus_above_100:.2f} EUR to this trade!")
+            buy_eur += self.surplus_above_100
+            # Zet surplus direct terug naar 0, zodat we 'm niet nog eens gebruiken
+            self.surplus_above_100 = Decimal("0")
+
         if buy_eur > eur_balance:
             self.logger.warning(
                 f"[PullbackStrategy] Not enough EUR => need {buy_eur:.2f}, have {eur_balance:.2f}. skip.")
@@ -774,7 +792,7 @@ class PullbackAccumulateStrategy:
 
         # Plaats live/paper order
         if self.order_client:
-            self.order_client.place_order("buy", symbol, float(amt_to_buy), order_type="market")
+            self.order_client.place_order("buy", symbol, float(amt_to_buy), ordertype="market")
             self.logger.info(
                 f"[LIVE/PAPER] BUY {symbol} => portion={portion}, amt={amt_to_buy:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
             )
@@ -890,7 +908,7 @@ class PullbackAccumulateStrategy:
 
         # Plaats order
         if self.order_client:
-            self.order_client.place_order("sell", symbol, float(amt_to_sell), order_type="market")
+            self.order_client.place_order("sell", symbol, float(amt_to_sell), ordertype="market")
             self.logger.info(
                 f"[LIVE/PAPER] SELL {symbol} => portion={portion * 100:.1f}%, amt={amt_to_sell:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
             )

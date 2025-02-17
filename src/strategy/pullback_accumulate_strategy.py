@@ -30,7 +30,7 @@ def load_config(path: str) -> dict:
     print("[DEBUG] In load_config =>", data)
     return data
 
-def is_candle_closed(last_candle_ms: int, timeframe: str) -> bool:
+def is_candle_closed(last_candle_ms: int) -> bool:
     """
     Hier gaan we er 100% vanuit dat 'last_candle_ms'
     de *eindtijd* van de candle is. Dan is de candle
@@ -252,12 +252,14 @@ class PullbackAccumulateStrategy:
 
         df_entry.sort_index(inplace=True)
         last_timestamp = df_entry.index[-1]
-        self.logger.debug(
-            f"[DEBUG] For {symbol}, last row in df_entry => {last_timestamp} => {datetime.utcfromtimestamp(last_timestamp / 1000)}")
         if isinstance(last_timestamp, pd.Timestamp):
-            last_candle_ms = int(last_timestamp.timestamp() * 1000)
+            epoch_s = last_timestamp.timestamp()
+            last_candle_ms = int(epoch_s * 1000)
+            self.logger.debug(f"[DEBUG] {symbol}: last row => pd.Timestamp {last_timestamp} => epoch_s={epoch_s}")
         else:
-            last_candle_ms = int(last_timestamp)
+            last_candle_ms = int(last_timestamp)  # al ms
+            epoch_s = last_candle_ms / 1000
+            self.logger.debug(f"[DEBUG] {symbol}: last row => {last_candle_ms} => {datetime.utcfromtimestamp(epoch_s)}")
 
         # -------------- Skip direct als candle niet gesloten --------------
         if not is_candle_closed(last_candle_ms, self.entry_timeframe):

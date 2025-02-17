@@ -678,6 +678,15 @@ class KrakenMixedClient:
         except Exception as e:
             logger.error("[Ticker] parsing error => %s", e)
 
+    def _iv_int_to_millis(self, iv_int: int) -> int:
+        """
+        Zet de integer-interval (1, 5, 15, 60, 240, 1440) om in milliseconden.
+        15 => 15 minuten => 900_000 ms
+        60 => 60 min => 3_600_000 ms
+        1440 => 1 dag => 86_400_000 ms
+        """
+        return iv_int * 60_000
+
     def _process_ohlc_data(self, data_list):
         """
         Grotendeels hetzelfde als je oude code, maar wat ingekort.
@@ -709,18 +718,23 @@ class KrakenMixedClient:
             logger.error("[KrakenMixedClient] Fout bij conversie van ohlc data: %s", e)
             return
 
-        ts_ms = int(time_s * 1000)
-        candle = (ts_ms, local_pair, interval_str, open_p, high_p, low_p, close_p, volume)
+        start_ms = int(time_s * 1000)
+        interval_ms = self._iv_int_to_millis(iv_int)
+        end_ms = start_ms + interval_ms
 
-        # [ADDED] => skip fallback tot candle min. 20s oud na officiele eind
-        if is_candle_closed(ts_ms, interval_str):
-            logger.info(
-                f"[Candle CLOSED] WS => {local_pair} {interval_str}, start_ts={ts_ms}, recognized closed at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
-            )
+        candle = (end_ms, local_pair, interval_str, open_p, high_p, low_p, close_p, volume)
+
+        # Optioneel: alleen daadwerkelijk opslaan als de candle 'closed' is
+        now_ms = int(time.time() * 1000)
+        if now_ms >= end_ms:
+            # => Candle is closed
+            logger.info(f"[Candle CLOSED] {local_pair} {interval_str} end_ms={end_ms}")
             self._save_candle_kraken(candle)
         else:
-            logger.debug("[KrakenMixedClient] Candle voor %s op ts=%d nog niet gesloten; probeer REST-fallback.",
-                         local_pair, ts_ms)
+            # Candle nog niet klaar => skip
+            logger.debug("[KrakenMixedClient] Candle voor %s %s is nog niet gesloten. skip.",
+                         local_pair, interval_str)
+
 
             # Tijdelijk niet gebruiken. Voor 15M een poll ingebouwd voor de rest vertrouwen we op WS.
             #current_time_ms = int(time.time() * 1000)
@@ -1060,22 +1074,35 @@ class KrakenMixedClient:
         insert_sql = """
             INSERT OR REPLACE INTO candles_kraken
             (timestamp, datetime_utc, market, interval, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)            
         """
+
+        now_ms = int(time.time() * 1000)
+        interval_ms = self._iv_int_to_millis(iv_int)  # <-- AANGEPAST: hulpfunctie
 
         for row in rows:
             if len(row) < 8:
                 continue
-            t_s = float(row[0])
+
+            start_sec = float(row[0])  # <-- Candle start
             o_ = float(row[1])
             h_ = float(row[2])
             l_ = float(row[3])
             c_ = float(row[4])
             vol = float(row[6])
-            ts_ms = int(t_s * 1000)
-            dt_utc = datetime.fromtimestamp(ts_ms / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
-            params = (ts_ms, dt_utc, local_pair, interval_str, o_, h_, l_, c_, vol)
+            start_ms = int(start_sec * 1000)
+            end_ms = start_ms + interval_ms  # <-- AANGEPAST
+
+            # Check of candle gesloten is
+            if now_ms < end_ms:
+                # Candle is nog niet klaar => skip
+                continue
+
+            # datetime_utc alleen voor logging / easy reading
+            dt_utc = datetime.fromtimestamp(end_ms / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+            params = (end_ms, dt_utc, local_pair, interval_str, o_, h_, l_, c_, vol)
             final_list.append(params)
 
         if final_list:

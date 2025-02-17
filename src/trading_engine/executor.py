@@ -342,7 +342,7 @@ class Executor:
     """
 
     # =========================================================================
-    # [NIEUW] => TIMED run() elke 15m, met 3 passes Pullback en Breakout/AltScanner
+    # TIMED run() elke 15m, met 3 passes Pullback en Breakout/AltScanner
     # =========================================================================
     def run(self):
         """
@@ -372,15 +372,31 @@ class Executor:
 
                 loop_count += 1
 
+                # NIEUW (toevoegen) => Tussen de candle close en pass #1
+                # Poll 15m in de kraken_mixed_client => Zo staat de net afgesloten candle in de DB
+                self.logger.info("[Executor] => poll_15m_only() PASS #1")
+                if self.kraken_data_client:
+                    self.kraken_data_client._poll_15m_only()
+
                 # -- Drie passes voor Pullback (15m) --
                 self.logger.info("[Executor] *** 15m boundary => PASS #1 (Pullback) ***")
                 self.run_once_pullback_15m()
 
+                # NIEUW => pass #2, again poll_15m_only
                 time.sleep(20)
+                self.logger.info("[Executor] => poll_15m_only() PASS #2")
+                if self.kraken_data_client:
+                    self.kraken_data_client._poll_15m_only()
+
                 self.logger.info("[Executor] *** PASS #2 (Pullback) ***")
                 self.run_once_pullback_15m()
 
+                # NIEUW => pass #3, again poll_15m_only
                 time.sleep(20)
+                self.logger.info("[Executor] => poll_15m_only() PASS #3")
+                if self.kraken_data_client:
+                    self.kraken_data_client._poll_15m_only()
+
                 self.logger.info("[Executor] *** PASS #3 (Pullback) ***")
                 self.run_once_pullback_15m()
 
@@ -594,7 +610,7 @@ class Executor:
             )
             return False
 
-    # [NIEUW] hulpfunctie om naar het eerstvolgende kwartiermoment te wachten
+    # hulpfunctie om naar het eerstvolgende kwartiermoment te wachten
     def _sleep_until_next_quarter_hour(self):
         now = datetime.now()
         minute = now.minute

@@ -28,8 +28,6 @@ def load_config(path: str) -> dict:
     print("[DEBUG] In load_config =>", data)
     return data
 
-
-# NIEUW: Helper-functie om te controleren of een candle afgesloten is.
 def is_candle_closed(last_candle_ms: int, timeframe: str) -> bool:
     """
     Berekent of de candle die eindigt op last_candle_ms al volledig afgesloten is.
@@ -54,7 +52,6 @@ def is_candle_closed(last_candle_ms: int, timeframe: str) -> bool:
     elif unit == "d":
         duration_ms = value * 24 * 60 * 60 * 1000
     else:
-        # Onbekende tijdseenheid
         duration_ms = 0
 
     current_ms = int(time.time() * 1000)
@@ -75,7 +72,6 @@ class PullbackAccumulateStrategy:
                   Ook is 'R' geïntroduceerd als risk-eenheid = (1 × ATR).
     """
 
-    # CHANGED: constructor heeft data_client en order_client
     def __init__(self, data_client, order_client, db_manager, config_path=None):
         self.data_client = data_client
         self.order_client = order_client
@@ -88,7 +84,6 @@ class PullbackAccumulateStrategy:
         else:
             self.strategy_config = PULLBACK_CONFIG
 
-        # Logger
         self.logger = setup_logger("pullback_strategy", PULLBACK_STRATEGY_LOG_FILE,
                                    logging.DEBUG)  # kan weer naar INFO indien nodig
         if config_path:
@@ -135,16 +130,12 @@ class PullbackAccumulateStrategy:
         self.trail_atr_mult = Decimal(str(self.strategy_config.get("trailing_atr_mult", "1.0")))
         self.sl_atr_mult = Decimal(str(self.strategy_config.get("sl_atr_mult", "1.0")))
 
-        # R-concept: we hanteren R = 1 × ATR als basis (zie code in manage_open_position).
-        # Let op: Je kunt R = x × ATR doen als je wilt, bv. R = 1.2 × ATR, maar nu laten we 'm op 1.0 × ATR.
-
         self.log_file = self.strategy_config.get("log_file", PULLBACK_STRATEGY_LOG_FILE)
 
         # partial TP
         self.tp1_portion_pct = Decimal(str(self.strategy_config.get("tp1_portion_pct", "0.50")))
 
         # Overige filters / drempels
-        # Voor RSI-check op 4h
         self.h4_bull_rsi = float(self.strategy_config.get("h4_bull_rsi", 50))   # bovengrens bull
         self.h4_bear_rsi = float(self.strategy_config.get("h4_bear_rsi", 50))   # ondergrens bear
 
@@ -175,18 +166,16 @@ class PullbackAccumulateStrategy:
         self.invested_extra = False
         self.depth_trend_history = deque(maxlen=5)
 
-        # STAP 1: Maak variabele aan om surplus op te slaan
+        #Maak variabele aan om surplus op te slaan
         self.surplus_above_100 = Decimal("0")  # <-- NIEUW
 
         self._load_open_positions_from_db()
 
-        # Nieuw, om na ene nieuwe candle maar 1x de strategie uit te voeren
+        # Na een nieuwe candle maar 1x de strategie uitvoeren
         self.last_processed_candle_ts = {}  # [ADDED] dict: {symbol: last_candle_ms we used}
-
 
     def execute_strategy(self, symbol: str):
         self.logger.info(f"[Pullback DEBUG] execute_strategy() called for {symbol}")
-        # 1) Dubbele meltdown-aanroep verwijderen, dus nog maar één keer:
         meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
         """
         Eenvoudige flow:
@@ -196,8 +185,6 @@ class PullbackAccumulateStrategy:
          4) check pullback op 15m
          5) manage pos of open pos
         """
-        # (de tweede meltdown_active = ... regel is weggehaald)
-
         # Check of er een open positie is voor dit symbool
         has_position = (symbol in self.open_positions)
 
@@ -240,7 +227,7 @@ class PullbackAccumulateStrategy:
                 self._manage_open_position(symbol, current_price, atr_value)
             return
 
-        # STAP 2: Check of er >100 EUR vrij is, sla surplus op
+        # Check of er >100 EUR vrij is, sla surplus op
         bal_dict = self.order_client.get_balance()
         free_eur = Decimal(bal_dict.get("EUR", "0"))
         if free_eur > 100:
@@ -249,7 +236,7 @@ class PullbackAccumulateStrategy:
         else:
             self.surplus_above_100 = Decimal("0")
 
-        # (3) Trend => 4h RSI
+        # Trend => 4h RSI
         df_h4 = self._fetch_and_indicator(symbol, self.trend_timeframe, limit=200)
         if df_h4.empty:
             self.logger.warning(f"[PullbackStrategy] No 4h data => skip {symbol}")
@@ -266,7 +253,7 @@ class PullbackAccumulateStrategy:
         #     return
         # rsi_daily = df_daily["rsi"].iloc[-1]
 
-        # (3) ATR => 1h
+        # ATR => 1h
         df_main = self._fetch_and_indicator(symbol, self.main_timeframe, limit=200)
         if df_main.empty:
             self.logger.warning(f"[PullbackStrategy] No {self.main_timeframe} data => skip {symbol}")
@@ -277,7 +264,7 @@ class PullbackAccumulateStrategy:
             return
         self.logger.info(f"[ATR-info] {symbol} => ATR({self.atr_window})={atr_value}")
 
-        # (4) Pullback => 15m
+        # Pullback => 15m
         df_entry = self._fetch_and_indicator(symbol, self.entry_timeframe, limit=100)
         if df_entry.empty:
             self.logger.warning(f"[PullbackStrategy] No {self.entry_timeframe} data => skip {symbol}")
@@ -290,7 +277,7 @@ class PullbackAccumulateStrategy:
         else:
             last_candle_ms = int(last_timestamp)
 
-        # -------------- Nieuw: skip direct als candle niet gesloten --------------
+        # -------------- Skip direct als candle niet gesloten --------------
         if not is_candle_closed(last_candle_ms, self.entry_timeframe):
             self.logger.debug(f"[Pullback] {symbol}: Candle NOT closed => skip => pass #2 later.")
             return "skip_not_closed"
@@ -314,7 +301,7 @@ class PullbackAccumulateStrategy:
         # Bepaal of er pullback is, en check evt. 9/20EMA als je dat wilt
         pullback_detected = self._detect_pullback(df_entry, current_price, direction, atr_value)
         if self.use_ema_pullback_check:
-            # [AANPASSING] Extra check: 9EMA + 20EMA
+            # Extra check: 9EMA + 20EMA
             if not self._check_ema_pullback_15m(df_entry, direction):
                 pullback_detected = False
                 self.logger.info(f"[PullbackStrategy] 9/20EMA-check => geen valide pullback => skip {symbol}")
@@ -342,7 +329,7 @@ class PullbackAccumulateStrategy:
                          f" ml_signal={ml_signal}, depth_score={depth_score:.2f}, current_price={current_price}")
 
         # Als we geen positie hebben, maar wel pullback + bull => open long
-        # [AANPASSING: no daily rsi check anymore, just h4-based direction + pullback]
+        # no daily rsi check anymore, just h4-based direction + pullback
         if pullback_detected and not has_position:
             if direction == "bull":
                 # (Hier kun je nog RSI-checks doen op 15m als je wilt)
@@ -367,7 +354,7 @@ class PullbackAccumulateStrategy:
         elif has_position:
             self._manage_open_position(symbol, current_price, atr_value)
 
-    # [AANPASSING] Simpele check: rsi_h4 > self.h4_bull_rsi => bull, < self.h4_bear_rsi => bear, anders range
+    # Simpele check: rsi_h4 > self.h4_bull_rsi => bull, < self.h4_bear_rsi => bear, anders range
     def _check_trend_direction_4h(self, rsi_h4: float) -> str:
         if rsi_h4 > self.h4_bull_rsi:
             return "bull"
@@ -449,7 +436,7 @@ class PullbackAccumulateStrategy:
             else:
                 return False
 
-    # [NIEUW] Eenvoudige check: 9EMA, 20EMA, pullback in uptrend => price zakt door 9ema maar boven 20ema
+    # Eenvoudige check: 9EMA, 20EMA, pullback in uptrend => price zakt door 9ema maar boven 20ema
     def _check_ema_pullback_15m(self, df: pd.DataFrame, direction: str) -> bool:
         """
         Gebruikt de laatste candle(15m) en checkt de 9EMA & 20EMA:
@@ -601,7 +588,7 @@ class PullbackAccumulateStrategy:
             del self.open_positions[symbol]
             self.logger.info(f"[_close_position] open_positions => {symbol} verwijderd.")
 
-    # [AANPASSING] Kleine helper-functie om ATR te berekenen
+    # Kleine helper-functie om ATR te berekenen
     def _calculate_atr(self, df, window=14) -> Optional[Decimal]:
         # 1) check of df een DataFrame is:
         if not isinstance(df, pd.DataFrame):
@@ -663,7 +650,7 @@ class PullbackAccumulateStrategy:
             bal = self.order_client.get_balance()
             eur_balance = Decimal(str(bal.get("EUR", "100")))
 
-            # [NIEUW] Spot‐only check: als side=='sell' => we hebben de coin nodig in de wallet
+            # Spot‐only check: als side=='sell' => we hebben de coin nodig in de wallet
             if side == "sell":
                 coin_name = symbol.split("-")[0]  # bijv. "TRX" uit "TRX-EUR"
                 coin_balance = Decimal(str(bal.get(coin_name, "0")))
@@ -752,7 +739,7 @@ class PullbackAccumulateStrategy:
         new_trade_id = self.db_manager.cursor.lastrowid
         self.logger.info(f"[PullbackStrategy] new trade row => trade_id={new_trade_id}")
 
-        # [NIEUW] => SIGNALS LOG
+        # SIGNALS LOG
         self.__record_trade_signals(new_trade_id, event_type="open", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
         desired_amount = amount
@@ -779,7 +766,7 @@ class PullbackAccumulateStrategy:
         self.logger.info(f"### BUY portion => reason={reason}, symbol={symbol}")
         # Ongewijzigd
 
-        # ========== Bestaande portion & leftover-logic ==========
+        # Bestaande portion & leftover-logic
         amt_to_buy = total_amt * portion
         leftover_after_buy = total_amt - amt_to_buy
         min_lot = self._get_min_lot(symbol)
@@ -813,7 +800,7 @@ class PullbackAccumulateStrategy:
         fees = float(trade_cost * Decimal("0.004"))
         realized_pnl = float(raw_pnl) - fees
 
-        # ========== Bestaand "status" op child-trade basis ==========
+        # Bestaand "status" op child-trade basis
         if portion < 1:
             child_status = "partial"
         else:
@@ -831,7 +818,7 @@ class PullbackAccumulateStrategy:
                 f"[LIVE/PAPER] BUY {symbol} => portion={portion}, amt={amt_to_buy:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
             )
 
-        # ========== 1) SCHRIJF EEN CHILD-TRADE RIJ ==========
+        # 1) SCHRIJF EEN CHILD-TRADE RIJ
         child_data = {
             "symbol": symbol,
             "side": "buy",
@@ -849,7 +836,7 @@ class PullbackAccumulateStrategy:
         }
         self.db_manager.save_trade(child_data)
 
-        # ========== 2) Overgebleven leftover-code voor MASTER-update ==========
+        # 2) Overgebleven leftover-code voor MASTER-update
         # (hierin update je pos["amount"], check leftover, update master in DB, etc.)
         pos["amount"] -= amt_to_buy
         leftover_amt = pos["amount"]
@@ -892,7 +879,6 @@ class PullbackAccumulateStrategy:
 
     def _sell_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
         self.logger.info(f"### SELL portion => reason={reason}, symbol={symbol}")
-        # Ongewijzigd
 
         amt_to_sell = total_amt * portion
         leftover_after_sell = total_amt - amt_to_sell
@@ -947,7 +933,7 @@ class PullbackAccumulateStrategy:
                 f"[LIVE/PAPER] SELL {symbol} => portion={portion * 100:.1f}%, amt={amt_to_sell:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
             )
 
-        # =========== (A) Child–trade (is_master=0) ===========
+        # (A) Child–trade (is_master=0)
         child_data = {
             "symbol": symbol,
             "side": "sell",
@@ -965,7 +951,7 @@ class PullbackAccumulateStrategy:
         }
         self.db_manager.save_trade(child_data)
 
-        # =========== (B) leftover => update master ===========
+        # (B) leftover => update master
         pos["amount"] -= amt_to_sell
         leftover_amt = pos["amount"]
 
@@ -999,7 +985,7 @@ class PullbackAccumulateStrategy:
 
             self.__record_trade_signals(db_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
-    # [Hulp-code, ongewijzigd]
+    # [Hulp-code]
     @staticmethod
     def _calculate_fees_and_pnl(self, side: str, amount: float, price: float, reason: str) -> (float, float):
         trade_cost = amount * price

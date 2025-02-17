@@ -252,10 +252,6 @@ class KrakenMixedClient:
         self.poll_running = False
         self.poll_thread = None
 
-        # [ADDED] => poll 15m
-        self.poll_thread_15m = None
-        self.poll_15m_running = False
-
     # [LIVE TRADE CHANGE START]
     def get_balance(self) -> dict:
         """
@@ -430,10 +426,6 @@ class KrakenMixedClient:
         if self.intervals_poll:
             self._start_poll_thread()
 
-        # [ADDED] => poll 15m
-        if 15 in self.intervals_poll:
-            self._start_poll_15m_thread()
-
         # [ADDED for minLot] => bouw min_lot_info
         self.build_min_lot_info()
 
@@ -459,8 +451,6 @@ class KrakenMixedClient:
         # 2) Stop poll
         if self.intervals_poll:
             self._stop_poll_thread()
-        # [ADDED] => stop poll 15m
-        self._stop_poll_15m_thread()
 
         if self.use_private_ws:
             self._stop_private_ws()
@@ -1118,38 +1108,19 @@ class KrakenMixedClient:
     # ===========================================
     # (D) Extra poll-thread specifically for 15m
     # ===========================================
-    def _start_poll_15m_thread(self):
-        logger.info("[KrakenMixedClient] _start_poll_15m_thread => poll every 30s for 15m candles.")
-        self.poll_15m_running = True
-
-        def _poll_loop_15m():
-            while self.poll_15m_running:
-                self._poll_15m_only()
-                time.sleep(30)
-
-        self.poll_thread_15m = threading.Thread(target=_poll_loop_15m, daemon=True)
-        self.poll_thread_15m.start()
-
-    def _stop_poll_15m_thread(self):
-        logger.info("[KrakenMixedClient] _stop_poll_15m_thread")
-        self.poll_15m_running = False
-        if self.poll_thread_15m and self.poll_thread_15m.is_alive():
-            self.poll_thread_15m.join(timeout=5)
 
     def _poll_15m_only(self):
         """
-        Poll alleen de 15m interval, elke 30s.
+        Poll alleen de 15m interval (on-demand). Verwijder de sleep-lus, dus
+        roep dit enkel aan vanuit Executor of elders wanneer je wilt.
         """
         if 15 not in self.intervals_poll:
-            # als 15m niet in intervals_poll zit, doe niks
             return
         for loc in self.pairs:
             if loc not in self.kraken_ws_map:
                 logger.warning(f"[poll_15m_only] local={loc} => skip (no ws_map).")
                 continue
             ws_ = self.kraken_ws_map[loc]
-
-            # we doen alleen 15m
             iv_int = 15
             try:
                 rows = self._fetch_ohlc_rest(ws_, iv_int)

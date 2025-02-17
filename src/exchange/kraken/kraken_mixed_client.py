@@ -126,31 +126,12 @@ def interval_to_hours(interval_str: str) -> float:
     else:
         return 0.0
 
-
 def is_candle_closed(candle_timestamp_ms: int, timeframe: str) -> bool:
-    """
-    Check of de candle (start=candle_timestamp_ms) voor 'timeframe' al definitief is afgelopen.
-    """
-    unit = timeframe[-1]
-    try:
-        value = int(timeframe[:-1])
-    except ValueError:
-        return False
+    # We gaan ervan uit dat candle_timestamp_ms de EINDtijd van de candle is.
+    # => Candle is closed als now >= candle_timestamp_ms
 
-    if unit == "m":
-        duration_ms = value * 60 * 1000
-    elif unit == "h":
-        duration_ms = value * 60 * 60 * 1000
-    elif unit == "d":
-        duration_ms = value * 24 * 60 * 60 * 1000
-    else:
-        duration_ms = 0
-
-    candle_start = datetime.fromtimestamp(candle_timestamp_ms / 1000, tz=timezone.utc)
-    candle_end = candle_start + timedelta(milliseconds=duration_ms)
-    current_time = datetime.now(timezone.utc)
-    return current_time >= candle_end
-
+    now_ms = int(time.time() * 1000)
+    return now_ms >= candle_timestamp_ms
 
 class KrakenMixedClient:
     """

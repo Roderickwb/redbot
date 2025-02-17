@@ -637,5 +637,9 @@ class Executor:
         if delta < 0:
             delta += 900  # 15 * 60
 
+        # Extra clamp om veilig te zijn
+        if delta < 0:
+            delta = 0
+
         self.logger.info(f"[Executor] Sleep {delta:.1f}s until next quarter-hour => {next_dt}")
         time.sleep(delta)

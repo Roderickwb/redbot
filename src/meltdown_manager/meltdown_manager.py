@@ -25,6 +25,7 @@ class MeltdownManager:
     """
 
     def __init__(self, config: dict, db_manager, logger=None):
+
         """
         config verwacht bijv.:
           {
@@ -56,6 +57,7 @@ class MeltdownManager:
 
         self.logger = logger
         self.logger.info("[MeltdownManager] init ...")
+        self.logger.info(f"[MeltdownManager DEBUG] config dict => {config}")
 
         # meltdown state
         self.meltdown_active = False

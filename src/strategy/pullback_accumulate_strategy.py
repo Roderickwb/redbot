@@ -1132,7 +1132,6 @@ class PullbackAccumulateStrategy:
             return Decimal(str(last_close))
         return Decimal("0")
 
-    @property
     def _get_equity_estimate(self) -> Decimal:
         """
         Tel de volledige walletwaarde in EUR, plus eventueel posities

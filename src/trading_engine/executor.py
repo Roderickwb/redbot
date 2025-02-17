@@ -410,7 +410,7 @@ class Executor:
 
                 # 2) 30s marge
                 self.logger.info("[Executor] Slaap 30s marge ná kwartiergrens.")
-                time.sleep(30)
+                time.sleep(25)
 
                 loop_count += 1
 

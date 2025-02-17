@@ -656,14 +656,19 @@ class PullbackAccumulateStrategy:
             self.logger.warning(f"[PullbackStrategy] current_price={current_price} => skip open pos for {symbol}")
             return
 
+        equity_now = self._get_equity_estimate()
+
+        # 2) allowed = 5% van je totale equity, capped op self.max_position_eur
+        allowed_eur_pct = equity_now * self.max_position_pct
+        allowed_eur = min(allowed_eur_pct, self.max_position_eur)
+
         needed_coins = self._get_min_lot(symbol) * self.min_lot_multiplier
         needed_eur_for_min = needed_coins * current_price
-        allowed_eur_pct = eur_balance * self.max_position_pct
-        allowed_eur = min(allowed_eur_pct, self.max_position_eur)
 
         if needed_eur_for_min > allowed_eur:
             self.logger.warning(
-                f"[PullbackStrategy] needed={needed_eur_for_min:.2f} EUR > allowed={allowed_eur:.2f} => skip {symbol}.")
+                f"[PullbackStrategy] needed={needed_eur_for_min:.2f} EUR > allowed={allowed_eur:.2f} => skip {symbol}."
+            )
             return
 
         buy_eur = needed_eur_for_min

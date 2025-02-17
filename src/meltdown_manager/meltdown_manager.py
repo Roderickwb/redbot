@@ -66,6 +66,7 @@ class MeltdownManager:
 
         # parameters
         self.daily_loss_pct = Decimal(str(config.get("daily_loss_pct", "20")))
+        self.logger.info(f"[DEBUG] meltdown_manager daily_loss_pct => {self.daily_loss_pct}")
         self.flash_crash_pct = Decimal(str(config.get("flash_crash_pct", "20")))
         self.rsi_reentry_threshold = Decimal(str(config.get("rsi_reentry_threshold", "30")))
 

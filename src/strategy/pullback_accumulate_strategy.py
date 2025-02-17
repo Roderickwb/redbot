@@ -302,7 +302,7 @@ class PullbackAccumulateStrategy:
             # self.logger.info(f"[DepthTrend] instant={depth_score_instant:.2f}, rolling_avg={depth_score:.2f}")
 
         # Equity check
-        total_equity = self._get_equity_estimate()
+        total_equity = self._get_equity_estimate
         invest_extra_flag = False
         #if (total_equity >= self.initial_capital * self.accumulate_threshold) and not self.invested_extra:
         #    invest_extra_flag = True
@@ -1132,25 +1132,45 @@ class PullbackAccumulateStrategy:
             return Decimal(str(last_close))
         return Decimal("0")
 
+    @property
     def _get_equity_estimate(self) -> Decimal:
+        """
+        Tel de volledige walletwaarde in EUR, plus eventueel posities
+        als je dat wilt. (Let op double counting!)
+        """
         if not self.order_client:
             return self.initial_capital
-        bal = self.order_client.get_balance()
-        eur_balance = Decimal(str(bal.get("EUR", "250")))
-        total_pos_value = Decimal("0")
-        for sym, pos_info in self.open_positions.items():
-            amt = pos_info["amount"]
-            latest_price = self._get_latest_price(sym)
-            if latest_price > 0:
-                total_pos_value += (amt * latest_price)
 
-        equity_now = eur_balance + total_pos_value
-        profit_val = equity_now - self.initial_capital
-        profit_pct = (profit_val / self.initial_capital * Decimal("100")) if self.initial_capital > 0 else 0
-        # (2) EquityCheck-log uitgecommentarieerd:
-        # self.logger.info(f"[EquityCheck] equity_now={equity_now:.2f}, init_cap={self.initial_capital}, "
-        #                  f"profit_val={profit_val:.2f}, profit_pct={profit_pct:.2f}%")
-        return equity_now
+        bal = self.order_client.get_balance()  # bv. {"EUR":"120.5", "XBT":"0.01", "ETH":"0.5", ...}
+
+        total_wallet_eur = Decimal("0")
+        for asset, amount_str in bal.items():
+            amt = Decimal(str(amount_str))
+            if asset.upper() == "EUR":
+                # Gewoon EUR-saldo
+                total_wallet_eur += amt
+            else:
+                # Converteer asset -> EUR
+                # Voor "XBT" => symbol="XBT-EUR", "ETH" => "ETH-EUR"
+                symbol = f"{asset.upper()}-EUR"
+                price = self._get_latest_price(symbol)
+                if price > 0:
+                    total_wallet_eur += (amt * price)
+
+        # Als je open_positions gebruikt voor trades,
+        # en die assets zitten *ook* fysiek in de wallet,
+        # dan is de waarde al meegerekend.
+        # Dus om double counting te voorkomen, laten we 'm hier weg.
+        #
+        # Wil je posities *wel* apart meetellen (bijvoorbeeld als je
+        # open_positions net andere derivaten zijn), dan kun je:
+        #
+        # for sym, pos_info in self.open_positions.items():
+        #    amt = pos_info["amount"]
+        #    px = self._get_latest_price(sym)
+        #    total_wallet_eur += (amt * px)
+
+        return total_wallet_eur
 
     def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
         try:

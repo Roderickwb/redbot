@@ -72,6 +72,12 @@ class MeltdownManager:
         self.meltdown_tf = config.get("meltdown_tf", "5m")
         self.meltdown_lookback = int(config.get("meltdown_lookback", 3))
 
+        # Log de config om zeker te weten dat daily_loss_pct etc. klopt
+        self.logger.info(
+            f"[MeltdownManager] config => daily_loss_pct={self.daily_loss_pct}, "
+            f"flash_crash_pct={self.flash_crash_pct}, rsi_reentry={self.rsi_reentry_threshold}"
+        )
+
     def update_meltdown_state(self, strategy, symbol: str) -> bool:
         """
         1) Als meltdown_active=True => check RSI-reentry => meltdown eventueel uit
@@ -114,6 +120,7 @@ class MeltdownManager:
         """
         Check of (initial_capital - equity_now)/initial_capital >= daily_loss_pct
         """
+        ### AANGEPAST ### => gebruik () om de functie aan te roepen
         equity_now = strategy._get_equity_estimate()
         capital_dec = Decimal(str(strategy.initial_capital))
 
@@ -199,15 +206,13 @@ class MeltdownManager:
     def _check_reentry_rsi(self, strategy, symbol: str) -> bool:
         """
         meltdown => re-entry als RSI>rsi_reentry_threshold
-        => we gebruiken bv. strategy.entry_timeframe of meltdown_coins[0], net wat je wilt.
+        => we gebruiken bv. strategy.entry_timeframe of meltdown_coins[0].
         """
-        # Pak bijv. strategy.entry_timeframe (pullback= "15m" / breakout= "4h" etc.)
-        tf = getattr(strategy, "entry_timeframe", "15m")  # fallback= "15m"
-        df_entry = strategy._fetch_and_indicator(symbol, tf, limit=1)
-        if df_entry.empty:
-            return False
-
-        if "rsi" not in df_entry.columns:
+        ### AANGEPAST ### => haal ~30 candles zodat RSI geen NaN is
+        tf = getattr(strategy, "entry_timeframe", "15m")
+        df_entry = strategy._fetch_and_indicator(symbol, tf, limit=30)
+        if df_entry.empty or "rsi" not in df_entry.columns or len(df_entry) < 3:
+            self.logger.warning("[MeltdownManager] RSI re-entry => not enough data or no RSI column.")
             return False
 
         last_rsi = df_entry["rsi"].iloc[-1]
@@ -224,7 +229,6 @@ class MeltdownManager:
             return False
 
         self.logger.info(
-            f"[MeltdownManager] RSI re-entry check => RSI={last_rsi_dec:.2f}, "
-            f"threshold={self.rsi_reentry_threshold}"
+            f"[MeltdownManager] RSI re-entry check => RSI={last_rsi_dec:.2f}, threshold={self.rsi_reentry_threshold}"
         )
         return last_rsi_dec > self.rsi_reentry_threshold

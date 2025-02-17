@@ -66,14 +66,14 @@ pullback_accumulate_strategy:
 
   # (Nieuw)
   min_lot_multiplier: 2.1  # min. 2.1× minLot
-  max_position_pct: 0.1   # max 5% van je capital
+  max_position_pct: 0.05   # max 5% van je capital
   max_position_eur: 15  # of direct een vast bedrag
 
   sl_atr_mult: 1.5        # SL => full close
   tp1_atr_mult: 1.5       # 50% close
   tp1_portion_pct: 0.50
   trailing_atr_mult: 1  # voor de rolling 50%
-  initial_capital: 250
+  initial_capital: 350
 
   use_depth_trend: true
   pivot_points_window: 20
@@ -117,7 +117,7 @@ breakout_strategy:
   trailing_atr_mult: 1.5
   # geen partial => alles in 1 keer
 
-  max_position_pct: 0.1   # max 5% van je capital
+  max_position_pct: 0.05   # max 5% van je capital
   max_position_eur: 15  # of direct een vast bedrag
 
 kraken:
@@ -195,10 +195,10 @@ altcoin_scanner_strategy:
 
   # positie management
   min_lot_multiplier: 1.1  # min. 2.1× minLot
-  max_position_pct: 0.1   # max 5% van je capital
+  max_position_pct: 0.05   # max 5% van je capital
   max_position_eur: 15  # of direct een vast bedrag
 
-  initial_capital: 250
+  initial_capital: 350
 
 ### MELTDOWN MANAGER ###
 meltdown_manager:

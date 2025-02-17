@@ -2,6 +2,8 @@ import logging
 import pandas as pd
 import yaml
 import time
+from datetime import datetime
+
 from typing import Optional
 from decimal import Decimal
 from collections import deque
@@ -30,34 +32,12 @@ def load_config(path: str) -> dict:
 
 def is_candle_closed(last_candle_ms: int, timeframe: str) -> bool:
     """
-    Berekent of de candle die eindigt op last_candle_ms al volledig afgesloten is.
-    Hierbij gaan we ervan uit dat de timeframe als volgt kan worden opgegeven:
-      - '5m'   : 5 minuten
-      - '15m'  : 15 minuten
-      - '1h'   : 60 minuten
-      - '4h'   : 4 uur
-      - '1d'   : 1 dag
+    Hier gaan we er 100% vanuit dat 'last_candle_ms'
+    de *eindtijd* van de candle is. Dan is de candle
+    closed als we 'now_ms >= last_candle_ms'.
     """
-    # Zet de timeframe om in milliseconden
-    unit = timeframe[-1]
-    try:
-        value = int(timeframe[:-1])
-    except ValueError:
-        return False  # Mislukte parsing => niet afgesloten
-
-    if unit == "m":
-        duration_ms = value * 60 * 1000
-    elif unit == "h":
-        duration_ms = value * 60 * 60 * 1000
-    elif unit == "d":
-        duration_ms = value * 24 * 60 * 60 * 1000
-    else:
-        duration_ms = 0
-
-    current_ms = int(time.time() * 1000)
-    # Een candle is afgesloten als de huidige tijd (in ms) groter is dan het eindtijdstip van de candle.
-    return current_ms >= (last_candle_ms + duration_ms)
-
+    now_ms = int(time.time() * 1000)
+    return now_ms >= last_candle_ms
 
 class PullbackAccumulateStrategy:
     """

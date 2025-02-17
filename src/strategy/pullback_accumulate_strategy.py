@@ -629,7 +629,7 @@ class PullbackAccumulateStrategy:
         else:
             self.logger.info(f"### EXTRA LOG ### [OPEN LONG] {symbol} at {current_price}")
 
-        eur_balance = Decimal("100")
+        eur_balance = Decimal("250")
         if self.order_client:
             bal = self.order_client.get_balance()
             eur_balance = Decimal(str(bal.get("EUR", "100")))

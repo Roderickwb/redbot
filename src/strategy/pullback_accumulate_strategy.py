@@ -30,14 +30,14 @@ def load_config(path: str) -> dict:
     print("[DEBUG] In load_config =>", data)
     return data
 
-def is_candle_closed(last_candle_ms: int) -> bool:
+def is_candle_closed(last_candle_ms: int, timeframe: str) -> bool:
     """
-    Hier gaan we er 100% vanuit dat 'last_candle_ms'
-    de *eindtijd* van de candle is. Dan is de candle
-    closed als we 'now_ms >= last_candle_ms'.
+    (timeframe is niet meer in gebruik, maar laten we 'm staan
+     zodat de rest van de code intact blijft.)
     """
     now_ms = int(time.time() * 1000)
     return now_ms >= last_candle_ms
+
 
 class PullbackAccumulateStrategy:
     """

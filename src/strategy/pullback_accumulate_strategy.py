@@ -272,6 +272,8 @@ class PullbackAccumulateStrategy:
 
         df_entry.sort_index(inplace=True)
         last_timestamp = df_entry.index[-1]
+        self.logger.debug(
+            f"[DEBUG] For {symbol}, last row in df_entry => {last_timestamp} => {datetime.utcfromtimestamp(last_timestamp / 1000)}")
         if isinstance(last_timestamp, pd.Timestamp):
             last_candle_ms = int(last_timestamp.timestamp() * 1000)
         else:

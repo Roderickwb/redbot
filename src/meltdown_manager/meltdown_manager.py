@@ -118,6 +118,8 @@ class MeltdownManager:
         """
         # update peak_equity als current_equity > peak_equity
         current_eq = strategy._get_equity_estimate()
+        self.logger.debug(
+            f"[MeltdownManager] update_meltdown_state => current_eq={current_eq:.2f}, peak={self.peak_equity:.2f}")
         if current_eq > self.peak_equity:
             self.peak_equity = current_eq
             self.logger.info(f"[MeltdownManager] new peak_equity => {self.peak_equity:.2f}")

@@ -157,6 +157,12 @@ class MeltdownManager:
         >= self.daily_loss_pct => meltdown
         """
         eq_now = strategy._get_equity_estimate()
+
+        # 1) Als eq_now=0 (of <0), skip meltdown (omdat eq=0 in 99,9% van de gevallen een fout is)
+        if eq_now <= 0:
+            self.logger.warning("[MeltdownManager] eq_now=0 => skip meltdown this round.")
+            return False
+
         if self.peak_equity <= 0:
             self.logger.warning("[MeltdownManager] peak_equity<=0 => skip meltdown drawdown.")
             return False

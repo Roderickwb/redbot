@@ -82,37 +82,22 @@ class MeltdownManager:
         )
 
     def update_meltdown_state(self, strategy, symbol: str) -> bool:
-        """
-        1) Als meltdown_active=True => check RSI-reentry => meltdown eventueel uit
-        2) Anders check daily_loss & flash_crash => meltdown in
-        3) Return meltdown_active => True => meltdown => skip open pos, close all
-        """
-        # 1) meltdown al actief => check RSI-based re-entry
         if self.meltdown_active:
+            # Do alleen RSI-check
             reentry = self._check_reentry_rsi(strategy, symbol)
             if reentry:
                 self.logger.info("[MeltdownManager] RSI-based re-entry => meltdown ended.")
                 self.meltdown_active = False
                 self.meltdown_reason = None
+            # STOP => return meltdown_active
             return self.meltdown_active
 
-        # meltdown not active => check daily & flash crash
-        meltdown_triggered = False
-
-        # a) daily
+        # meltdown_active=False => daily_loss + flash_crash
         meltdown_daily = self._check_daily_loss(strategy)
-        # b) flash crash => check meltdown_coins => if >= meltdown_coins_needed => meltdown
         meltdown_flash = self._check_flash_crash(strategy)
 
-        if meltdown_daily:
-            meltdown_triggered = True
-            self.meltdown_reason = "daily_loss"
-        elif meltdown_flash:
-            meltdown_triggered = True
-            self.meltdown_reason = "flash_crash"
-
-        if meltdown_triggered:
-            self.logger.warning(f"[MeltdownManager] meltdown triggered => reason={self.meltdown_reason}")
+        if meltdown_daily or meltdown_flash:
+            self.logger.warning("[MeltdownManager] meltdown triggered => ...")
             self._close_all_positions(strategy)
             self.meltdown_active = True
             self.meltdown_start_time = time.time()

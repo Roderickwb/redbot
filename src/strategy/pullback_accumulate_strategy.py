@@ -302,7 +302,7 @@ class PullbackAccumulateStrategy:
             # self.logger.info(f"[DepthTrend] instant={depth_score_instant:.2f}, rolling_avg={depth_score:.2f}")
 
         # Equity check
-        total_equity = self._get_equity_estimate
+        total_equity = self._get_equity_estimate()
         invest_extra_flag = False
         #if (total_equity >= self.initial_capital * self.accumulate_threshold) and not self.invested_extra:
         #    invest_extra_flag = True

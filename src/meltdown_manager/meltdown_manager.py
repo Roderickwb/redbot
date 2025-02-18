@@ -5,6 +5,10 @@ import logging
 from decimal import Decimal, InvalidOperation
 import pandas as pd
 
+# [CHANGED] => import yaml + os om in src/config/peak_state.yaml te schrijven
+import yaml
+import os
+
 # We nemen aan dat je deze functie WEL hebt, uit je eigen logger.py
 from src.logger.logger import setup_logger
 
@@ -18,6 +22,7 @@ class MeltdownManager:
     """
     Universeel meltdown-mechanisme:
       - daily_loss check => meltdown als portfolio drop >= daily_loss_pct
+        (NU PEAK-BASED: we meten drop% vanaf self.peak_equity i.p.v. initial_capital)
       - flash_crash => meltdown als >= meltdown_coins_needed coins in meltdown_coins
                        >= flash_crash_pct drop (over meltdown_tf & meltdown_lookback)
       - meltdown_active => skip new pos, close all
@@ -35,7 +40,9 @@ class MeltdownManager:
             "meltdown_coins": ["BTC-EUR","XRP-EUR","ETH-EUR"],
             "meltdown_coins_needed": 2,
             "meltdown_tf": "5m",
-            "meltdown_lookback": 3
+            "meltdown_lookback": 3,
+            "initial_capital": 350
+            # We slaan peak_equity in "src/config/peak_state.yaml" op
           }
 
         db_manager => je DatabaseManager
@@ -81,18 +88,52 @@ class MeltdownManager:
             f"flash_crash_pct={self.flash_crash_pct}, rsi_reentry={self.rsi_reentry_threshold}"
         )
 
+        # [CHANGED] => We bouwen een absoluut pad naar src/config/peak_state.yaml,
+        #             gebaseerd op de map van meltdown_manager.py
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        config_dir = os.path.join(base_dir, "..", "config")
+        self.peak_file = os.path.join(config_dir, "peak_state.yaml")
+
+        # [CHANGED] => Fallback = initial_capital
+        init_cap_str = str(config.get("initial_capital", "350"))
+        try:
+            init_cap = Decimal(init_cap_str)
+        except InvalidOperation:
+            init_cap = Decimal("350")
+
+        # [CHANGED] => load peak_equity (als 'peak_state.yaml' bestaat)
+        loaded_peak = self._load_peak_equity()
+        if loaded_peak is not None:
+            self.peak_equity = loaded_peak
+            self.logger.info(f"[MeltdownManager] Loaded peak_equity={self.peak_equity} from {self.peak_file}")
+        else:
+            self.peak_equity = init_cap
+            self.logger.info(f"[MeltdownManager] No peak file => start peak_equity={self.peak_equity}")
+
     def update_meltdown_state(self, strategy, symbol: str) -> bool:
+        """
+        Als meltdown actief => check RSI => meltdown end
+        Anders => check flash_crash & 'daily_loss' (peak-based => _check_daily_loss),
+                  meltdown trigger.
+        """
+        # update peak_equity als current_equity > peak_equity
+        current_eq = strategy._get_equity_estimate()
+        if current_eq > self.peak_equity:
+            self.peak_equity = current_eq
+            self.logger.info(f"[MeltdownManager] new peak_equity => {self.peak_equity:.2f}")
+            # [CHANGED] => meteen saven in peak_state.yaml
+            self._save_peak_equity(self.peak_equity)
+
         if self.meltdown_active:
-            # Do alleen RSI-check
+            # meltdown => skip daily/flash, alleen RSI re-entry
             reentry = self._check_reentry_rsi(strategy, symbol)
             if reentry:
                 self.logger.info("[MeltdownManager] RSI-based re-entry => meltdown ended.")
                 self.meltdown_active = False
                 self.meltdown_reason = None
-            # STOP => return meltdown_active
             return self.meltdown_active
 
-        # meltdown_active=False => daily_loss + flash_crash
+        # meltdown not active => check daily_loss & flash_crash
         meltdown_daily = self._check_daily_loss(strategy)
         meltdown_flash = self._check_flash_crash(strategy)
 
@@ -106,31 +147,31 @@ class MeltdownManager:
 
     def _check_daily_loss(self, strategy) -> bool:
         """
+        Oorspronkelijke docstring:
         Check of (initial_capital - equity_now)/initial_capital >= daily_loss_pct
-        """
-        ### AANGEPAST ### => gebruik () om de functie aan te roepen
-        equity_now = strategy._get_equity_estimate()
-        capital_dec = Decimal(str(strategy.initial_capital))
 
-        drop_val = capital_dec - equity_now
-        if capital_dec <= 0:
-            self.logger.warning("[MeltdownManager] initial_capital <= 0 => skip daily loss check.")
+        [NU PEAK-BASED]:
+        we meten drawdown% = (peak_equity - eq_now)/peak_equity *100
+        >= self.daily_loss_pct => meltdown
+        """
+        eq_now = strategy._get_equity_estimate()
+        if self.peak_equity <= 0:
+            self.logger.warning("[MeltdownManager] peak_equity<=0 => skip meltdown drawdown.")
             return False
 
-        drop_val = capital_dec - equity_now
-        drop_pct = (drop_val / capital_dec) * Decimal("100") if capital_dec > 0 else Decimal("0")
+        drawdown_val = self.peak_equity - eq_now
+        drawdown_pct = (drawdown_val / self.peak_equity) * Decimal("100") if self.peak_equity > 0 else Decimal("0")
 
-        # -- Toevoeging om duidelijk te loggen wat er gebeurt --
+        # Log
         self.logger.info(
-            f"[MeltdownManager] daily_loss_check => equity_now={equity_now:.2f}, "
-            f"initial_capital={capital_dec:.2f}, drop_val={drop_val:.2f}, "
-            f"drop_pct={drop_pct:.2f}, threshold={self.daily_loss_pct}"
+            f"[MeltdownManager] daily_loss_check(peak-based) => eq_now={eq_now:.2f}, "
+            f"peak={self.peak_equity:.2f}, drawdown_val={drawdown_val:.2f}, "
+            f"drawdown_pct={drawdown_pct:.2f}, threshold={self.daily_loss_pct}"
         )
-        # ------------------------------------------------------
 
-        if drop_pct >= self.daily_loss_pct:
+        if drawdown_pct >= self.daily_loss_pct:
             self.logger.warning(
-                f"[MeltdownManager] daily loss {drop_pct:.2f}% >= {self.daily_loss_pct}% => meltdown."
+                f"[MeltdownManager] meltdown => drawdown {drawdown_pct:.2f}% >= {self.daily_loss_pct}%"
             )
             return True
         return False
@@ -178,16 +219,6 @@ class MeltdownManager:
 
     def _close_all_positions(self, strategy):
         self.logger.warning("[MeltdownManager] meltdown => close all open positions.")
-        #for sym in list(strategy.open_positions.keys()):
-        #    self.logger.warning(f"[MeltdownManager] meltdown => close {sym}")
-        #    pos = strategy.open_positions[sym]
-        #    side = pos["side"]
-        #    amt = pos["amount"]
-        #    if side == "buy":
-        #        # self.logger.info("... call strategy._sell_portion(...) ...")
-        #        strategy._sell_portion(sym, amt, portion=Decimal("1.0"), reason="Meltdown")
-        #    else:
-        #        strategy._buy_portion(sym, amt, portion=Decimal("1.0"), reason="Meltdown")
         for sym in list(strategy.open_positions.keys()):
             strategy._close_position(sym, reason="Meltdown")
 
@@ -196,7 +227,6 @@ class MeltdownManager:
         meltdown => re-entry als RSI>rsi_reentry_threshold
         => we gebruiken bv. strategy.entry_timeframe of meltdown_coins[0].
         """
-        ### AANGEPAST ### => haal ~30 candles zodat RSI geen NaN is
         tf = getattr(strategy, "entry_timeframe", "15m")
         df_entry = strategy._fetch_and_indicator(symbol, tf, limit=30)
         if df_entry.empty or "rsi" not in df_entry.columns or len(df_entry) < 3:
@@ -205,7 +235,6 @@ class MeltdownManager:
 
         last_rsi = df_entry["rsi"].iloc[-1]
 
-        # Fix voor NaN / None / invalid decimal
         if last_rsi is None or pd.isna(last_rsi):
             self.logger.warning(f"[MeltdownManager] RSI re-entry => ongeldige RSI: {last_rsi}")
             return False
@@ -220,3 +249,33 @@ class MeltdownManager:
             f"[MeltdownManager] RSI re-entry check => RSI={last_rsi_dec:.2f}, threshold={self.rsi_reentry_threshold}"
         )
         return last_rsi_dec > self.rsi_reentry_threshold
+
+    # [CHANGED] => helperfuncties voor peak_state.yaml
+    def _load_peak_equity(self):
+        """
+        Probeert 'peak_equity' uit peak_state.yaml te laden.
+        Returnt None als het niet bestaat of ongeldige data.
+        """
+        if not os.path.exists(self.peak_file):
+            return None
+        try:
+            with open(self.peak_file, "r") as f:
+                data = yaml.safe_load(f)
+            if not data or "peak_equity" not in data:
+                return None
+            return Decimal(str(data["peak_equity"]))
+        except Exception as e:
+            self.logger.warning(f"[MeltdownManager] _load_peak_equity => fout: {e}")
+            return None
+
+    def _save_peak_equity(self, val: Decimal):
+        """
+        Sla 'peak_equity' op in src/config/peak_state.yaml.
+        """
+        data = {"peak_equity": str(val)}
+        try:
+            with open(self.peak_file, "w") as f:
+                yaml.safe_dump(data, f)
+            self.logger.info(f"[MeltdownManager] Saved peak_equity={val} to {self.peak_file}")
+        except Exception as e:
+            self.logger.warning(f"[MeltdownManager] _save_peak_equity => fout: {e}")

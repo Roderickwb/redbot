@@ -25,7 +25,7 @@ class MeltdownManager:
         (NU PEAK-BASED: we meten drop% vanaf self.peak_equity i.p.v. initial_capital)
       - flash_crash => meltdown als >= meltdown_coins_needed coins in meltdown_coins
                        >= flash_crash_pct drop (over meltdown_tf & meltdown_lookback)
-      - meltdown_active => skip new pos, close all
+      - meltdown_active => *alleen skip nieuwe posities* (géén geforceerde close)
       - RSI-based re-entry => meltdown eindigt als RSI>rsi_reentry_threshold
     """
 
@@ -139,10 +139,12 @@ class MeltdownManager:
         meltdown_daily = self._check_daily_loss(strategy)
         meltdown_flash = self._check_flash_crash(strategy)
 
+        # [CHANGED] => Niet meer '_close_all_positions' aanroepen,
+        #             alleen meltdown_active op True + meltdown_reason.
         if meltdown_daily or meltdown_flash:
-            self.logger.warning("[MeltdownManager] meltdown triggered => ...")
-            self._close_all_positions(strategy)
+            self.logger.warning("[MeltdownManager] meltdown triggered => skip new trades (no forced close).")
             self.meltdown_active = True
+            self.meltdown_reason = "daily_loss" if meltdown_daily else "flash_crash"
             self.meltdown_start_time = time.time()
 
         return self.meltdown_active
@@ -226,9 +228,14 @@ class MeltdownManager:
         return False
 
     def _close_all_positions(self, strategy):
-        self.logger.warning("[MeltdownManager] meltdown => close all open positions.")
-        for sym in list(strategy.open_positions.keys()):
-            strategy._close_position(sym, reason="Meltdown")
+        """
+        [UITGECOMMENTARIEERD] => in deze 'lite' meltdown-versie
+        wordt niet meer geforceerd alles gesloten.
+        Deze methode is niet meer opgeroepen.
+        """
+        self.logger.warning("[MeltdownManager] meltdown => close all open positions (DISABLED).")
+        # for sym in list(strategy.open_positions.keys()):
+        #     strategy._close_position(sym, reason="Meltdown")
 
     def _check_reentry_rsi(self, strategy, symbol: str) -> bool:
         """

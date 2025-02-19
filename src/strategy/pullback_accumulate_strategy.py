@@ -257,7 +257,7 @@ class PullbackAccumulateStrategy:
             last_candle_ms = int(epoch_s * 1000)
             self.logger.debug(f"[DEBUG] {symbol}: last row => pd.Timestamp {last_timestamp} => epoch_s={epoch_s}")
         else:
-            last_candle_ms = int(last_timestamp)  # al ms
+            last_candle_ms = int(last_timestamp)
             epoch_s = last_candle_ms / 1000
             self.logger.debug(f"[DEBUG] {symbol}: last row => {last_candle_ms} => {datetime.utcfromtimestamp(epoch_s)}")
 
@@ -291,7 +291,7 @@ class PullbackAccumulateStrategy:
                 self.logger.info(f"[PullbackStrategy] 9/20EMA-check => geen valide pullback => skip {symbol}")
 
         # Depth + ML
-        ml_signal = self._ml_predict_signal(df_entry)  # of df_h4, wat je wilt
+        ml_signal = self._ml_predict_signal(df_entry)
         depth_score = 0.0
         if self.use_depth_trend:
             depth_score_instant = self._analyze_depth_trend_instant(symbol)
@@ -636,7 +636,7 @@ class PullbackAccumulateStrategy:
 
             # Spot‐only check: als side=='sell' => we hebben de coin nodig in de wallet
             if side == "sell":
-                coin_name = symbol.split("-")[0]  # bijv. "TRX" uit "TRX-EUR"
+                coin_name = symbol.split("-")[0]
                 coin_balance = Decimal(str(bal.get(coin_name, "0")))
                 if coin_balance <= 0:
                     self.logger.warning(
@@ -738,7 +738,7 @@ class PullbackAccumulateStrategy:
             "desired_amount": desired_amount,
             "filled_amount": Decimal("0.0"),
             "amount": Decimal("0.0"),
-            "atr": atr_value,  # later in manage pos
+            "atr": atr_value,
             "tp1_done": False,
             "tp2_done": False,
             "trail_active": False,
@@ -830,7 +830,8 @@ class PullbackAccumulateStrategy:
         pos["amount"] -= amt_to_buy
         leftover_amt = pos["amount"]
 
-        if leftover_amt <= Decimal("0"):
+        # [MODIFIED START] - extra check leftover < min_lot => sluiten master
+        if leftover_amt <= Decimal("0") or leftover_amt < min_lot:
             self.logger.info(f"[PullbackStrategy] Full short position closed => {symbol}")
             if db_id:
                 # Meestal "master" => closed
@@ -849,8 +850,10 @@ class PullbackAccumulateStrategy:
                     })
                     self.logger.info(f"[PullbackStrategy] Master trade {db_id} => status=closed in DB")
                 self.__record_trade_signals(db_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
-            del self.open_positions[symbol]
+            if symbol in self.open_positions:
+                del self.open_positions[symbol]
         else:
+            # [MODIFIED END]
             if db_id:
                 old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,))
                 if old_row:
@@ -931,7 +934,7 @@ class PullbackAccumulateStrategy:
             "timestamp": int(time.time() * 1000),
             "position_id": position_id,
             "position_type": position_type,
-            "status": child_status,  # 'partial' / 'closed'
+            "status": child_status,
             "pnl_eur": realized_pnl,
             "fees": fees,
             "trade_cost": float(trade_cost),
@@ -944,7 +947,8 @@ class PullbackAccumulateStrategy:
         pos["amount"] -= amt_to_sell
         leftover_amt = pos["amount"]
 
-        if leftover_amt <= Decimal("0"):
+        # [MODIFIED START] - extra check leftover < min_lot => sluiten master
+        if leftover_amt <= Decimal("0") or leftover_amt < min_lot:
             self.logger.info(f"[PullbackStrategy] Full position closed => {symbol}")
             if db_id:
                 old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,))
@@ -956,8 +960,10 @@ class PullbackAccumulateStrategy:
                     self.logger.info(f"[PullbackStrategy] Master trade {db_id} => status=closed in DB")
 
                 self.__record_trade_signals(db_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
-            del self.open_positions[symbol]
+            if symbol in self.open_positions:
+                del self.open_positions[symbol]
         else:
+            # [MODIFIED END]
             if db_id:
                 old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,))
                 if old_row:
@@ -1042,13 +1048,33 @@ class PullbackAccumulateStrategy:
             position_type = row.get("position_type", None)
             db_id = row.get("id", None)
 
-            # --> FAIlSAFE: als 'amount' == 0 => forceren we 'closed'
-            if amount <= 0:
-                db_id = row.get("id", None)
+            # [MODIFIED START] - leftover check ook bij herstart
+            if amount <= 0 or amount < (self._get_min_lot(symbol) * Decimal("1.0")):
                 if db_id:
                     self.db_manager.update_trade(db_id, {"status": "closed"})
-                    self.logger.info(f"[_load_open_positions_from_db] {symbol} => leftover=0 => set DB closed.")
+                    self.logger.info(f"[_load_open_positions_from_db] {symbol} => leftover=0/<minlot => set DB closed.")
                 continue
+
+            # Optionele child-sum check (alleen voor master):
+            # Als is_master=1 en de som van child >= master => dan is positie feitelijk dicht.
+            is_master = row.get("is_master", 0)
+            if is_master == 1:
+                # Haal sum child trades op:
+                query_sum = """
+                    SELECT SUM(amount) AS total_children
+                      FROM trades
+                     WHERE position_id=?
+                       AND is_master=0
+                """
+                child_row = self.db_manager.execute_query(query_sum, (position_id,))
+                if child_row and child_row[0][0] is not None:
+                    child_sum = Decimal(str(child_row[0][0]))
+                    # Als child-sum >= master-amount => positie is afgebouwd
+                    if child_sum >= amount:
+                        self.db_manager.update_trade(db_id, {"status": "closed"})
+                        self.logger.info(f"[_load_open_positions_from_db] {symbol} => child_sum={child_sum} >= master={amount} => closed.")
+                        continue
+            # [MODIFIED END]
 
             pos_data = {
                 "side": side,
@@ -1145,7 +1171,7 @@ class PullbackAccumulateStrategy:
         if not self.order_client:
             return self.initial_capital
 
-        bal = self.order_client.get_balance()  # bv. {"EUR":"120.5", "XBT":"0.01", "ETH":"0.5", ...}
+        bal = self.order_client.get_balance()
 
         total_wallet_eur = Decimal("0")
         for asset, amount_str in bal.items():

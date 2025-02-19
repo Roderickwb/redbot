@@ -830,6 +830,15 @@ class PullbackAccumulateStrategy:
         pos["amount"] -= amt_to_buy
         leftover_amt = pos["amount"]
 
+        # Debug-loggen om te zien wat leftover is
+        self.logger.debug(f"[PortionCheck] leftover_amt before epsilon-check => {leftover_amt}")
+
+        # Epsilon-check
+        if leftover_amt < (min_lot * Decimal("1.00001")):
+            leftover_amt = Decimal("0")
+            pos["amount"] = Decimal("0")
+            self.logger.debug("[PortionCheck] leftover_amt is superklein => set to 0")
+
         # [MODIFIED START] - extra check leftover < min_lot => sluiten master
         if leftover_amt <= Decimal("0") or leftover_amt < min_lot:
             self.logger.info(f"[PullbackStrategy] Full short position closed => {symbol}")
@@ -879,6 +888,7 @@ class PullbackAccumulateStrategy:
         if portion < 1 and leftover_after_sell > 0 and leftover_after_sell < min_lot:
             self.logger.info(
                 f"[sell_portion] leftover {leftover_after_sell} < minLot={min_lot}, force entire close => portion=1.0")
+            self.logger.debug(f"[DEBUG leftover] leftover_after_sell={leftover_after_sell}, min_lot={min_lot}")
             amt_to_sell = total_amt
             portion = Decimal("1.0")
 
@@ -946,6 +956,15 @@ class PullbackAccumulateStrategy:
         # (B) leftover => update master
         pos["amount"] -= amt_to_sell
         leftover_amt = pos["amount"]
+
+        # Debug-loggen om te zien wat leftover is
+        self.logger.debug(f"[PortionCheck] leftover_amt before epsilon-check => {leftover_amt}")
+
+        # Epsilon-check
+        if leftover_amt < (min_lot * Decimal("1.00001")):
+            leftover_amt = Decimal("0")
+            pos["amount"] = Decimal("0")
+            self.logger.debug("[PortionCheck] leftover_amt is superklein => set to 0")
 
         # [MODIFIED START] - extra check leftover < min_lot => sluiten master
         if leftover_amt <= Decimal("0") or leftover_amt < min_lot:
@@ -1066,13 +1085,16 @@ class PullbackAccumulateStrategy:
                      WHERE position_id=?
                        AND is_master=0
                 """
+                child_sum = Decimal("0")
                 child_row = self.db_manager.execute_query(query_sum, (position_id,))
                 if child_row and child_row[0][0] is not None:
                     child_sum = Decimal(str(child_row[0][0]))
                     # Als child-sum >= master-amount => positie is afgebouwd
+                    self.logger.debug(f"Master {db_id}, amount={amount}, child_sum={child_sum}")
                     if child_sum >= amount:
                         self.db_manager.update_trade(db_id, {"status": "closed"})
                         self.logger.info(f"[_load_open_positions_from_db] {symbol} => child_sum={child_sum} >= master={amount} => closed.")
+                        self.logger.debug(f"query_sum result => {child_row}")
                         continue
             # [MODIFIED END]
 

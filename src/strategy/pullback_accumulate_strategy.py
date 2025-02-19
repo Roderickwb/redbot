@@ -562,10 +562,11 @@ class PullbackAccumulateStrategy:
         else:  # short
             self._buy_portion(symbol, amount, portion=Decimal("1.0"), reason=reason)
 
-        # 2) DB‐verzekeren: als om wat voor reden leftover>0 is, forceren we status=closed
-        if db_id:
-            self.db_manager.update_trade(db_id, {"status": "closed"})
-            self.logger.info(f"[_close_position] trade {db_id} => status=closed in DB (forced).")
+        # [MASTER_ID FIX] - Gebruik master_id, niet db_id van de child
+        master_id = pos.get("master_id", None)
+        if master_id:
+            self.db_manager.update_trade(master_id, {"status": "closed"})
+            self.logger.info(f"[_close_position] Master trade {master_id} => status=closed in DB (forced).")
 
         # 3) Verwijder uit self.open_positions
         if symbol in self.open_positions:
@@ -725,11 +726,11 @@ class PullbackAccumulateStrategy:
         }
         self.db_manager.save_trade(trade_data)
 
-        new_trade_id = self.db_manager.cursor.lastrowid
-        self.logger.info(f"[PullbackStrategy] new trade row => trade_id={new_trade_id}")
+        # [MASTER_ID FIX] - Sla 'master_id' expliciet op
+        master_id = self.db_manager.cursor.lastrowid
+        self.logger.info(f"[PullbackStrategy] new MASTER trade row => trade_id={master_id}")
 
-        # SIGNALS LOG
-        self.__record_trade_signals(new_trade_id, event_type="open", symbol=symbol, atr_mult=self.pullback_atr_mult)
+        self.__record_trade_signals(master_id, event_type="open", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
         desired_amount = amount
         self.open_positions[symbol] = {
@@ -745,7 +746,8 @@ class PullbackAccumulateStrategy:
             "trail_high": current_price,
             "position_id": position_id,
             "position_type": position_type,
-            "db_id": new_trade_id
+            # [MASTER_ID FIX] - Bewaar master_id in master_id (niet in db_id)
+            "master_id": master_id
         }
         # [CONCRETE FIX 2-A] => Zet meteen de werkelijke hoeveelheid in 'amount' en 'filled_amount'"
         self.open_positions[symbol]["amount"] = Decimal(str(amount))
@@ -773,7 +775,9 @@ class PullbackAccumulateStrategy:
         entry_price = pos["entry_price"]
         position_id = pos["position_id"]
         position_type = pos["position_type"]
-        db_id = pos.get("db_id", None)
+
+        # [MASTER_ID FIX] - Altijd de master_id opvragen in plaats van db_id
+        master_id = pos.get("master_id", None)
 
         if exec_price is not None:
             current_price = exec_price
@@ -842,41 +846,39 @@ class PullbackAccumulateStrategy:
         # [MODIFIED START] - extra check leftover < min_lot => sluiten master
         if leftover_amt <= Decimal("0") or leftover_amt < min_lot:
             self.logger.info(f"[PullbackStrategy] Full short position closed => {symbol}")
-            if db_id:
-                # Meestal "master" => closed
+            if master_id:  # [MASTER_ID FIX]
                 old_row = self.db_manager.execute_query(
                     "SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1",
-                    (db_id,)
+                    (master_id,)
                 )
                 if old_row:
                     old_fees, old_pnl = old_row[0]
                     new_fees = old_fees + fees
                     new_pnl = old_pnl + realized_pnl
-                    self.db_manager.update_trade(db_id, {
+                    self.db_manager.update_trade(master_id, {
                         "status": "closed",
                         "fees": new_fees,
                         "pnl_eur": new_pnl
                     })
-                    self.logger.info(f"[PullbackStrategy] Master trade {db_id} => status=closed in DB")
-                self.__record_trade_signals(db_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
+                    self.logger.info(f"[PullbackStrategy] Master trade {master_id} => status=closed in DB")
+                self.__record_trade_signals(master_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
             if symbol in self.open_positions:
                 del self.open_positions[symbol]
         else:
-            # [MODIFIED END]
-            if db_id:
-                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,))
+            if master_id:
+                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (master_id,))
                 if old_row:
                     old_fees, old_pnl = old_row[0]
                     new_fees = old_fees + fees
                     new_pnl = old_pnl + realized_pnl
-                    self.db_manager.update_trade(db_id, {
+                    self.db_manager.update_trade(master_id, {
                         "status": "partial",
                         "fees": new_fees,
                         "pnl_eur": new_pnl
                     })
                     self.logger.info(
-                        f"[PullbackStrategy] updated open trade {db_id} => partial fees={new_fees}, pnl={new_pnl}")
-            self.__record_trade_signals(db_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
+                        f"[PullbackStrategy] updated master trade {master_id} => partial fees={new_fees}, pnl={new_pnl}")
+            self.__record_trade_signals(master_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
     def _sell_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
         self.logger.info(f"### SELL portion => reason={reason}, symbol={symbol}")
@@ -902,7 +904,9 @@ class PullbackAccumulateStrategy:
         position_type = pos["position_type"]
         db_id = pos.get("db_id", None)
 
-        # Bepaal exec_price
+        # [MASTER_ID FIX] - We halen master_id op, niet db_id
+        master_id = pos.get("master_id", None)
+
         if exec_price is not None:
             current_price = exec_price
         else:
@@ -969,35 +973,34 @@ class PullbackAccumulateStrategy:
         # [MODIFIED START] - extra check leftover < min_lot => sluiten master
         if leftover_amt <= Decimal("0") or leftover_amt < min_lot:
             self.logger.info(f"[PullbackStrategy] Full position closed => {symbol}")
-            if db_id:
-                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,))
+            if master_id:  # [MASTER_ID FIX]
+                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (master_id,))
                 if old_row:
                     old_fees, old_pnl = old_row[0]
                     new_fees = old_fees + fees
                     new_pnl = old_pnl + realized_pnl
-                    self.db_manager.update_trade(db_id, {"status": "closed", "fees": new_fees, "pnl_eur": new_pnl})
-                    self.logger.info(f"[PullbackStrategy] Master trade {db_id} => status=closed in DB")
+                    self.db_manager.update_trade(master_id, {"status": "closed", "fees": new_fees, "pnl_eur": new_pnl})
+                    self.logger.info(f"[PullbackStrategy] Master trade {master_id} => status=closed in DB")
 
-                self.__record_trade_signals(db_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
+                self.__record_trade_signals(master_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
             if symbol in self.open_positions:
                 del self.open_positions[symbol]
         else:
-            # [MODIFIED END]
-            if db_id:
-                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (db_id,))
+            if master_id:
+                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (master_id,))
                 if old_row:
                     old_fees, old_pnl = old_row[0]
                     new_fees = old_fees + fees
                     new_pnl = old_pnl + realized_pnl
-                    self.db_manager.update_trade(db_id, {
+                    self.db_manager.update_trade(master_id, {
                         "status": "partial",
                         "fees": new_fees,
                         "pnl_eur": new_pnl
                     })
                     self.logger.info(
-                        f"[PullbackStrategy] updated master trade {db_id} => partial => fees={new_fees}, pnl={new_pnl}")
+                        f"[PullbackStrategy] updated master trade {master_id} => partial => fees={new_fees}, pnl={new_pnl}")
 
-            self.__record_trade_signals(db_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
+            self.__record_trade_signals(master_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
     # [Hulp-code]
     @staticmethod
@@ -1111,6 +1114,13 @@ class PullbackAccumulateStrategy:
                 "position_type": position_type,
                 "db_id": db_id
             }
+
+            # [MASTER_ID FIX] - Als deze rij is_master=1, beschouwen we db_id als 'master_id'
+            if is_master == 1:
+                pos_data["master_id"] = db_id
+            else:
+                pos_data["master_id"] = None
+
             df_main = self._fetch_and_indicator(symbol, self.main_timeframe, limit=200)
             atr_value = self._calculate_atr(df_main, self.atr_window)
             if atr_value:

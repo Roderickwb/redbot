@@ -1314,6 +1314,9 @@ class PullbackAccumulateStrategy:
             df["bb_upper"] = bb["bb_upper"]
             df["bb_lower"] = bb["bb_lower"]
 
+            if interval == "4h" and len(df) >= 2:
+                df = self._ensure_closed_4h_candle(df)
+
             return df
         except Exception as e:
             self.logger.error(f"[ERROR] _fetch_and_indicator faalde: {e}")
@@ -1384,3 +1387,24 @@ class PullbackAccumulateStrategy:
             self.logger.debug(f"[__record_trade_signals] trade_id={trade_id}, event={event_type}, symbol={symbol}")
         except Exception as e:
             self.logger.error(f"[__record_trade_signals] Fout: {e}")
+
+    def _ensure_closed_4h_candle(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Controleer of de laatste row in df nog half-open is.
+        Als 'timestamp_ms' van de laatste row niet afgesloten is
+        (nu < endtijd 4h), dan droppen we die row.
+        """
+
+        # Haal de timestamp_ms van de allerlaatste row
+        last_ts = df["timestamp_ms"].iloc[-1]
+
+        # Roep jouw bestaande 'is_candle_closed' aan op basis van '4h'
+        if not is_candle_closed(int(last_ts), "4h"):
+            # Candle is niet gesloten => gooi deze row weg
+            # (alleen als er minstens 2 rows zijn, anders hou je niets over)
+            self.logger.debug("[_ensure_closed_4h_candle] drop half-open row => using second last row for 4h.")
+            return df.iloc[:-1]
+        else:
+            # Candle is wél dicht => geen wijziging
+            return df
+

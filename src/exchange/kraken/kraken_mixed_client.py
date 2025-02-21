@@ -1141,51 +1141,6 @@ class KrakenMixedClient:
             except Exception as e:
                 logger.error("poll_15m_only => pair=%s => %s", loc, e)
 
-        # Rest call voor 15m candle als WS openbaar niet levert.
-        # def _fetch_latest_candle_rest(self, ws_pair, iv_int):
-        #    """
-        #    Haalt de laatste candle op (ts, o, h, l, c, vol) via REST, return None als mislukt.
-        #    """
-        #    self._check_rate_limit()
-        #    self._increment_call()
-        #    rest_name = self.kraken_rest_map.get(ws_pair)
-        #    if not rest_name:
-        #        logger.warning(f"[REST] ws_pair={ws_pair} => geen rest_name => overslaan.")
-        #        return None
-
-        #    url = "https://api.kraken.com/0/public/OHLC"
-        #    params = {"pair": rest_name, "interval": iv_int}
-        #    resp = safe_get(url, params=params, max_retries=3, sleep_seconds=2)
-        #    if not resp:
-        #        logger.error(f"[REST] geen candle na retries voor {ws_pair}/{iv_int}")
-        #        return None
-        #    if resp.status_code != 200:
-        #        logger.error(f"[REST] fout bij ophalen candle: {resp.text}")
-        #        return None
-        #    data = resp.json()
-        #    if data.get("error"):
-        #        logger.warning(f"[REST] error => {data['error']}")
-        #        return None
-        #    result = data.get("result", {})
-        #    if not result:
-        #        return None
-        #    key = list(result.keys())[0]
-        #    candles = result[key]
-        #    if not candles:
-        #        return None
-
-        #    last_candle = candles[-1]
-        #    if len(last_candle) < 7:
-        #        return None
-
-        #    ts = int(float(last_candle[0]) * 1000)
-        #    o = float(last_candle[1])
-        #    h = float(last_candle[2])
-        #    l = float(last_candle[3])
-        #    c = float(last_candle[4])
-        #    vol = float(last_candle[6])
-        #    return (ts, o, h, l, c, vol)
-
     def _iv_int_to_str(self, iv_int):
         mapping = {
             1: "1m", 5: "5m", 15: "15m", 30: "30m",

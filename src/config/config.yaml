@@ -64,6 +64,8 @@ pullback_accumulate_strategy:
   atr_window: 14
   accumulate_threshold: 1.1 # als er 10% winst is gemaakt mag dat geinvesteerd worden in coins. Door al bij 10% te doen cummuleer je sneller meerdere coins
 
+  poll_intervals: ["1h", "4h"]
+
   # (Nieuw)
   min_lot_multiplier: 2.1  # min. 2.1× minLot
   max_position_pct: 0.05   # max 5% van je capital

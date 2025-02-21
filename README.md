@@ -51,6 +51,14 @@ DELETE FROM trade_signals;
 DELETE FROM trades;
 COMMIT;
 
+# close position
+BEGIN TANSACTION;
+UPDATE trades
+SET status = 'closed'
+WHERE id = 1;
+COMMIT;
+
+
 # prullenbak in pi leegmaken
 rm -rf ~/.local/share/Trash/*
 # comtroleren of er voldoende ruimt is op de pi

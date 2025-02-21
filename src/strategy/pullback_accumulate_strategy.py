@@ -767,9 +767,10 @@ class PullbackAccumulateStrategy:
             amt_to_buy = total_amt
             portion = Decimal("1.0")
         if amt_to_buy < min_lot:
-            self.logger.info(
-                f"[PullbackStrategy] skip partial BUY => amt_to_buy={amt_to_buy:.4f} < minLot={min_lot:.4f}")
-            return
+            self.logger.info(f"[buy_portion] leftover {leftover_after_buy} < minLot={min_lot}, "
+                             f"force entire close => portion=1.0")
+            amt_to_buy = total_amt
+            portion = Decimal("1.0")
 
         pos = self.open_positions[symbol]
         entry_price = pos["entry_price"]
@@ -835,7 +836,7 @@ class PullbackAccumulateStrategy:
         leftover_amt = pos["amount"]
 
         # Debug-loggen om te zien wat leftover is
-        self.logger.debug(f"[PortionCheck] leftover_amt before epsilon-check => {leftover_amt}")
+        self.logger.debug(f"[BUY leftover-check] leftover_amt before epsilon => {leftover_amt}, min_lot={min_lot}")
 
         # Epsilon-check
         if leftover_amt < (min_lot * Decimal("1.00001")):
@@ -853,6 +854,10 @@ class PullbackAccumulateStrategy:
                 )
                 if old_row:
                     old_fees, old_pnl = old_row[0]
+                    self.logger.debug(
+                        f"[MASTER CLOSE DEBUG] leftover={leftover_amt}, master_id={master_id}, "
+                        f"fees={fees}, realized_pnl={realized_pnl}"
+                    )
                     new_fees = old_fees + fees
                     new_pnl = old_pnl + realized_pnl
                     self.db_manager.update_trade(master_id, {
@@ -895,8 +900,10 @@ class PullbackAccumulateStrategy:
             portion = Decimal("1.0")
 
         if amt_to_sell < min_lot:
-            self.logger.info(f"[sell_portion] skip partial => amt_to_sell={amt_to_sell} < minLot={min_lot}")
-            return
+            self.logger.info(f"[sell_portion] leftover {leftover_after_sell} < minLot={min_lot}, "
+                             f"force entire close => portion=1.0")
+            amt_to_sell = total_amt  # dwing volledige close
+            portion = Decimal("1.0")
 
         pos = self.open_positions[symbol]
         entry_price = pos["entry_price"]
@@ -961,6 +968,10 @@ class PullbackAccumulateStrategy:
         pos["amount"] -= amt_to_sell
         leftover_amt = pos["amount"]
 
+        self.logger.debug(
+            f"[SELL leftover-check] leftover_amt before epsilon => {leftover_amt}, min_lot={min_lot}"
+        )
+
         # Debug-loggen om te zien wat leftover is
         self.logger.debug(f"[PortionCheck] leftover_amt before epsilon-check => {leftover_amt}")
 
@@ -977,8 +988,14 @@ class PullbackAccumulateStrategy:
                 old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (master_id,))
                 if old_row:
                     old_fees, old_pnl = old_row[0]
+                    self.logger.debug(
+                        f"[MASTER CLOSE DEBUG] leftover={leftover_amt}, master_id={master_id}, "
+                        f"fees={fees}, realized_pnl={realized_pnl}"
+                    )
+
                     new_fees = old_fees + fees
                     new_pnl = old_pnl + realized_pnl
+                    self.logger.debug(f"[MASTER CLOSE DEBUG] master_id={master_id}, leftover={leftover_amt}")
                     self.db_manager.update_trade(master_id, {"status": "closed", "fees": new_fees, "pnl_eur": new_pnl})
                     self.logger.info(f"[PullbackStrategy] Master trade {master_id} => status=closed in DB")
 
@@ -1280,6 +1297,7 @@ class PullbackAccumulateStrategy:
 
             # 6) Sorteer op de index (nu is 'datetime_utc' de index)
             df.sort_index(inplace=True)
+            self.logger.debug(f"4h df tail:\n{df.tail(3)}")
 
             # Je DataFrame heeft nu:
             # - Een index = datetime_utc

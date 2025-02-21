@@ -51,6 +51,10 @@ DELETE FROM trade_signals;
 DELETE FROM trades;
 COMMIT;
 
+# prullenbak in pi leegmaken
+rm -rf ~/.local/share/Trash/*
+# comtroleren of er voldoende ruimt is op de pi
+df -h
 
 
 # We gaan drie smaken onderscheiden:
@@ -79,11 +83,27 @@ git add .
 git commit -m "Mijn aanpassing"
 git push
 
-
-1. Fail-safes
-2. Trend indicator: RSI Daily and RSI 4h
-3. ATR berkenen o.b.v. H1
-4. 
+# symbol_id
+1. XBT/EUR 
+2. ETH/EUR 
+3. XRP/EUR 
+4. XDG/EUR 
+5. ADA/EUR 
+6. SOL/EUR 
+7. DOT/EUR 
+8. MATIC/EUR 
+9. TRX/EUR 
+10. LTC/EUR 
+11. LINK/EUR 
+12. XLM/EUR 
+13. UNI/EUR 
+14. ATOM/EUR 
+15. ALGO/EUR 
+16. AAVE/EUR 
+17. ETC/EUR 
+18. SAND/EUR 
+19. AVAX/EUR 
+20. BCH/EUR
 
 
 

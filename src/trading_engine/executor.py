@@ -6,8 +6,7 @@ import os
 import threading
 import time
 import logging
-from threading import Thread
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from src.logger.logger import setup_logger
 from src.my_websocket.client import WebSocketClient

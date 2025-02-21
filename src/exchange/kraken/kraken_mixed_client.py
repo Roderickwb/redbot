@@ -14,7 +14,6 @@ import hashlib
 import hmac
 import base64
 import urllib.parse
-import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal  # [ADDED for minLot usage]
 
@@ -102,6 +101,7 @@ def build_kraken_mapping() -> dict:
             if not ws.endswith("/EUR"):
                 continue
             local = ws.replace("/", "-")
+            logger.info("[build_kraken_mapping DEBUG] local=%s, rest=%s, ws=%s", local, rest_name, ws)
             dynamic_map[local] = {
                 "wsname": ws,
                 "restname": rest_name

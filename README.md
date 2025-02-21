@@ -52,7 +52,7 @@ DELETE FROM trades;
 COMMIT;
 
 # close position
-BEGIN TANSACTION;
+BEGIN TRANSACTION;
 UPDATE trades
 SET status = 'closed'
 WHERE id = 1;

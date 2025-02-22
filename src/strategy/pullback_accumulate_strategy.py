@@ -729,6 +729,7 @@ class PullbackAccumulateStrategy:
         # [MASTER_ID FIX] - Sla 'master_id' expliciet op
         master_id = self.db_manager.cursor.lastrowid
         self.logger.info(f"[PullbackStrategy] new MASTER trade row => trade_id={master_id}")
+        self.logger.debug(f"[_open_position] master_id opgeslagen: {master_id}")  # Nieuw
 
         self.__record_trade_signals(master_id, event_type="open", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
@@ -746,8 +747,7 @@ class PullbackAccumulateStrategy:
             "trail_high": current_price,
             "position_id": position_id,
             "position_type": position_type,
-            # [MASTER_ID FIX] - Bewaar master_id in master_id (niet in db_id)
-            "master_id": master_id
+            "master_id": master_id  # Nieuw: master_id opslaan
         }
         # [CONCRETE FIX 2-A] => Zet meteen de werkelijke hoeveelheid in 'amount' en 'filled_amount'"
         self.open_positions[symbol]["amount"] = Decimal(str(amount))
@@ -1071,52 +1071,30 @@ class PullbackAccumulateStrategy:
 
     def _load_open_positions_from_db(self):
         """
-        Ongewijzigd: laadt open trades, herberekent ATR
+        Laadt open/partial trades uit de DB en zet ze in self.open_positions,
+        inclusief master_id voor mastertrades.
         """
-        open_rows = self.db_manager.fetch_open_trades()
+        open_rows = self.db_manager.fetch_open_trades()  # Moet columns id, is_master, status returnen
         if not open_rows:
-            self.logger.info("[PullbackStrategy] Geen open trades gevonden in DB.")
+            self.logger.info("[PullbackStrategy] Geen open/partial trades gevonden in DB.")
             return
 
         for row in open_rows:
+            db_id = row["id"]  # dankzij fetch_open_trades() = ID van de DB-rij
             symbol = row["symbol"]
             side = row["side"]
             amount = Decimal(str(row["amount"]))
             entry_price = Decimal(str(row["price"]))
             position_id = row.get("position_id", None)
             position_type = row.get("position_type", None)
-            db_id = row.get("id", None)
-
-            # [MODIFIED START] - leftover check ook bij herstart
-            if amount <= 0 or amount < (self._get_min_lot(symbol) * Decimal("1.0")):
-                if db_id:
-                    self.db_manager.update_trade(db_id, {"status": "closed"})
-                    self.logger.info(f"[_load_open_positions_from_db] {symbol} => leftover=0/<minlot => set DB closed.")
-                continue
-
-            # Optionele child-sum check (alleen voor master):
-            # Als is_master=1 en de som van child >= master => dan is positie feitelijk dicht.
             is_master = row.get("is_master", 0)
-            if is_master == 1:
-                # Haal sum child trades op:
-                query_sum = """
-                    SELECT SUM(amount) AS total_children
-                      FROM trades
-                     WHERE position_id=?
-                       AND is_master=0
-                """
-                child_sum = Decimal("0")
-                child_row = self.db_manager.execute_query(query_sum, (position_id,))
-                if child_row and child_row[0][0] is not None:
-                    child_sum = Decimal(str(child_row[0][0]))
-                    # Als child-sum >= master-amount => positie is afgebouwd
-                    self.logger.debug(f"Master {db_id}, amount={amount}, child_sum={child_sum}")
-                    if child_sum >= amount:
-                        self.db_manager.update_trade(db_id, {"status": "closed"})
-                        self.logger.info(f"[_load_open_positions_from_db] {symbol} => child_sum={child_sum} >= master={amount} => closed.")
-                        self.logger.debug(f"query_sum result => {child_row}")
-                        continue
-            # [MODIFIED END]
+
+            # Als dit 0 is (of kleiner dan min_lot) => in DB op closed zetten en niet opnemen
+            if amount < self._get_min_lot(symbol):
+                self.db_manager.update_trade(db_id, {"status": "closed"})
+                self.logger.info(
+                    f"[_load_open_positions_from_db] leftover=0 => {symbol} direct op closed gezet (id={db_id}).")
+                continue
 
             pos_data = {
                 "side": side,
@@ -1129,25 +1107,48 @@ class PullbackAccumulateStrategy:
                 "trail_high": entry_price,
                 "position_id": position_id,
                 "position_type": position_type,
+                # Voor debugging bewaren we de DB-id:
                 "db_id": db_id
             }
 
-            # [MASTER_ID FIX] - Als deze rij is_master=1, beschouwen we db_id als 'master_id'
+            # Master-trade => sla 'db_id' op als master_id
             if is_master == 1:
                 pos_data["master_id"] = db_id
+                self.logger.debug(f"[load_open_positions] Master trade {db_id} geladen (symbol={symbol}).")
             else:
                 pos_data["master_id"] = None
 
+            # Optionele child-sum check (vangnet) voor mastertrades
+            if is_master == 1:
+                query_sum = """
+                    SELECT SUM(amount) AS total_children
+                      FROM trades
+                     WHERE position_id=?
+                       AND is_master=0
+                """
+                child_row = self.db_manager.execute_query(query_sum, (position_id,))
+                if child_row and child_row[0][0] is not None:
+                    child_sum = Decimal(str(child_row[0][0]))
+                    if child_sum >= amount:
+                        self.db_manager.update_trade(db_id, {"status": "closed"})
+                        self.logger.info(
+                            f"[_load_open_positions_from_db] {symbol} (master_id={db_id}): "
+                            f"child_sum={child_sum} >= master={amount} => closed in DB."
+                        )
+                        continue
+
+            # ATR opnieuw berekenen (optioneel)
             df_main = self._fetch_and_indicator(symbol, self.main_timeframe, limit=200)
             atr_value = self._calculate_atr(df_main, self.atr_window)
             if atr_value:
                 pos_data["atr"] = Decimal(str(atr_value))
 
-            if "id" in row:
-                pos_data["db_id"] = row["id"]
-
+            # Zet de positie in self.open_positions
             self.open_positions[symbol] = pos_data
-            self.logger.info(f"[PullbackStrategy] Hersteld open pos => {symbol}, side={side}, amt={amount}, entry={entry_price}")
+            self.logger.info(
+                f"[PullbackStrategy] Hersteld open pos => {symbol}, side={side}, amt={amount}, "
+                f"entry={entry_price} (db_id={db_id}, master_id={pos_data['master_id']})"
+            )
 
     def manage_intra_candle_exits(self):
         """

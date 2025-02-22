@@ -1604,6 +1604,7 @@ class DatabaseManager:
             params.append(trade_id)
 
             self.execute_query(q, tuple(params))
+            self.connection.commit()
             rowcount = self.cursor.rowcount
             logger.info(f"[update_trade] Trade {trade_id} geüpdatet => {updates} (rowcount={rowcount})")
         except Exception as e:
@@ -2036,21 +2037,37 @@ class DatabaseManager:
         return {}
 
     def fetch_open_trades(self):
-        """
-        Zoekt trades met status='open' in de OUD 'trades' table.
-        Return is list van dicts.
-        """
         query = """
             SELECT
-                symbol, side, amount, price,
-                position_id, position_type, status, exchange
+                id,
+                timestamp,
+                datetime_utc,
+                symbol,
+                side,
+                price,
+                amount,
+                position_id,
+                position_type,
+                status,
+                pnl_eur,
+                fees,
+                trade_cost,
+                exchange,
+                strategy_name,
+                is_master
             FROM trades
-            WHERE status = 'open'
+            WHERE status IN ('open','partial')
         """
         rows = self.execute_query(query)
         if not rows:
             return []
-        columns = ["symbol", "side", "amount", "price", "position_id", "position_type", "status", "exchange"]
+
+        columns = [
+            "id", "timestamp", "datetime_utc", "symbol",
+            "side", "price", "amount", "position_id",
+            "position_type", "status", "pnl_eur", "fees",
+            "trade_cost", "exchange", "strategy_name", "is_master"
+        ]
         results = [dict(zip(columns, row)) for row in rows]
         return results
 

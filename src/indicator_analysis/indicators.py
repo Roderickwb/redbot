@@ -99,23 +99,31 @@ class IndicatorAnalysis:
     @staticmethod
     def calculate_rsi(df, window=14):
         """
-        Handmatige RSI-berekening.
+        RSI-berekening met Wilder's smoothing (RMA).
+        Dit komt vaker overeen met wat exchanges (zoals Kraken) standaard tonen.
         """
         try:
+            # 1) Verschil tussen huidige en vorige candle
             delta = df["close"].diff()
             if delta.empty:
                 raise ValueError("Delta is leeg. Controleer de input DataFrame.")
             logger.debug(f"[RSI] Delta (head): {delta.head()}")
 
-            gain = delta.where(delta > 0, 0).rolling(window=window).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+            # 2) Positieve en negatieve veranderingen
+            up = delta.clip(lower=0)
+            down = -delta.clip(upper=0)
 
-            logger.debug(f"[RSI] Gain (head): {gain.head()}")
-            logger.debug(f"[RSI] Loss (head): {loss.head()}")
+            # 3) Wilder's RMA over Gains en Losses
+            #    => ewm(alpha=1/window, adjust=False) is de exponentiële smoothing
+            ema_up = up.ewm(alpha=1 / window, adjust=False).mean()
+            ema_down = down.ewm(alpha=1 / window, adjust=False).mean()
 
-            rs = gain / loss
+            # 4) RS en RSI
+            rs = ema_up / ema_down
             rsi = 100 - (100 / (1 + rs))
+
             return rsi
+
         except Exception as e:
             logger.error(f"[RSI] Berekening mislukt: {e}")
             raise

@@ -30,26 +30,8 @@ import requests  # <-- voor de except-block
 
 
 def is_candle_closed(candle_timestamp_ms: int, interval_str: str) -> bool:
-    """
-    Hulpmethode om te checken of een candle (start=candle_timestamp_ms)
-    definitief is afgesloten. Eenvoudige parse van interval_str ('5m','15m','4h', etc.).
-    """
     now_ms = int(time.time() * 1000)
-    unit = interval_str[-1]  # 'm','h','d' ...
-    val = int(interval_str[:-1])
-
-    if unit == 'm':
-        duration_ms = val * 60_000
-    elif unit == 'h':
-        duration_ms = val * 60 * 60_000
-    elif unit == 'd':
-        duration_ms = val * 24 * 60 * 60_000
-    else:
-        duration_ms = 0
-
-    candle_end = candle_timestamp_ms + duration_ms
-    return now_ms >= candle_end
-
+    return now_ms >= candle_timestamp_ms
 
 class Executor:
     def __init__(

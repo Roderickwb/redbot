@@ -30,13 +30,13 @@ def load_config(path: str) -> dict:
     print("[DEBUG] In load_config =>", data)
     return data
 
-def is_candle_closed(last_candle_ms: int, timeframe: str) -> bool:
+def is_candle_closed(candle_timestamp_ms: int, timeframe: str) -> bool:
     """
-    (timeframe is niet meer in gebruik, maar laten we 'm staan
-     zodat de rest van de code intact blijft.)
+    We gaan ervan uit dat candle_timestamp_ms = candle-eindtijd (gesloten).
+    Dus: closed als now_ms >= candle_timestamp_ms.
     """
     now_ms = int(time.time() * 1000)
-    return now_ms >= last_candle_ms
+    return now_ms >= candle_timestamp_ms
 
 
 class PullbackAccumulateStrategy:
@@ -1297,7 +1297,7 @@ class PullbackAccumulateStrategy:
 
             # 6) Sorteer op de index (nu is 'datetime_utc' de index)
             df.sort_index(inplace=True)
-            self.logger.debug(f"4h df tail:\n{df.tail(3)}")
+            self.logger.debug(f"[{interval} df] tail:\n{df.tail(3)}")
 
             # Je DataFrame heeft nu:
             # - Een index = datetime_utc

@@ -63,6 +63,10 @@ class MeltdownManager:
             )
 
         self.logger = logger
+        # Hoe lang je wilt wachten tussen meltdown-checks (bv. 900s => 15 min)
+        self.meltdown_check_cooldown = int(config.get("meltdown_check_cooldown_s", 600))
+        # Houd een timestamp bij van de laatste “echte” check
+        self.last_meltdown_check_ts = 0.0
         self.logger.info("[MeltdownManager] init ...")
         self.logger.info(f"[MeltdownManager DEBUG] config dict => {config}")
 
@@ -134,6 +138,21 @@ class MeltdownManager:
                 self.meltdown_active = False
                 self.meltdown_reason = None
             return self.meltdown_active
+
+        # -- meltdown niet actief => cooldown check --
+        now = time.time()
+        elapsed = now - self.last_meltdown_check_ts
+
+        if elapsed < self.meltdown_check_cooldown:
+            # => Skip meltdown-check, want pas X seconden geleden gedaan
+            self.logger.debug(
+                f"[MeltdownManager] meltdown-check cooldown => only {elapsed:.1f}s ago, skip checking."
+            )
+            # meltdown_active = False (nog steeds), dus return
+            return self.meltdown_active
+
+            # We gaan nu WEL echt checken => reset je 'last_meltdown_check_ts'
+        self.last_meltdown_check_ts = now
 
         # meltdown not active => check daily_loss & flash_crash
         meltdown_daily = self._check_daily_loss(strategy)

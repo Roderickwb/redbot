@@ -138,6 +138,7 @@ class DatabaseManager:
                     self.cursor.execute("BEGIN IMMEDIATE TRANSACTION")
                     self.cursor.execute(query, params)
                     self.cursor.execute("COMMIT")
+                    self.connection.commit()
                     return None
                 except sqlite3.OperationalError as e:
                     if "locked" in str(e).lower():
@@ -176,6 +177,7 @@ class DatabaseManager:
                     self.cursor.execute("BEGIN IMMEDIATE TRANSACTION")
                     self.cursor.executemany(query, list_of_tuples)
                     self.cursor.execute("COMMIT")
+                    self.connection.commit()
                     return
                 except sqlite3.OperationalError as e:
                     if "locked" in str(e).lower():
@@ -1602,7 +1604,8 @@ class DatabaseManager:
             params.append(trade_id)
 
             self.execute_query(q, tuple(params))
-            logger.info(f"[update_trade] Trade {trade_id} geüpdatet => {updates}")
+            rowcount = self.cursor.rowcount
+            logger.info(f"[update_trade] Trade {trade_id} geüpdatet => {updates} (rowcount={rowcount})")
         except Exception as e:
             logger.error(f"[update_trade] Fout: {e}")
 

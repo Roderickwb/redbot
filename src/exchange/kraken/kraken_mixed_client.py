@@ -7,6 +7,7 @@ import logging
 import time
 import threading
 import websocket
+import math
 
 websocket.enableTrace(True)  # Laat debug-logs van de websocket-library zien
 
@@ -27,6 +28,32 @@ import queue  # <-- Toevoegen voor queue.Queue
 
 logger = setup_kraken_logger(logfile="logs/kraken_client.log", level=logging.DEBUG)
 
+
+def _round_bar_end_timestamp(time_s: float, iv_int: int) -> int:
+    """
+    Rond de 'starttime' (time_s) uit de Kraken-websocket ohlc-berichten
+    af naar de officiële EINDtijd van die candle.
+
+    Voorbeeld:
+    - Als iv_int = 15, en time_s is 13:38:55, dan hoort de candle
+      officieel te lopen van 13:30:00 t/m 13:45:00. Deze functie
+      geeft dan 13:45:00 als eindtijd in milliseconden.
+
+    return: eindtijd in ms (int).
+    """
+    dt = datetime.utcfromtimestamp(time_s)  # time_s = float(seconds)
+    # Bereken het aantal minuten sinds middernacht
+    total_minutes = dt.hour * 60 + dt.minute
+    # Hoeveel "candles" van 'iv_int' minuten zijn er al voorbij
+    bar_count = total_minutes // iv_int
+    # Start van deze candle
+    start_minute = bar_count * iv_int
+    start_dt = dt.replace(minute=start_minute, second=0, microsecond=0)
+    # Einde = start + iv_int
+    end_dt = start_dt + timedelta(minutes=iv_int)
+
+    end_ms = int(end_dt.timestamp() * 1000)
+    return end_ms
 
 def safe_get(url, params=None, max_retries=3, sleep_seconds=1, headers=None):
     attempts = 0
@@ -690,10 +717,9 @@ class KrakenMixedClient:
     def _process_ohlc_data(self, data_list):
         """
         Verwerkt de live OHLC-berichten van Kraken's public WebSocket.
-        Let op: Kraken stuurt in 'time_s' de START van de candle (bv. 13:30).
-        De candle loopt dus tot 13:45, en is pas dan 'closed'.
+        Kraken geeft in 'time_s' de START van de candle (bijv. 13:30),
+        maar wij willen de OFFICIËLE eindtijd (bijv. 13:45) als 'timestamp'.
         """
-
         if len(data_list) < 4:
             logger.debug("[KrakenMixedClient] ontvangen data_list te kort: %s", data_list)
             return
@@ -706,15 +732,15 @@ class KrakenMixedClient:
             logger.warning("[KrakenMixedClient] onbekende channel_id => %d", chan_id)
             return
 
-        # channel_id_map[chan_id] => (local_pair, interval_str, iv_int)
         local_pair, interval_str, iv_int = self.channel_id_map[chan_id]
 
+        # Check of payload list is
         if not isinstance(payload, list) or len(payload) < 8:
             logger.warning("[KrakenMixedClient] ongeldige ohlc payload => %s", payload)
             return
 
         try:
-            # time_s => STARTtijd van de candle (in seconden)
+            # time_s => START van de candle in seconden
             time_s = float(payload[0])
             open_p = float(payload[2])
             high_p = float(payload[3])
@@ -725,45 +751,30 @@ class KrakenMixedClient:
             logger.error("[KrakenMixedClient] Fout bij conversie van ohlc data: %s", e)
             return
 
-        start_ms = int(time_s * 1000)
-        interval_ms = self._iv_int_to_millis(iv_int)  # bv. 15 => 900_000
-        end_ms = start_ms + interval_ms  # Candle eindigt hier
+        # => In plaats van 'start_ms + interval_ms'
+        #    roepen we onze hulpfunctie aan:
+        end_ms = _round_bar_end_timestamp(time_s, iv_int)
 
-        # We slaan de candle op met 'timestamp = end_ms' (de eindtijd),
-        # en alleen als hij echt voorbij is:
         now_ms = int(time.time() * 1000)
         if now_ms >= end_ms:
+            # Candle is officieel voorbij => sla op
             logger.info(f"[Candle CLOSED] WS => {local_pair} {interval_str}, end_ms={end_ms}")
-            candle_tuple = (end_ms, local_pair, interval_str, open_p, high_p, low_p, close_p, volume)
+            candle_tuple = (
+                end_ms,  # timestamp => bv. 13:45:00
+                local_pair,
+                interval_str,
+                open_p,
+                high_p,
+                low_p,
+                close_p,
+                volume
+            )
             self._save_candle_kraken(candle_tuple)
         else:
-            # Candle nog niet klaar => skip
-            logger.debug("[KrakenMixedClient] Candle voor %s %s is nog niet gesloten. skip.",
-                         local_pair, interval_str)
-
-            # Tijdelijk niet gebruiken. Voor 15M een poll ingebouwd voor de rest vertrouwen we op WS.
-            #current_time_ms = int(time.time() * 1000)
-            # [CHANGED] => 20sec skip
-            #if (current_time_ms - ts_ms) < 20000:
-            #    logger.debug("[KrakenMixedClient] Candle is nog vers => skip fallback for now.")
-            #    return
-
-            #ws_pair = self.kraken_ws_map.get(local_pair)
-            #if not ws_pair:
-            #    logger.error("[KrakenMixedClient] Geen ws_pair voor %s", local_pair)
-            #    return
-
-            # fallback_candle = self._fetch_latest_candle_rest(ws_pair, iv_int)
-            # if fallback_candle:
-            #    (fb_ts, fb_o, fb_h, fb_l, fb_c, fb_vol) = fallback_candle
-            #    if is_candle_closed(fb_ts, interval_str):
-            #        logger.info(
-            #            f"[Candle CLOSED] REST-fallback => {local_pair} {interval_str}, fb_ts={fb_ts}, recognized closed"
-            #        )
-            #        fallback_tuple = (fb_ts, local_pair, interval_str, fb_o, fb_h, fb_l, fb_c, fb_vol)
-            #        self._save_candle_kraken(fallback_tuple)
-            #    else:
-            #        logger.debug("[KrakenMixedClient] REST-fallback candle voor %s is nog niet afgesloten.", local_pair)
+            # Candle is nog bezig => skip
+            logger.debug(
+                f"[WS-ohlc] Candle not closed => end_ms={end_ms}, now_ms={now_ms}, local_pair={local_pair}"
+            )
 
     # ===========================================
     # (A.1) Opslaan candle in candles_kraken

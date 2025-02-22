@@ -463,19 +463,30 @@ class PullbackAccumulateStrategy:
         """
         Bij open positie => check SL, TP1, trailing, etc.
         [AANPASSING] R-concept = 1 × ATR
-        We loggen nu wat '1R' is (hier = atr_value), en laten de code verder intact.
         """
+        # 1) Check of 'symbol' überhaupt in open_positions zit
+        if symbol not in self.open_positions:
+            self.logger.warning(f"[manage_open_position] {symbol} not in open_positions => skip.")
+            return
+
+        # 2) Check of current_price > 0
         if current_price is None or current_price <= 0:
             self.logger.warning(f"[PullbackStrategy] current_price={current_price} => skip manage pos for {symbol}")
             return
 
+        # 3) Debug-log BEGIN
         pos = self.open_positions[symbol]
+        self.logger.debug(
+            f"[_manage_open_position] START => symbol={symbol}, side={pos['side']}, amount={pos['amount']}, "
+            f"entry={pos['entry_price']}, leftoverCheck?"
+        )
+
+        # 4) Overnemen van je huidige code
         side = pos["side"]
         entry = pos["entry_price"]
         amount = pos["amount"]
         one_r = atr_value
 
-        # Vaste (percentage-based) stoploss
         if side == "buy":
             stop_loss_price = entry - (atr_value * self.sl_atr_mult)
             if current_price <= stop_loss_price:
@@ -485,9 +496,8 @@ class PullbackAccumulateStrategy:
                     del self.open_positions[symbol]
                 return
 
-            # TP1 op 1R ( = entry + 1×ATR ) * self.tp1_atr_mult => bv. 1.0
+            # TP1
             tp1_price = entry + (one_r * self.tp1_atr_mult)
-
             self.logger.info(f"[ManagePos-LONG] {symbol} => 1R={one_r}, tp1_price={tp1_price}, current={current_price}")
             if (not pos["tp1_done"]) and (current_price >= tp1_price):
                 self.logger.info(f"[ManagePos-LONG] => TP1 => Sell portion={self.tp1_portion_pct}")
@@ -501,10 +511,13 @@ class PullbackAccumulateStrategy:
                 if current_price > pos["trail_high"]:
                     pos["trail_high"] = current_price
                 trailing_stop_price = pos["trail_high"] - (one_r * self.trail_atr_mult)
-                self.logger.info(f"[Trailing-LONG] {symbol}, trail_high={pos['trail_high']}, trailing_stop={trailing_stop_price}")
+                self.logger.info(
+                    f"[Trailing-LONG] {symbol}, trail_high={pos['trail_high']}, trailing_stop={trailing_stop_price}"
+                )
                 if current_price <= trailing_stop_price:
                     self.logger.info(f"[TrailingStop] => close entire leftover => {symbol}")
-                    self._sell_portion(symbol, amount, portion=Decimal("1.0"), reason="TrailingStop", exec_price=current_price)
+                    self._sell_portion(symbol, amount, portion=Decimal("1.0"), reason="TrailingStop",
+                                       exec_price=current_price)
                     if symbol in self.open_positions:
                         del self.open_positions[symbol]
 
@@ -517,10 +530,10 @@ class PullbackAccumulateStrategy:
                     del self.open_positions[symbol]
                 return
 
-            # TP1 op entry - 1R => (entry - (one_r * self.tp1_atr_mult))
+            # TP1
             tp1_price = entry - (one_r * self.tp1_atr_mult)
-
-            self.logger.info(f"[ManagePos-SHORT] {symbol} => 1R={one_r}, tp1_price={tp1_price}, current={current_price}")
+            self.logger.info(
+                f"[ManagePos-SHORT] {symbol} => 1R={one_r}, tp1_price={tp1_price}, current={current_price}")
             if (not pos["tp1_done"]) and (current_price <= tp1_price):
                 self.logger.info(f"[ManagePos-SHORT] => TP1 => Buy portion={self.tp1_portion_pct}")
                 self._buy_portion(symbol, amount, portion=self.tp1_portion_pct, reason="TP1", exec_price=current_price)
@@ -532,12 +545,18 @@ class PullbackAccumulateStrategy:
                 if current_price < pos["trail_high"]:
                     pos["trail_high"] = current_price
                 trailing_stop_price = pos["trail_high"] + (one_r * self.trail_atr_mult)
-                self.logger.info(f"[Trailing-SHORT] {symbol}, trail_high={pos['trail_high']}, trailing_stop={trailing_stop_price}")
+                self.logger.info(
+                    f"[Trailing-SHORT] {symbol}, trail_high={pos['trail_high']}, trailing_stop={trailing_stop_price}"
+                )
                 if current_price >= trailing_stop_price:
                     self.logger.info(f"[TrailingStop] => close entire leftover => {symbol}")
-                    self._buy_portion(symbol, amount, portion=Decimal("1.0"), reason="TrailingStop", exec_price=current_price)
+                    self._buy_portion(symbol, amount, portion=Decimal("1.0"), reason="TrailingStop",
+                                      exec_price=current_price)
                     if symbol in self.open_positions:
                         del self.open_positions[symbol]
+
+        # 5) Debug-log EINDE
+        self.logger.debug(f"[_manage_open_position] END => symbol={symbol}, final pos={pos}")
 
     def _close_position(self, symbol: str, reason: str = "ForcedClose"):
         """
@@ -568,8 +587,14 @@ class PullbackAccumulateStrategy:
             self.db_manager.update_trade(master_id, {"status": "closed"})
             self.logger.info(f"[_close_position] Master trade {master_id} => status=closed in DB (forced).")
 
+        self.logger.debug(
+            f"[_close_position] about to del => {symbol}, current open_positions keys={list(self.open_positions.keys())}"
+        )
+
         # 3) Verwijder uit self.open_positions
         if symbol in self.open_positions:
+            self.logger.debug(
+                f"[_close_position] about to del => {symbol}, current open_positions={list(self.open_positions.keys())}")
             del self.open_positions[symbol]
             self.logger.info(f"[_close_position] open_positions => {symbol} verwijderd.")
 
@@ -755,31 +780,36 @@ class PullbackAccumulateStrategy:
 
     def _buy_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
         self.logger.info(f"### BUY portion => reason={reason}, symbol={symbol}")
-        # Ongewijzigd
+        self.logger.debug(
+            f"[_buy_portion] START => total_amt={total_amt}, portion={portion}, "
+            f"open_positions keys={list(self.open_positions.keys())}"
+        )
 
-        # Bestaande portion & leftover-logic
+        # 1) Bestaande logic: bereken amt_to_buy, leftover, min_lot, etc.
         amt_to_buy = total_amt * portion
         leftover_after_buy = total_amt - amt_to_buy
         min_lot = self._get_min_lot(symbol)
+
         if portion < 1 and leftover_after_buy > 0 and leftover_after_buy < min_lot:
-            self.logger.info(
-                f"[buy_portion] leftover {leftover_after_buy} < minLot={min_lot}, force entire close => portion=1.0")
+            self.logger.info(f"[buy_portion] leftover {leftover_after_buy} < minLot={min_lot}, "
+                             f"force entire close => portion=1.0")
             amt_to_buy = total_amt
             portion = Decimal("1.0")
+
         if amt_to_buy < min_lot:
             self.logger.info(f"[buy_portion] leftover {leftover_after_buy} < minLot={min_lot}, "
                              f"force entire close => portion=1.0")
             amt_to_buy = total_amt
             portion = Decimal("1.0")
 
+        # 2) Pak het pos-object
         pos = self.open_positions[symbol]
         entry_price = pos["entry_price"]
         position_id = pos["position_id"]
         position_type = pos["position_type"]
-
-        # [MASTER_ID FIX] - Altijd de master_id opvragen in plaats van db_id
         master_id = pos.get("master_id", None)
 
+        # 3) Current price
         if exec_price is not None:
             current_price = exec_price
         else:
@@ -788,31 +818,33 @@ class PullbackAccumulateStrategy:
             self.logger.warning(f"[PullbackStrategy] _buy_portion => price=0 => skip BUY {symbol}")
             return
 
-        # PnL
+        # 4) Bereken fees / realized pnl
         raw_pnl = (entry_price - current_price) * amt_to_buy
         trade_cost = current_price * amt_to_buy
         fees = float(trade_cost * Decimal("0.004"))
         realized_pnl = float(raw_pnl) - fees
 
-        # Bestaand "status" op child-trade basis
+        # 5) Child-status
         if portion < 1:
             child_status = "partial"
         else:
             child_status = "closed"
 
         self.logger.info(
-            f"[INFO {reason}] {symbol}: portion={portion}, amt_to_buy={amt_to_buy:.4f}, entry={entry_price}, "
-            f"current_price={current_price}, trade_cost={trade_cost}, fees={fees:.2f}, child_status={child_status}"
+            f"[INFO {reason}] {symbol}: portion={portion}, amt_to_buy={amt_to_buy:.4f}, "
+            f"entry={entry_price}, current_price={current_price}, trade_cost={trade_cost}, "
+            f"fees={fees:.2f}, child_status={child_status}"
         )
 
-        # Plaats live/paper order
+        # 6) Plaats live/paper order
         if self.order_client:
             self.order_client.place_order("buy", symbol, float(amt_to_buy), ordertype="market")
             self.logger.info(
-                f"[LIVE/PAPER] BUY {symbol} => portion={portion}, amt={amt_to_buy:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
+                f"[LIVE/PAPER] BUY {symbol} => portion={portion}, amt={amt_to_buy:.4f}, reason={reason}, "
+                f"fees={fees:.2f}, pnl={realized_pnl:.2f}"
             )
 
-        # 1) SCHRIJF EEN CHILD-TRADE RIJ
+        # 7) Schrijf child-trade in DB
         child_data = {
             "symbol": symbol,
             "side": "buy",
@@ -821,7 +853,7 @@ class PullbackAccumulateStrategy:
             "timestamp": int(time.time() * 1000),
             "position_id": position_id,
             "position_type": position_type,
-            "status": child_status,  # 'partial' of 'closed' => child
+            "status": child_status,
             "pnl_eur": realized_pnl,
             "fees": fees,
             "trade_cost": float(trade_cost),
@@ -830,12 +862,10 @@ class PullbackAccumulateStrategy:
         }
         self.db_manager.save_trade(child_data)
 
-        # 2) Overgebleven leftover-code voor MASTER-update
-        # (hierin update je pos["amount"], check leftover, update master in DB, etc.)
+        # 8) Update leftover
         pos["amount"] -= amt_to_buy
         leftover_amt = pos["amount"]
 
-        # Debug-loggen om te zien wat leftover is
         self.logger.debug(f"[BUY leftover-check] leftover_amt before epsilon => {leftover_amt}, min_lot={min_lot}")
 
         # Epsilon-check
@@ -844,10 +874,15 @@ class PullbackAccumulateStrategy:
             pos["amount"] = Decimal("0")
             self.logger.debug("[PortionCheck] leftover_amt is superklein => set to 0")
 
-        # [MODIFIED START] - extra check leftover < min_lot => sluiten master
+        # >>> hier extra debug <<<
+        self.logger.debug(
+            f"[_buy_portion] leftover_amt={pos['amount']}, min_lot={min_lot} (before close-check)."
+        )
+
+        # 9) Sluit master of partial-update master
         if leftover_amt <= Decimal("0") or leftover_amt < min_lot:
             self.logger.info(f"[PullbackStrategy] Full short position closed => {symbol}")
-            if master_id:  # [MASTER_ID FIX]
+            if master_id:
                 old_row = self.db_manager.execute_query(
                     "SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1",
                     (master_id,)
@@ -866,12 +901,18 @@ class PullbackAccumulateStrategy:
                         "pnl_eur": new_pnl
                     })
                     self.logger.info(f"[PullbackStrategy] Master trade {master_id} => status=closed in DB")
-                self.__record_trade_signals(master_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
+
+            self.__record_trade_signals(master_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
+
             if symbol in self.open_positions:
                 del self.open_positions[symbol]
+
         else:
             if master_id:
-                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (master_id,))
+                old_row = self.db_manager.execute_query(
+                    "SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1",
+                    (master_id,)
+                )
                 if old_row:
                     old_fees, old_pnl = old_row[0]
                     new_fees = old_fees + fees
@@ -882,11 +923,21 @@ class PullbackAccumulateStrategy:
                         "pnl_eur": new_pnl
                     })
                     self.logger.info(
-                        f"[PullbackStrategy] updated master trade {master_id} => partial fees={new_fees}, pnl={new_pnl}")
+                        f"[PullbackStrategy] updated master trade {master_id} => partial fees={new_fees}, pnl={new_pnl}"
+                    )
             self.__record_trade_signals(master_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
+
+        # *** extra debug eind ***
+        self.logger.debug(
+            f"[_buy_portion] END => leftover_amt={pos['amount']}, open_positions keys={list(self.open_positions.keys())}"
+        )
 
     def _sell_portion(self, symbol: str, total_amt: Decimal, portion: Decimal, reason: str, exec_price=None):
         self.logger.info(f"### SELL portion => reason={reason}, symbol={symbol}")
+        self.logger.debug(
+            f"[_sell_portion] START => total_amt={total_amt}, portion={portion}, "
+            f"open_positions={list(self.open_positions.keys())}"
+        )
 
         amt_to_sell = total_amt * portion
         leftover_after_sell = total_amt - amt_to_sell
@@ -894,15 +945,19 @@ class PullbackAccumulateStrategy:
 
         if portion < 1 and leftover_after_sell > 0 and leftover_after_sell < min_lot:
             self.logger.info(
-                f"[sell_portion] leftover {leftover_after_sell} < minLot={min_lot}, force entire close => portion=1.0")
-            self.logger.debug(f"[DEBUG leftover] leftover_after_sell={leftover_after_sell}, min_lot={min_lot}")
+                f"[sell_portion] leftover {leftover_after_sell} < minLot={min_lot}, force entire close => portion=1.0"
+            )
+            self.logger.debug(
+                f"[DEBUG leftover] leftover_after_sell={leftover_after_sell}, min_lot={min_lot}"
+            )
             amt_to_sell = total_amt
             portion = Decimal("1.0")
 
         if amt_to_sell < min_lot:
-            self.logger.info(f"[sell_portion] leftover {leftover_after_sell} < minLot={min_lot}, "
-                             f"force entire close => portion=1.0")
-            amt_to_sell = total_amt  # dwing volledige close
+            self.logger.info(
+                f"[sell_portion] leftover {leftover_after_sell} < minLot={min_lot}, force entire close => portion=1.0"
+            )
+            amt_to_sell = total_amt
             portion = Decimal("1.0")
 
         pos = self.open_positions[symbol]
@@ -911,7 +966,7 @@ class PullbackAccumulateStrategy:
         position_type = pos["position_type"]
         db_id = pos.get("db_id", None)
 
-        # [MASTER_ID FIX] - We halen master_id op, niet db_id
+        # [MASTER_ID FIX]
         master_id = pos.get("master_id", None)
 
         if exec_price is not None:
@@ -928,7 +983,6 @@ class PullbackAccumulateStrategy:
         fees = float(trade_cost * Decimal("0.0025"))
         realized_pnl = float(raw_pnl) - fees
 
-        # portion-logic => child_status
         if portion < 1:
             child_status = "partial"
         else:
@@ -939,14 +993,14 @@ class PullbackAccumulateStrategy:
             f"entry={entry_price}, current_price={current_price}, trade_cost={trade_cost:.2f}, fees={fees:.2f}"
         )
 
-        # Plaats order
         if self.order_client:
             self.order_client.place_order("sell", symbol, float(amt_to_sell), ordertype="market")
             self.logger.info(
-                f"[LIVE/PAPER] SELL {symbol} => portion={portion * 100:.1f}%, amt={amt_to_sell:.4f}, reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
+                f"[LIVE/PAPER] SELL {symbol} => portion={portion * 100:.1f}%, amt={amt_to_sell:.4f}, "
+                f"reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
             )
 
-        # (A) Child–trade (is_master=0)
+        # Child-trade
         child_data = {
             "symbol": symbol,
             "side": "sell",
@@ -964,47 +1018,53 @@ class PullbackAccumulateStrategy:
         }
         self.db_manager.save_trade(child_data)
 
-        # (B) leftover => update master
         pos["amount"] -= amt_to_sell
         leftover_amt = pos["amount"]
 
         self.logger.debug(
             f"[SELL leftover-check] leftover_amt before epsilon => {leftover_amt}, min_lot={min_lot}"
         )
-
-        # Debug-loggen om te zien wat leftover is
         self.logger.debug(f"[PortionCheck] leftover_amt before epsilon-check => {leftover_amt}")
 
-        # Epsilon-check
         if leftover_amt < (min_lot * Decimal("1.00001")):
             leftover_amt = Decimal("0")
             pos["amount"] = Decimal("0")
             self.logger.debug("[PortionCheck] leftover_amt is superklein => set to 0")
 
-        # [MODIFIED START] - extra check leftover < min_lot => sluiten master
+        # << Extra debug vlak na leftover >>
+        self.logger.debug(
+            f"[_sell_portion] leftover_amt={pos['amount']}, min_lot={min_lot} (before close-check)."
+        )
+
         if leftover_amt <= Decimal("0") or leftover_amt < min_lot:
             self.logger.info(f"[PullbackStrategy] Full position closed => {symbol}")
-            if master_id:  # [MASTER_ID FIX]
-                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (master_id,))
+            if master_id:
+                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1",
+                                                        (master_id,))
                 if old_row:
                     old_fees, old_pnl = old_row[0]
                     self.logger.debug(
                         f"[MASTER CLOSE DEBUG] leftover={leftover_amt}, master_id={master_id}, "
                         f"fees={fees}, realized_pnl={realized_pnl}"
                     )
-
                     new_fees = old_fees + fees
                     new_pnl = old_pnl + realized_pnl
                     self.logger.debug(f"[MASTER CLOSE DEBUG] master_id={master_id}, leftover={leftover_amt}")
-                    self.db_manager.update_trade(master_id, {"status": "closed", "fees": new_fees, "pnl_eur": new_pnl})
+                    self.db_manager.update_trade(master_id, {
+                        "status": "closed",
+                        "fees": new_fees,
+                        "pnl_eur": new_pnl
+                    })
                     self.logger.info(f"[PullbackStrategy] Master trade {master_id} => status=closed in DB")
 
-                self.__record_trade_signals(master_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
+            self.__record_trade_signals(master_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
             if symbol in self.open_positions:
                 del self.open_positions[symbol]
+
         else:
             if master_id:
-                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1", (master_id,))
+                old_row = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1",
+                                                        (master_id,))
                 if old_row:
                     old_fees, old_pnl = old_row[0]
                     new_fees = old_fees + fees
@@ -1015,9 +1075,14 @@ class PullbackAccumulateStrategy:
                         "pnl_eur": new_pnl
                     })
                     self.logger.info(
-                        f"[PullbackStrategy] updated master trade {master_id} => partial => fees={new_fees}, pnl={new_pnl}")
-
+                        f"[PullbackStrategy] updated master trade {master_id} => partial => fees={new_fees}, pnl={new_pnl}"
+                    )
             self.__record_trade_signals(master_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
+
+        # onderaan:
+        self.logger.debug(
+            f"[_sell_portion] END => leftover_amt={pos['amount']}, open_positions keys={list(self.open_positions.keys())}"
+        )
 
     # [Hulp-code]
     @staticmethod
@@ -1071,31 +1136,66 @@ class PullbackAccumulateStrategy:
 
     def _load_open_positions_from_db(self):
         """
-        Laadt open/partial trades uit de DB en zet ze in self.open_positions,
-        inclusief master_id voor mastertrades.
+        Laadt uitsluitend master-trades (is_master=1) met status 'open' of 'partial'
+        uit de DB en zet ze in self.open_positions.
+        Child-trades (is_master=0) negeren we hier.
         """
-        open_rows = self.db_manager.fetch_open_trades()  # Moet columns id, is_master, status returnen
-        if not open_rows:
-            self.logger.info("[PullbackStrategy] Geen open/partial trades gevonden in DB.")
+        query = """
+            SELECT
+                id,
+                symbol,
+                side,
+                amount,
+                price,
+                position_id,
+                position_type,
+                is_master
+            FROM trades
+            WHERE is_master=1
+              AND status IN ('open','partial')
+        """
+        rows = self.db_manager.execute_query(query)
+        if not rows:
+            self.logger.info("[PullbackStrategy] Geen open/partial MASTER-trades in DB.")
             return
 
-        for row in open_rows:
-            db_id = row["id"]  # dankzij fetch_open_trades() = ID van de DB-rij
-            symbol = row["symbol"]
-            side = row["side"]
-            amount = Decimal(str(row["amount"]))
-            entry_price = Decimal(str(row["price"]))
-            position_id = row.get("position_id", None)
-            position_type = row.get("position_type", None)
-            is_master = row.get("is_master", 0)
+        for row in rows:
+            db_id = row[0]
+            symbol = row[1]
+            side = row[2]
+            amount = Decimal(str(row[3]))
+            entry_price = Decimal(str(row[4]))
+            position_id = row[5]
+            position_type = row[6]
+            # is_master = row[7]  # niet nodig, isMaster=1
 
-            # Als dit 0 is (of kleiner dan min_lot) => in DB op closed zetten en niet opnemen
+            # leftover-check
             if amount < self._get_min_lot(symbol):
                 self.db_manager.update_trade(db_id, {"status": "closed"})
                 self.logger.info(
-                    f"[_load_open_positions_from_db] leftover=0 => {symbol} direct op closed gezet (id={db_id}).")
+                    f"[_load_open_positions_from_db] leftover=0/<minlot => {symbol} db_id={db_id} direct closed."
+                )
                 continue
 
+            # child_sum => master wellicht ook dicht?
+            query_sum = """
+                SELECT SUM(amount) AS total_children
+                FROM trades
+                WHERE position_id=?
+                  AND is_master=0
+            """
+            sum_rows = self.db_manager.execute_query(query_sum, (position_id,))
+            if sum_rows and sum_rows[0][0] is not None:
+                child_sum = Decimal(str(sum_rows[0][0]))
+                if child_sum >= amount:
+                    # Dan is master feitelijk afgebouwd
+                    self.db_manager.update_trade(db_id, {"status": "closed"})
+                    self.logger.info(
+                        f"[_load_open_positions_from_db] {symbol} master_id={db_id}: child_sum={child_sum} >= master={amount} => closed."
+                    )
+                    continue
+
+            # Anders: pos is nog echt open/partial
             pos_data = {
                 "side": side,
                 "entry_price": entry_price,
@@ -1107,60 +1207,35 @@ class PullbackAccumulateStrategy:
                 "trail_high": entry_price,
                 "position_id": position_id,
                 "position_type": position_type,
-                # Voor debugging bewaren we de DB-id:
-                "db_id": db_id
+                "db_id": db_id,
+                "master_id": db_id  # Master = db_id
             }
 
-            # Master-trade => sla 'db_id' op als master_id
-            if is_master == 1:
-                pos_data["master_id"] = db_id
-                self.logger.debug(f"[load_open_positions] Master trade {db_id} geladen (symbol={symbol}).")
-            else:
-                pos_data["master_id"] = None
-
-            # Optionele child-sum check (vangnet) voor mastertrades
-            if is_master == 1:
-                query_sum = """
-                    SELECT SUM(amount) AS total_children
-                      FROM trades
-                     WHERE position_id=?
-                       AND is_master=0
-                """
-                child_row = self.db_manager.execute_query(query_sum, (position_id,))
-                if child_row and child_row[0][0] is not None:
-                    child_sum = Decimal(str(child_row[0][0]))
-                    if child_sum >= amount:
-                        self.db_manager.update_trade(db_id, {"status": "closed"})
-                        self.logger.info(
-                            f"[_load_open_positions_from_db] {symbol} (master_id={db_id}): "
-                            f"child_sum={child_sum} >= master={amount} => closed in DB."
-                        )
-                        continue
-
-            # ATR opnieuw berekenen (optioneel)
+            # ATR opnieuw berekenen
             df_main = self._fetch_and_indicator(symbol, self.main_timeframe, limit=200)
             atr_value = self._calculate_atr(df_main, self.atr_window)
             if atr_value:
                 pos_data["atr"] = Decimal(str(atr_value))
 
-            # Zet de positie in self.open_positions
             self.open_positions[symbol] = pos_data
             self.logger.info(
-                f"[PullbackStrategy] Hersteld open pos => {symbol}, side={side}, amt={amount}, "
-                f"entry={entry_price} (db_id={db_id}, master_id={pos_data['master_id']})"
+                f"[PullbackStrategy] Hersteld MASTER pos => symbol={symbol}, side={side}, "
+                f"amt={amount}, entry={entry_price}, db_id={db_id}"
             )
 
     def manage_intra_candle_exits(self):
         """
-        Ongewijzigd
+        Check SL/TP/etc in real-time (intra-candle).
         """
         self.logger.info("[PullbackStrategy] manage_intra_candle_exits => start SL/TP checks.")
+        self.logger.debug(f"[manage_intra_candle_exits] open_positions keys => {list(self.open_positions.keys())}")
+
         for sym in list(self.open_positions.keys()):
             pos = self.open_positions[sym]
             current_price = self._get_ws_price(sym)
-            # [NIEUW] Log de entry_price samen met symbol, side en current_price
             self.logger.info(
-                f"[manage_intra_candle_exits] symbol={sym}, side={pos['side']}, entry={pos['entry_price']}, current={current_price}"
+                f"[manage_intra_candle_exits] symbol={sym}, side={pos['side']}, "
+                f"entry={pos['entry_price']}, current={current_price}"
             )
 
             if current_price > 0:

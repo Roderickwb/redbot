@@ -880,6 +880,7 @@ class PullbackAccumulateStrategy:
         )
 
         # 9) Sluit master of partial-update master
+        self.logger.debug(f"[PortionCheck] leftover={leftover_amt}, master_id={master_id}")
         if leftover_amt <= Decimal("0") or leftover_amt < min_lot:
             self.logger.info(f"[PullbackStrategy] Full short position closed => {symbol}")
             if master_id:
@@ -1020,6 +1021,7 @@ class PullbackAccumulateStrategy:
 
         pos["amount"] -= amt_to_sell
         leftover_amt = pos["amount"]
+        self.logger.debug(f"[PortionCheck] leftover={leftover_amt}, master_id={master_id}")
 
         self.logger.debug(
             f"[SELL leftover-check] leftover_amt before epsilon => {leftover_amt}, min_lot={min_lot}"

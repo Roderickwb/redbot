@@ -1001,7 +1001,7 @@ class PullbackAccumulateStrategy:
                 f"reason={reason}, fees={fees:.2f}, pnl={realized_pnl:.2f}"
             )
 
-        # Child-trade
+        # Child-trade#
         child_data = {
             "symbol": symbol,
             "side": "sell",

@@ -281,7 +281,7 @@ class KrakenAltcoinScannerStrategy:
             return
 
         if self.client:
-            self.client.place_order("buy", symbol, float(amt), order_type="market")
+            self.client.place_order("buy", symbol, float(amt), ordertype="market")
             self.logger.info(f"[LIVE] BUY {symbol}, amt={amt:.4f} @ ~{current_price:.4f}")
         else:
             self.logger.info(f"[Paper] BUY {symbol}, amt={amt:.4f} @ ~{current_price:.4f}")
@@ -389,7 +389,7 @@ class KrakenAltcoinScannerStrategy:
             return
         amt = pos["amount"]
         if self.client:
-            self.client.place_order("sell", symbol, float(amt), order_type="market")
+            self.client.place_order("sell", symbol, float(amt), ordertype="market")
             self.logger.info(f"[LIVE] CLOSE LONG => SELL {symbol} amt={amt:.4f}")
         else:
             self.logger.info(f"[Paper] CLOSE LONG => SELL {symbol} amt={amt:.4f}")

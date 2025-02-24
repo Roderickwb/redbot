@@ -338,7 +338,7 @@ class BreakoutStrategy:
         )
 
         if self.client:
-            self.client.place_order(side, symbol, float(amount), order_type="market")
+            self.client.place_order(side, symbol, float(amount), ordertype="market")
             self.logger.info(f"[LIVE] {side.upper()} {symbol}, amt={amount:.4f}, price={price:.2f}")
         else:
             self.logger.info(f"[Paper] {side.upper()} {symbol}, amt={amount:.4f}, price={price:.2f}")
@@ -482,13 +482,13 @@ class BreakoutStrategy:
 
         if side == "buy":
             if self.client:
-                self.client.place_order("sell", symbol, float(amt), order_type="market")
+                self.client.place_order("sell", symbol, float(amt), ordertype="market")
                 self.logger.info(f"[LIVE] CLOSE LONG => SELL {symbol} amt={amt:.4f}")
             else:
                 self.logger.info(f"[Paper] CLOSE LONG => SELL {symbol} amt={amt:.4f}")
         else:
             if self.client:
-                self.client.place_order("buy", symbol, float(amt), order_type="market")
+                self.client.place_order("buy", symbol, float(amt), ordertype="market")
                 self.logger.info(f"[LIVE] CLOSE SHORT => BUY {symbol} amt={amt:.4f}")
             else:
                 self.logger.info(f"[Paper] CLOSE SHORT => BUY {symbol} amt={amt:.4f}")

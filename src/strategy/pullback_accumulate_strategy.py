@@ -492,6 +492,13 @@ class PullbackAccumulateStrategy:
             if current_price <= stop_loss_price:
                 self.logger.info(f"[ManagePos] LONG STOPLOSS => close entire {symbol}")
                 self._sell_portion(symbol, amount, portion=Decimal("1.0"), reason="StopLoss", exec_price=current_price)
+                # B) Zet direct master-trade op 'closed' in DB
+                pos = self.open_positions.get(symbol)
+                master_id = pos.get("master_id") if pos else None
+                if master_id:
+                    self.db_manager.update_trade(master_id, {"status": "closed"})
+                    self.logger.info(f"Master {master_id} => closed via StopLoss shortcut.")
+
                 if symbol in self.open_positions:
                     del self.open_positions[symbol]
                 return
@@ -520,12 +527,18 @@ class PullbackAccumulateStrategy:
                                        exec_price=current_price)
                     if symbol in self.open_positions:
                         del self.open_positions[symbol]
-
         else:  # SHORT
             stop_loss_price = entry + (one_r * self.sl_atr_mult)
             if current_price >= stop_loss_price:
                 self.logger.info(f"[ManagePos] SHORT STOPLOSS => close entire {symbol}")
                 self._buy_portion(symbol, amount, portion=Decimal("1.0"), reason="StopLoss", exec_price=current_price)
+
+                pos = self.open_positions.get(symbol)
+                master_id = pos.get("master_id") if pos else None
+                if master_id:
+                    self.db_manager.update_trade(master_id, {"status": "closed"})
+                    self.logger.info(f"[StopLoss Shortcut] Master trade {master_id} => status=closed")
+
                 if symbol in self.open_positions:
                     del self.open_positions[symbol]
                 return
@@ -928,6 +941,12 @@ class PullbackAccumulateStrategy:
                     )
             self.__record_trade_signals(master_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
+        if reason == "StopLoss" and portion == Decimal("1.0"):
+            self.logger.info(f"[StopLoss portion=1.0 => direct MasterClose in BUY] symbol={symbol}")
+            if master_id:
+                self.db_manager.update_trade(master_id, {"status": "closed"})
+                self.logger.info(f"[StopLoss Shortcut] Master trade {master_id} => closed in DB (buy_portion)")
+
         # *** extra debug eind ***
         self.logger.debug(
             f"[_buy_portion] END => leftover_amt={pos['amount']}, open_positions keys={list(self.open_positions.keys())}"
@@ -1080,6 +1099,13 @@ class PullbackAccumulateStrategy:
                         f"[PullbackStrategy] updated master trade {master_id} => partial => fees={new_fees}, pnl={new_pnl}"
                     )
             self.__record_trade_signals(master_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
+
+        if reason == "StopLoss" and portion == Decimal("1.0"):
+            self.logger.info(f"[StopLoss portion=1.0 => direct MasterClose in SELL] {symbol}")
+            if master_id:
+                self.db_manager.update_trade(master_id, {"status": "closed"})
+                self.logger.info(f"[StopLoss Shortcut] Master {master_id} => closed in DB (sell_portion)")
+            # (optioneel) self.open_positions.pop(symbol, None)
 
         # onderaan:
         self.logger.debug(

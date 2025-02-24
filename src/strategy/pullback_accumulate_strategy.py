@@ -941,11 +941,11 @@ class PullbackAccumulateStrategy:
                     )
             self.__record_trade_signals(master_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
-        if reason == "StopLoss" and portion == Decimal("1.0"):
-            self.logger.info(f"[StopLoss portion=1.0 => direct MasterClose in BUY] symbol={symbol}")
+        if reason in ["StopLoss", "TrailingStop"] and portion == Decimal("1.0"):
+            self.logger.info(f"[Shortcut {reason}] => close Master in DB for {symbol}")
             if master_id:
                 self.db_manager.update_trade(master_id, {"status": "closed"})
-                self.logger.info(f"[StopLoss Shortcut] Master trade {master_id} => closed in DB (buy_portion)")
+                self.logger.info(f"[{reason} Shortcut] Master trade {master_id} => closed in DB (buy_portion)")
 
         # *** extra debug eind ***
         self.logger.debug(
@@ -1100,12 +1100,11 @@ class PullbackAccumulateStrategy:
                     )
             self.__record_trade_signals(master_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
 
-        if reason == "StopLoss" and portion == Decimal("1.0"):
-            self.logger.info(f"[StopLoss portion=1.0 => direct MasterClose in SELL] {symbol}")
+        if reason in ["StopLoss", "TrailingStop"] and portion == Decimal("1.0"):
+            self.logger.info(f"[Shortcut {reason}] => close Master in DB for {symbol}")
             if master_id:
                 self.db_manager.update_trade(master_id, {"status": "closed"})
-                self.logger.info(f"[StopLoss Shortcut] Master {master_id} => closed in DB (sell_portion)")
-            # (optioneel) self.open_positions.pop(symbol, None)
+                self.logger.info(f"[{reason} Shortcut] Master trade {master_id} => closed in DB (sell_portion)")
 
         # onderaan:
         self.logger.debug(

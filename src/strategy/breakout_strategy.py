@@ -1,13 +1,12 @@
 import logging
 import pandas as pd
 import time
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 
 # TA-bibliotheken
 from ta.volatility import AverageTrueRange
-from ta.momentum import RSIIndicator
 
 # Lokale imports
 from src.logger.logger import setup_logger
@@ -30,14 +29,18 @@ class BreakoutStrategy:
     ---------------------------------------------------------
     - Gebruikt Daily RSI(14) als trendfilter (rsi_bull_level / rsi_bear_level)
     - Op 4h:
-      1) Bepaal 'range': highest high / lowest low (laatste X candles) + Bollinger-limieten
+      1) Bepaal 'range': highest high /lowest low (laatste X candles) + Bollinger-limieten
       2) Candle sluit >= 0.5% boven/onder die limiet (buffer)
       3) Volume-check (moet > 'volume_threshold_factor' x gemiddeld volume)
       4) Open positie =>
-         * Stoploss = ATR * sl_atr_mult
-         * TrailingStop = ATR * trailing_atr_mult
+         * Stoploss = ATR * sl_atr_mult  (# [CHANGED] ipv sl_pct)
+         * TrailingStop = ATR * trailing_atr_mult  (# [CHANGED] ipv trailing_pct)
          * ~~Geen partial-TP in deze versie~~
+    - We nemen nu een max_position_pct / max_position_eur in `_open_position()`,
+      net als in Pullback, en checken min_lot (met multiplier).
     - Max 90% van je kapitaal in posities, etc.
+
+    [UITGECOMMENTARIEERD partial-TP code laten we staan als commentaar]
     """
 
     def __init__(self, client, db_manager, config_path=None):
@@ -73,28 +76,24 @@ class BreakoutStrategy:
         self.breakout_buffer_pct = Decimal(str(self.strategy_config.get("breakout_buffer_pct", "0.5")))
         self.volume_threshold_factor = float(self.strategy_config.get("volume_threshold_factor", 1.2))
 
-        # Belangrijk: we gebruiken ATR i.p.v. sl_pct/ trailing_pct
+        # Belangrijk: nu ATR-based SL + trailing
         self.atr_window = int(self.strategy_config.get("atr_window", 14))
-        self.sl_atr_mult = Decimal(str(self.strategy_config.get("sl_atr_mult", "1.0")))
-        self.trail_atr_mult = Decimal(str(self.strategy_config.get("trailing_atr_mult", "1.0")))
+        self.sl_atr_mult = Decimal(str(self.strategy_config.get("sl_atr_mult", "1.0")))         # [CHANGED: used]
+        self.trail_atr_mult = Decimal(str(self.strategy_config.get("trailing_atr_mult", "1.0"))) # [CHANGED: used]
 
-        # ~~ partial TP / R-risk-based => uitcommentarieerd ~~
-        # self.partial_tp_r = Decimal(str(self.strategy_config.get("partial_tp_r", "1.0")))
-        # self.partial_tp_pct = Decimal(str(self.strategy_config.get("partial_tp_pct", "0.25")))
+        # net als pullback
+        self.max_position_pct = Decimal(str(self.strategy_config.get("max_position_pct", "0.05")))
+        self.max_position_eur = Decimal(str(self.strategy_config.get("max_position_eur", "15")))
+        self.min_lot_multiplier = Decimal(str(self.strategy_config.get("min_lot_multiplier", "1.1")))
 
-        self.position_size_pct = Decimal(str(self.strategy_config.get("position_size_pct", "0.10")))
-        self.max_positions_equity_pct = Decimal(str(self.strategy_config.get("max_positions_equity_pct", "0.90")))
+        # open_positions
+        self.open_positions = {}
         self.initial_capital = Decimal(str(self.strategy_config.get("initial_capital", "125")))
 
         # Eventueel logger opnieuw instellen
         self.logger = setup_logger("breakout_strategy", self.log_file, logging.DEBUG)
-        if config_path:
-            self.logger.info("[BreakoutStrategy] init with config_path=%s", config_path)
-        else:
-            self.logger.info("[BreakoutStrategy] init (no config_path)")
 
-        # data-structuur om open positions bij te houden
-        self.open_positions = {}
+        self.logger.info("[BreakoutStrategy] init (config done).")
 
     # --------------------------------------------------------------------------
     # _get_min_lot(...) => fallback
@@ -128,34 +127,58 @@ class BreakoutStrategy:
     def execute_strategy(self, symbol: str):
         """
         1) meltdown-check
-        2) daily RSI => bull/bear/neutral
-        3) detect breakout => open
-        4) manage open positions
+        2) concurrency-check in DB
+        3) daily RSI => bull/bear/neutral
+        4) detect breakout => open
+        5) manage open positions
         """
+        # 1) meltdown-check (eerste keer)
         meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
         if meltdown_active:
-            self.logger.info("[Breakout] meltdown => skip trades & close pos.")
+            self.logger.info("[Breakout] meltdown => skip trades & manage pos.")
+            if symbol in self.open_positions:
+                self._manage_position(symbol)
             return
-        """
-        1) Check daily RSI-filter
-        2) Check breakout op 4h
-        3) Open/Manage posities
-        """
+
         self.logger.info(f"[BreakoutStrategy] Start for {symbol}")
 
-        # (nogmaals meltdown-check, indien gewenst)
+        # 1b) meltdown-check (tweede keer)
         meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
         if meltdown_active:
             self.logger.info("[Breakout] meltdown => skip trades.")
+            if symbol in self.open_positions:
+                self._manage_position(symbol)
             return
 
-        # 1) daily RSI filter
+        # 2) CONCURRENCY-CHECK:
+        #    Kijk of er al een open/partial master-trade voor dit symbool in de DB staat.
+        existing_db_trades = self.db_manager.execute_query(
+            """
+            SELECT id
+              FROM trades
+             WHERE symbol=?
+               AND is_master=1
+               AND status IN ('open','partial')
+             LIMIT 1
+            """,
+            (symbol,)
+        )
+        if existing_db_trades:
+            self.logger.info(f"[Breakout] Already have open MASTER in DB => skip new open for {symbol}.")
+            # Wel evt. bestaande open posities managen:
+            if symbol in self.open_positions:
+                self._manage_position(symbol)
+            return
+
+        # 3) daily RSI filter => bull/bear/neutral
         trend = self._check_daily_rsi(symbol)
         if trend == "neutral":
             self.logger.info(f"[Breakout] Trend = neutral => geen trades ({symbol})")
+            if symbol in self.open_positions:
+                self._manage_position(symbol)
             return
 
-        # 2) check breakout
+        # 4) check breakout
         breakout_signal = self._detect_breakout(symbol, trend)
         if breakout_signal["breakout_detected"]:
             self.logger.info(
@@ -166,10 +189,9 @@ class BreakoutStrategy:
             if symbol not in self.open_positions:
                 self._open_position(symbol, breakout_signal)
         else:
-            # (CHANGED) log skip
-            self.logger.info(f"[Breakout] {symbol} => geen breakout detected => skip")
+            self.logger.info(f"[Breakout] {symbol} => geen breakout => skip")
 
-        # 3) manage open pos
+        # 5) manage open pos
         if symbol in self.open_positions:
             self._manage_position(symbol)
 
@@ -310,94 +332,101 @@ class BreakoutStrategy:
         price = breakout_signal["price"]
         atr_val = breakout_signal["atr"]
 
-        if not self._can_open_new_position():
-            self.logger.warning(f"[Breakout] {symbol} => Max belegd => skip open pos")
+        # meltdown-check
+        meltdown_active = self.meltdown_manager.meltdown_active
+        if meltdown_active:
+            self.logger.warning(f"[Breakout] meltdown => skip open pos => {symbol}")
             return
 
-        eur_balance = self._get_eur_balance()
-        trade_capital = eur_balance * self.position_size_pct
-        if trade_capital < 5:
-            self.logger.warning(f"[Breakout] {symbol} => te weinig capital => skip")
+        # concurrency-check => zie execute_strategy => skip
+
+        # Spot-check: als side=='sell' => controleer of we coin hebben
+        if side == "sell" and self.client:
+            base_coin = symbol.split("-")[0]
+            bal = self.client.get_balance()
+            base_balance = Decimal(str(bal.get(base_coin, "0")))
+            if base_balance <= 0:
+                self.logger.warning(f"[Breakout] {symbol} => 0 {base_coin} => skip short")
+                return
+
+        # [CHANGED] => bereken equity, check max_position_pct, max_position_eur
+        eq_now = self._get_equity_estimate()
+        allowed_eur_pct = eq_now * self.max_position_pct
+        allowed_eur = min(allowed_eur_pct, self.max_position_eur)
+        if allowed_eur < 5:
+            self.logger.warning(f"[Breakout] {symbol} => allowed_eur={allowed_eur:.2f} <5 => skip.")
             return
 
-        amount = (trade_capital / price) if (price > 0) else Decimal("0")
-        if amount <= 0:
-            self.logger.warning(f"[Breakout] {symbol} => amount<=0 => skip")
+        # min lot check
+        raw_min_lot = self._get_min_lot(symbol)
+        real_min_lot = raw_min_lot * self.min_lot_multiplier
+
+        # Bepaal invest tot max "allowed_eur"
+        invest_eur = allowed_eur
+        amt = invest_eur / price
+        if amt < real_min_lot:
+            self.logger.warning(f"[Breakout] {symbol} => amt={amt:.4f} < minLot={real_min_lot} => skip.")
             return
 
-        # [NEW] => Check of deze amount >= minLot
-        min_lot = self._get_min_lot(symbol)
-        if amount < min_lot:
-            self.logger.warning(
-                f"[Breakout] {symbol} => berekend amount={amount:.6f} < minLot={min_lot} => skip open pos."
-            )
-            return
-
-        self.logger.info(
-            f"[Breakout] _open_position => side={side}, price={price}, invest={trade_capital:.2f}, amt={amount:.4f}"
-        )
+        self.logger.info(f"[Breakout] open => side={side}, price={price:.2f}, invest_eur={invest_eur:.2f}, amt={amt:.4f}")
 
         if self.client:
-            self.client.place_order(side, symbol, float(amount), ordertype="market")
-            self.logger.info(f"[LIVE] {side.upper()} {symbol}, amt={amount:.4f}, price={price:.2f}")
+            try:
+                self.client.place_order(side, symbol, float(amt), ordertype="market")
+                self.logger.info(f"[Breakout LIVE] => {side.upper()} {symbol}, amt={amt:.4f}, px={price}")
+            except Exception as e:
+                self.logger.warning(f"[Breakout] place_order error => {e}")
+                return
         else:
-            self.logger.info(f"[Paper] {side.upper()} {symbol}, amt={amount:.4f}, price={price:.2f}")
+            self.logger.info(f"[Paper] => {side.upper()} {symbol}, amt={amt:.4f}, px={price}")
 
-        # StopLoss => ATR-based
+        # StopLoss => ATR-based (# [CHANGED])
         sl_dist = atr_val * self.sl_atr_mult
         if side == "buy":
             sl_price = price - sl_dist
         else:
             sl_price = price + sl_dist
 
-        # pos-structuur
+        # Sla in self.open_positions
         pos_info = {
             "side": side,
             "entry_price": price,
-            "amount": amount,
+            "amount": amt,
             "stop_loss": sl_price,
             "atr": atr_val,
-            # "tp1_done": False,  # partial TP uitgecommentarieerd
+            # geen partial => direct
             "highest_price": price if side == "buy" else Decimal("0"),
-            "lowest_price": price if side == "sell" else Decimal("999999")
+            "lowest_price": price if side == "sell" else Decimal("999999"),
         }
         self.open_positions[symbol] = pos_info
 
-        # ---------------------------------------------------
-        # [NIEUW] => log "open" signals in trade_signals table
-        # ---------------------------------------------------
-        # We maken net als bij de andere strategieën een "trade row".
-        # In de code hierboven hebben we géén ID direct. We loggen in 'trades'
-        #   via "save_trade(...)". Dat doen we normaliter in je code,
-        #   maar zie hier is het (nog) niet zichtbaar. We imiteren dat even:
+        # Database => MASTER trade
+        fees = 0.0
+        pnl_eur = 0.0
+        trade_cost = float(amt * price)
+
         trade_data = {
             "timestamp": int(time.time() * 1000),
             "symbol": symbol,
             "side": side,
             "price": float(price),
-            "amount": float(amount),
-            "position_id": None,   # breakouts hebben we niet expliciet
-            "position_type": side if side in ("buy","sell") else None,
+            "amount": float(amt),
+            "position_id": None,  # kun je genereren bv f"{symbol}-{int(time.time())}"
+            "position_type": side,
             "status": "open",
-            "pnl_eur": 0.0,
-            "fees": 0.0,
-            "trade_cost": float(amount * price),
+            "pnl_eur": pnl_eur,
+            "fees": fees,
+            "trade_cost": trade_cost,
             "strategy_name": "breakout",
             "is_master": 1
         }
         self.db_manager.save_trade(trade_data)
 
-        # Om het ID te weten (zodat we in 'trade_signals' de foreign key (trade_id) kunnen zetten),
-        #   pakken we de laatst ingevoerde rowid:
-        new_trade_id = self.db_manager.cursor.lastrowid
-        self.logger.info(f"[Breakout] Master trade {symbol} => db_id={new_trade_id} is open.")
+        master_id = self.db_manager.cursor.lastrowid
+        pos_info["db_id"] = master_id
 
-        # Sla DB-id op in pos_info, zodat we 'm bij closing kunnen updaten
-        pos_info["db_id"] = new_trade_id
-
-        # signaal loggen:
-        self._record_trade_signals(trade_id=new_trade_id, event_type="open", symbol=symbol)
-        self.logger.info(f"[Breakout] OPEN {side.upper()} {symbol}@{price:.2f}, SL={sl_price:.2f}")
+        self.logger.info(f"[Breakout] Master trade {symbol} => db_id={master_id} opened.")
+        self._record_trade_signals(trade_id=master_id, event_type="open", symbol=symbol)
 
     def _manage_position(self, symbol: str):
         pos = self.open_positions.get(symbol)
@@ -405,8 +434,6 @@ class BreakoutStrategy:
             return
 
         side = pos["side"]
-        entry = pos["entry_price"]
-        amt = pos["amount"]
         sl_price = pos["stop_loss"]
         atr_val = pos["atr"]
 
@@ -414,121 +441,71 @@ class BreakoutStrategy:
         if current_price <= 0:
             return
 
-        # [CHANGED] - Extra debug
-        self.logger.debug(
-            f"[Breakout-manage] symbol={symbol}, side={side}, entry={entry}, curr={current_price}, SL={sl_price}"
-        )
+        # meltdown-check
+        meltdown_active = self.meltdown_manager.meltdown_active
+        if meltdown_active:
+            self.logger.info(f"[Breakout] meltdown => close pos => {symbol}")
+            self._close_position(symbol, reason="Meltdown")
+            return
 
-        # Stop-loss check
+        # StopLoss => ATR-based
         if side == "buy":
             if current_price <= sl_price:
-                self.logger.info(f"[Breakout] SL geraakt => close LONG {symbol}")
-                self._close_position(symbol)
-                return
-        else:  # sell
-            if current_price >= sl_price:
-                self.logger.info(f"[Breakout] SL geraakt => close SHORT {symbol}")
-                self._close_position(symbol)
+                self.logger.info(f"[Breakout manage] LONG SL => close {symbol}")
+                self._close_position(symbol, reason="StopLoss")
                 return
 
-        # partial TP bij 1R
-        #if not pos["tp1_done"]:
-        #    if side == "buy":
-        #        risk = entry - sl_price
-        #        tp1 = entry + risk
-        #        self.logger.debug(f"[Breakout-manage] {symbol} => LONG risk={risk:.4f}, tp1={tp1:.4f}")
-        #        if current_price >= tp1:
-        #            self.logger.info(f"[Breakout] {symbol} => 1R => partial LONG => {pos['partial_qty']:.4f}")
-        #            self._take_partial_profit(symbol, pos["partial_qty"], "sell")
-        #            pos["tp1_done"] = True
-        #    else:
-        #        risk = sl_price - entry
-        #        tp1 = entry - risk
-        #        self.logger.debug(f"[Breakout-manage] {symbol} => SHORT risk={risk:.4f}, tp1={tp1:.4f}")
-        #        if current_price <= tp1:
-        #            self.logger.info(f"[Breakout] {symbol} => 1R => partial SHORT => {pos['partial_qty']:.4f}")
-        #            self._take_partial_profit(symbol, pos["partial_qty"], "buy")
-        #            pos["tp1_done"] = True
-
-        # Trailing Stop => ATR-based (trailing_atr_mult)
-        if side == "buy":
-            # highest_price updaten
+            # [CHANGED] Trailing => ATR-based
             if current_price > pos["highest_price"]:
                 pos["highest_price"] = current_price
             new_sl = pos["highest_price"] - (atr_val * self.trail_atr_mult)
             if new_sl > pos["stop_loss"]:
                 old_sl = pos["stop_loss"]
                 pos["stop_loss"] = new_sl
-                self.logger.info(
-                    f"[Breakout] {symbol} => update trailing SL => old={old_sl:.2f}, new={new_sl:.2f}"
-                )
-        else:
+                self.logger.info(f"[Breakout] {symbol} => trailing update => old={old_sl:.2f}, new={new_sl:.2f}")
+
+        else:  # short
+            if current_price >= sl_price:
+                self.logger.info(f"[Breakout manage] SHORT SL => close {symbol}")
+                self._close_position(symbol, reason="StopLoss")
+                return
+
+            # trailing for short
             if current_price < pos["lowest_price"]:
                 pos["lowest_price"] = current_price
             new_sl = pos["lowest_price"] + (atr_val * self.trail_atr_mult)
             if new_sl < pos["stop_loss"]:
                 old_sl = pos["stop_loss"]
                 pos["stop_loss"] = new_sl
-                self.logger.info(
-                    f"[Breakout] {symbol} => update trailing SL => old={old_sl:.2f}, new={new_sl:.2f}"
-                )
+                self.logger.info(f"[Breakout] {symbol} => trailing update => old={old_sl:.2f}, new={new_sl:.2f}")
 
-    def _close_position(self, symbol: str):
+    def _close_position(self, symbol: str, reason="ForcedClose"):
         pos = self.open_positions.get(symbol)
         if not pos:
             return
         side = pos["side"]
         amt = pos["amount"]
+        entry_price = pos["entry_price"]
+        db_id = pos.get("db_id", None)
 
-        if side == "buy":
-            if self.client:
-                self.client.place_order("sell", symbol, float(amt), ordertype="market")
-                self.logger.info(f"[LIVE] CLOSE LONG => SELL {symbol} amt={amt:.4f}")
-            else:
-                self.logger.info(f"[Paper] CLOSE LONG => SELL {symbol} amt={amt:.4f}")
-        else:
-            if self.client:
-                self.client.place_order("buy", symbol, float(amt), ordertype="market")
-                self.logger.info(f"[LIVE] CLOSE SHORT => BUY {symbol} amt={amt:.4f}")
-            else:
-                self.logger.info(f"[Paper] CLOSE SHORT => BUY {symbol} amt={amt:.4f}")
-
-        # Verwijder uit open_positions
-        del self.open_positions[symbol]
-        self.logger.info(f"[Breakout] Positie {symbol} volledig gesloten.")
-
-        # def _take_partial_profit(self, symbol: str, qty: Decimal, exit_side: str):
-        #    exit_side="sell" => partial exit (LONG)
-        #    exit_side="buy"  => partial exit (SHORT)
-        #    """
-        #    if symbol not in self.open_positions:
-        #        return
-
-        #    pos = self.open_positions[symbol]
-        #    current_price = self._get_latest_price(symbol)
-
-        #    if self.client:
-        #        self.client.place_order(exit_side, symbol, float(qty), order_type="market")
-        #        self.logger.info(f"[LIVE] PARTIAL EXIT => {exit_side.upper()} {qty:.4f} {symbol} @ ~{current_price:.2f}")
-        #    else:
-        #        self.logger.info(f"[Paper] PARTIAL EXIT => {exit_side.upper()} {qty:.4f} {symbol} @ ~{current_price:.2f}")
-
-        #    pos["amount"] -= qty
-        #    if pos["amount"] <= Decimal("0"):
-        #        self.logger.info(f"[Breakout] Positie uitgeput => {symbol} closed")
-        #        del self.open_positions[symbol]
-
-        # -----------------------------------------
-        # [NIEUW] => signals loggen (event='closed')
-        # -----------------------------------------
-        # Stel dat je in je 'trades' net ook een close-row opslaat (met status='closed'),
-        # dan kunnen we hier het 'trade_id' pakken (als je dat trackte).
-        # Hier doen we het net als bij open_position: we maken ad-hoc wat info.
-        # Normaliter heb je 'db_manager.save_trade(...)' voor de close, dus daarna:
-
-        # (A) Child–trade: 1 row => 'closed', is_master=0
         current_price = self._get_latest_price(symbol)
-        raw_pnl = (current_price - pos["entry_price"]) * Decimal(str(amt))
+        if current_price <= 0:
+            self.logger.warning(f"[Breakout] can't close => price=0 => skip.")
+            return
+
+        exit_side = "sell" if side == "buy" else "buy"
+        if self.client:
+            self.client.place_order(exit_side, symbol, float(amt), ordertype="market")
+            self.logger.info(f"[Breakout] CLOSE => {exit_side.upper()} {symbol} amt={amt:.4f}, reason={reason}")
+        else:
+            self.logger.info(f"[Paper] close => {exit_side.upper()} {symbol} amt={amt:.4f}, reason={reason}")
+
+        # Verwijder open pos
+        del self.open_positions[symbol]
+        self.logger.info(f"[Breakout] Positie {symbol} volledig gesloten. reason={reason}")
+
+        # child-trade in DB
+        raw_pnl = (current_price - entry_price) * Decimal(str(amt)) if side=="buy" else (entry_price - current_price)*Decimal(str(amt))
         trade_cost = float(current_price * amt)
         fees = float(trade_cost * Decimal("0.0025"))
         realized_pnl = float(raw_pnl) - fees
@@ -536,42 +513,48 @@ class BreakoutStrategy:
         child_data = {
             "timestamp": int(time.time() * 1000),
             "symbol": symbol,
-            "side": "sell" if side == "buy" else "buy",  # tegengestelde order
+            "side": exit_side,
             "price": float(current_price),
             "amount": float(amt),
             "position_id": None,
-            "position_type": side,  # "buy"/"sell"
+            "position_type": side,
             "status": "closed",
             "pnl_eur": realized_pnl,
             "fees": fees,
             "trade_cost": trade_cost,
             "strategy_name": "breakout",
-            "is_master": 0  # Child-trade
+            "is_master": 0
         }
         self.db_manager.save_trade(child_data)
-        child_trade_id = self.db_manager.cursor.lastrowid
-        self.logger.info(f"[Breakout] Child trade => id={child_trade_id}, closed => realized_pnl={realized_pnl:.2f}")
+        child_id = self.db_manager.cursor.lastrowid
+        self.logger.info(f"[Breakout] Child trade => id={child_id}, closed => realized_pnl={realized_pnl:.2f}")
 
-        # (B) Updaten van je master-trade => status='closed'
-        master_id = pos.get("db_id", None)
-        if master_id:
+        # update master => 'closed'
+        if db_id:
             old_row = self.db_manager.execute_query(
                 "SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1",
-                (master_id,)
+                (db_id,)
             )
             if old_row:
                 old_fees, old_pnl = old_row[0]
                 new_fees = old_fees + fees
                 new_pnl = old_pnl + realized_pnl
-                self.db_manager.update_trade(master_id, {
+                self.db_manager.update_trade(db_id, {
                     "status": "closed",
                     "fees": new_fees,
                     "pnl_eur": new_pnl
                 })
-                self.logger.info(f"[Breakout] Master trade={master_id} updated => closed + PnL={new_pnl:.2f}")
+                self.logger.info(f"[Breakout] Master trade={db_id} => closed => final pnl={new_pnl:.2f}")
 
-            # Signaal
-            self._record_trade_signals(trade_id=master_id, event_type="closed", symbol=symbol)
+            self._record_trade_signals(trade_id=db_id, event_type="closed", symbol=symbol)
+
+    def manage_intra_candle_exits(self):
+        """
+        [NEW] Methode om intra-candle SL te checken op basis van 'live' (ticker) price.
+        Elke 5-10s aanroepen vanuit je executor.
+        """
+        for sym in list(self.open_positions.keys()):
+            self._manage_position(sym)
 
     def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
         """
@@ -597,7 +580,6 @@ class BreakoutStrategy:
                 try:
                     df[col] = df[col].astype(float, errors="raise")
                 except Exception as exc:
-                    # Log de problematische waarden (max 10)
                     unique_vals = df[col].unique()
                     self.logger.error(
                         f"[Breakout] Fout bij float-conversie kolom='{col}'. "
@@ -669,58 +651,26 @@ class BreakoutStrategy:
         for sym, pos in self.open_positions.items():
             amt = pos["amount"]
             px = self._get_latest_price(sym)
-            total_positions += (amt * px)
+            total_positions += (Decimal(str(amt)) * px)
         return eur_balance + total_positions
 
-    def _get_eur_balance(self) -> Decimal:
-        """
-        Als client=None => return self.initial_capital als fallback
-        """
-        if not self.client:
-            return self.initial_capital
-
-        bal = self.client.get_balance()
-        return Decimal(str(bal.get("EUR", "0")))
-
-    def _can_open_new_position(self) -> bool:
-        """
-        Check of we onder self.max_positions_equity_pct zitten.
-        """
-        total_equity = self._get_equity_estimate()
-        eur_bal = self._get_eur_balance()
-        invested = total_equity - eur_bal
-        ratio = invested / total_equity if total_equity > 0 else Decimal("0")
-        return ratio < self.max_positions_equity_pct
-
-    def manage_intra_candle_exits(self):
-        """
-        [NEW] Methode om intra-candle SL te checken op basis van 'live' (ticker) price.
-        Elke 5-10s aanroepen vanuit je executor.
-        """
-        # Loop over alle open posities en roep _manage_position() aan
-        for sym in list(self.open_positions.keys()):
-            curr_price = self._get_latest_price(sym)
-            if curr_price > 0:
-                self._manage_position(sym)
-
-    # --------------------------------------------------------------------------
-    # [NEW] Hulpmethode voor het loggen van indicatoren in 'trade_signals'
-    # --------------------------------------------------------------------------
     def _record_trade_signals(self, trade_id: int, event_type: str, symbol: str):
         """
-        Logt de beslisindicatoren (bv. RSI daily/h4, MACD op 4h, volume op 4h)
-        in de 'trade_signals' tabel via db_manager.save_trade_signals(...).
+        Logt de beslisindicatoren (daily RSI, 4h RSI, MACD, volume, meltdown-state, etc.)
+        in de 'trade_signals' via self.db_manager.save_trade_signals(...).
 
-        :param trade_id:   ID van de zojuist weggeschreven trade-row in 'trades'
-        :param event_type: "open", "closed", ...
-        :param symbol:     "BTC-EUR"
+        Met oog op ML: we slaan hier zoveel mogelijk relevante kolommen op, net als
+        in de oorspronkelijke code.
         """
         try:
             # 1) Haal daily RSI
             df_daily = self._fetch_and_indicator(symbol, self.daily_timeframe, limit=60)
-            rsi_daily = float(df_daily["rsi"].iloc[-1]) if (not df_daily.empty) else None
+            if not df_daily.empty:
+                rsi_daily = float(df_daily["rsi"].iloc[-1])
+            else:
+                rsi_daily = None
 
-            # 2) Haal 4h => RSI + MACD + volume
+            # 2) Haal 4h => RSI, MACD, volume
             df_4h = self._fetch_and_indicator(symbol, self.main_timeframe, limit=60)
             if not df_4h.empty:
                 rsi_4h = float(df_4h["rsi"].iloc[-1])
@@ -733,33 +683,52 @@ class BreakoutStrategy:
                 macd_sig = 0.0
                 vol_4h = 0.0
 
+            # 3) Als je de ATR(4h) ook wilt loggen voor ML, kun je deze berekenen:
+            atr_4h = None
+            if not df_4h.empty:
+                from ta.volatility import AverageTrueRange
+                if len(df_4h) >= 14:  # of self.atr_window
+                    atr_calc = AverageTrueRange(
+                        high=df_4h["high"], low=df_4h["low"], close=df_4h["close"], window=14
+                    )
+                    atr_val = atr_calc.average_true_range().iloc[-1]
+                    if not pd.isna(atr_val):
+                        atr_4h = float(atr_val)
+
+            # 4) meltdown-state
             meltdown_active = self.meltdown_manager.meltdown_active
 
-            # Bouw dict
+            # 5) Build signals_data dict
             signals_data = {
                 "trade_id": trade_id,
                 "event_type": event_type,
                 "symbol": symbol,
                 "strategy_name": "breakout",
+
+                # daily
                 "rsi_daily": rsi_daily,
+
+                # 4h
                 "rsi_h4": rsi_4h,
-                "rsi_15m": None,        # in breakout niet gebruikt
                 "macd_val": macd_val,
                 "macd_signal": macd_sig,
-                "atr_value": None,      # evt. kun je hier 4h-ATR opslaan
-                "depth_score": 0.0,     # breakout gebruikt geen depth-check
-                "ml_signal": 0.0,       # ML niet geactiveerd hier
-                "timestamp": int(time.time() * 1000),
-                # evt. meltdown_active=meltdown_active, ...
-                #  volume => we loggen in macd_val/macd_signal, of apart 'vol_4h'
+                "volume_4h": vol_4h,  # expliciete kolom voor volume
+                "atr_value": atr_4h,  # 4h-ATR als je wilt
+
+                # breakout gebruikt geen 15m, maar we laten 'm op None voor consistentie
+                "rsi_15m": None,
+
+                # Overige placeholders
+                "depth_score": 0.0,  # breakout doet niks met depth
+                "ml_signal": 0.0,  # ML niet geactiveerd hier
+                "meltdown_active": meltdown_active,  # als je dat ook in DB wilt loggen
+
+                "timestamp": int(time.time() * 1000)
             }
 
-            # we kunnen 'volume' in 4h in een eigen kolom opslaan (bvb. 'extra_float1'):
-            # of je past je schema van trade_signals-tabel aan om 'volume' direct op te nemen.
-            # Stel dat je extra kolom 'volume_4h' hebt, dan:
-            # signals_data["volume_4h"] = vol_4h
-
+            # Sla het signaal op
             self.db_manager.save_trade_signals(signals_data)
             self.logger.info(f"[BreakoutStrategy] _record_trade_signals => trade_id={trade_id}, event={event_type}")
+
         except Exception as e:
             self.logger.error(f"[BreakoutStrategy] _record_trade_signals fout: {e}")

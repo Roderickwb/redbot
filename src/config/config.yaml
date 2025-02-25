@@ -52,7 +52,7 @@ pullback_accumulate_strategy:
   macd_bear_threshold: 0   # minder stregn is +1 alleen short als < 0
 
   # bepaald hoever de pullback van de weerstand of support ,oet bewegen om in te stappen = pullback = true
-  pullback_atr_mult: 1.75 # normaal 1.5
+  pullback_atr_mult: 1.25 # normaal 1.5
 
   ml_model_enabled: true
 
@@ -74,7 +74,7 @@ pullback_accumulate_strategy:
   sl_atr_mult: 1.5        # SL => full close
   tp1_atr_mult: 1.5       # 50% close
   tp1_portion_pct: 0.50
-  trailing_atr_mult: 0.5  # voor de rolling 50%
+  trailing_atr_mult: 1.0  # voor de rolling 50%
   initial_capital: 350
 
   use_depth_trend: true
@@ -116,9 +116,6 @@ breakout_strategy:
   atr_window: 14
 
   trailing_enabled: true
-  trailing_pct: 2
-  sl_pct: 2
-
   min_lot_multiplier: 1.1
   sl_atr_mult: 1.5
   trailing_atr_mult: 1.5

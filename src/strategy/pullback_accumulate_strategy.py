@@ -121,6 +121,9 @@ class PullbackAccumulateStrategy:
 
         self.use_depth_trend = bool(self.strategy_config.get("use_depth_trend", True))
         self.use_ema_pullback_check = bool(self.strategy_config.get("use_ema_pullback_check", False))  # [NIEUW]
+        self.pullback_ema_period = int(self.strategy_config.get("pullback_ema_period", 20))
+        self.pullback_ema_tolerance_bull = float(self.strategy_config.get("pullback_ema_tolerance_bull", 1.02))
+        self.pullback_ema_tolerance_bear = float(self.strategy_config.get("pullback_ema_tolerance_bear", 0.98))
 
         self.macd_bull_threshold = float(self.strategy_config.get("macd_bull_threshold", 0))
         self.macd_bear_threshold = float(self.strategy_config.get("macd_bear_threshold", 0))
@@ -379,9 +382,7 @@ class PullbackAccumulateStrategy:
                          direction: str,
                          atr_value: Decimal) -> bool:
         """
-        Simpele pullback-check op basis van ATR.
-        Zonder databasecalls, maar met logging van de afstand / drempel,
-        zodat er geen 'unused variable' waarschuwingen zijn.
+        Simpele pullback-check op basis van ATR + 20EMA-check + tolerance factor
         """
 
         # 1) Check genoeg candles
@@ -392,6 +393,11 @@ class PullbackAccumulateStrategy:
         # 2) Alleen relevant in bull/bear; bij 'range' => return False
         if direction not in ("bull", "bear"):
             return False
+
+        # 1) Zorg dat we een kolom "ema_X" hebben (X = pullback_ema_period)
+        ema_col_name = f"ema_{self.pullback_ema_period}"
+        if ema_col_name not in df.columns:
+            df[ema_col_name] = df["close"].ewm(span=self.pullback_ema_period).mean()
 
         # Voor straks
         pullback_distance = Decimal("0")
@@ -407,19 +413,27 @@ class PullbackAccumulateStrategy:
             pullback_distance = Decimal(str(recent_high)) - current_price
             atr_threshold = atr_value * self.pullback_atr_mult
 
+            ratio = Decimal("0")
             if atr_threshold != 0:
                 ratio = pullback_distance / atr_threshold
 
             # Log de waarden om 'unused variable' te vermijden
-            self.logger.info(
-                f"[Pullback-bull] distance={pullback_distance:.4f}, "
-                f"threshold={atr_threshold:.4f}, ratio={ratio:.2f}"
-            )
+            self.logger.info(f"[Pullback-bull] ratio={ratio:.2f} (>=1 => ok?)")
 
             # Echte check: >= 1 => “pullback genoeg”
             if ratio >= 1:
-                self.logger.info("[Pullback-bull] => DETECTED!")
-                return True
+                # (1) Hebben we 'genoeg' daling? Ja => check EMA
+                ema_val = Decimal(str(df[ema_col_name].iloc[-1]))
+                if current_price <= ema_val * Decimal(str(self.pullback_ema_tolerance_bull)):
+                    self.logger.info(
+                        f"[Pullback-bull] price={current_price} <= {ema_val} × {self.pullback_ema_tolerance_bull} => DETECTED"
+                    )
+                    return True
+                else:
+                    self.logger.info(
+                        f"[Pullback-bull] ratio OK, maar price={current_price:.2f} is boven {ema_val:.2f} × {self.pullback_ema_tolerance_bull}"
+                    )
+                    return False
             else:
                 return False
 
@@ -428,21 +442,28 @@ class PullbackAccumulateStrategy:
             recent_low = df["low"].rolling(self.pullback_rolling_window).min().iloc[-1]
             if recent_low <= 0:
                 return False
-
             rally_distance = current_price - Decimal(str(recent_low))
             atr_threshold = atr_value * self.pullback_atr_mult
 
-            if atr_threshold != 0:
+            ratio = Decimal("0")
+            if atr_threshold > 0:
                 ratio = rally_distance / atr_threshold
 
-            self.logger.info(
-                f"[Pullback-bear] distance={rally_distance:.4f}, "
-                f"threshold={atr_threshold:.4f}, ratio={ratio:.2f}"
-            )
+            self.logger.info(f"[Pullback-bear] ratio={ratio:.2f} (>=1 => ok?)")
 
             if ratio >= 1:
-                self.logger.info("[Pullback-bear] => DETECTED!")
-                return True
+                ema_val = Decimal(str(df[ema_col_name].iloc[-1]))
+                # => Bij bear-check: current_price >= ema_val * self.pullback_ema_tolerance_bear
+                if current_price >= ema_val * Decimal(str(self.pullback_ema_tolerance_bear)):
+                    self.logger.info(
+                        f"[Pullback-bear] price={current_price} >= {ema_val} × {self.pullback_ema_tolerance_bear} => DETECTED"
+                    )
+                    return True
+                else:
+                    self.logger.info(
+                        f"[Pullback-bear] ratio OK, maar price={current_price:.2f} is onder {ema_val:.2f} × {self.pullback_ema_tolerance_bear}"
+                    )
+                    return False
             else:
                 return False
 

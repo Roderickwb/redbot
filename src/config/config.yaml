@@ -37,8 +37,8 @@ pullback_accumulate_strategy:
   # STAP 1 DE GROTE TREND: CHECK DIRECTION
   daily_bull_rsi: 50
   daily_bear_rsi: 50
-  h4_bull_rsi: 60
-  h4_bear_rsi: 40
+  h4_bull_rsi: 55
+  h4_bear_rsi: 45
 
   # Optioneel worden nu niet gebruik maar kan op de 15M candle:
   rsi_bull_threshold: 40   # RSI <= 40 => oversold => bullisch pullback
@@ -87,6 +87,11 @@ pullback_accumulate_strategy:
 
   # [NIEUW] EMA-checks:
   use_ema_pullback_check: false
+
+  pullback_ema_period: 20
+  pullback_ema_tolerance_bull: 1.02
+  pullback_ema_tolerance_bear: 0.98
+
   ema_fast_period: 9
   ema_slow_period: 20
   use_ema_trend_200: false

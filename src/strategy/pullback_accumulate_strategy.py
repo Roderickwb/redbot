@@ -122,6 +122,9 @@ class PullbackAccumulateStrategy:
         self.use_depth_trend = bool(self.strategy_config.get("use_depth_trend", True))
         self.use_ema_pullback_check = bool(self.strategy_config.get("use_ema_pullback_check", False))  # [NIEUW]
 
+        self.macd_bull_threshold = float(self.strategy_config.get("macd_bull_threshold", 0))
+        self.macd_bear_threshold = float(self.strategy_config.get("macd_bear_threshold", 0))
+
         # RSI/MACD config
         self.rsi_window = int(self.strategy_config.get("rsi_window", 14))
         self.macd_fast = int(self.strategy_config.get("macd_fast", 12))
@@ -289,6 +292,29 @@ class PullbackAccumulateStrategy:
             if not self._check_ema_pullback_15m(df_entry, direction):
                 pullback_detected = False
                 self.logger.info(f"[PullbackStrategy] 9/20EMA-check => geen valide pullback => skip {symbol}")
+
+        # 2) MACD-check
+        if pullback_detected:
+            # Pak de laatste MACD‐waarde van de 15m data
+            last_macd_15m = df_entry["macd"].iloc[-1]
+
+            # a) Bear-check: skip short als MACD > macd_bear_threshold
+            if direction == "bear":
+                if last_macd_15m > self.macd_bear_threshold:
+                    self.logger.info(
+                        f"[MACD-filter-BEAR] macd_15m={last_macd_15m:.2f} > {self.macd_bear_threshold} "
+                        f"=> momentum is te bullish => skip short."
+                    )
+                    pullback_detected = False
+
+            # b) Bull-check: skip long als MACD < macd_bull_threshold
+            elif direction == "bull":
+                if last_macd_15m < self.macd_bull_threshold:
+                    self.logger.info(
+                        f"[MACD-filter-BULL] macd_15m={last_macd_15m:.2f} < {self.macd_bull_threshold} "
+                        f"=> momentum is te bearish => skip long."
+                    )
+                    pullback_detected = False
 
         # Depth + ML
         ml_signal = self._ml_predict_signal(df_entry)

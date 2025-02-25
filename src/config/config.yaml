@@ -48,8 +48,8 @@ pullback_accumulate_strategy:
   depth_threshold_bull: -0.3 # orderboek-analyse om te checken of er voldoende volume is om een trend te ondersteuen idealiter > 0)
   depth_threshold_bear: 0.3
 
-  macd_bull_threshold: -1  # minder streng is -1
-  macd_bear_threshold: 1   # minder stregn is +1
+  macd_bull_threshold: 0  # minder streng is -1 alleen long als > 0
+  macd_bear_threshold: 0   # minder stregn is +1 alleen short als < 0
 
   # bepaald hoever de pullback van de weerstand of support ,oet bewegen om in te stappen = pullback = true
   pullback_atr_mult: 1.75 # normaal 1.5

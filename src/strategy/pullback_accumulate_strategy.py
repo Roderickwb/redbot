@@ -229,8 +229,16 @@ class PullbackAccumulateStrategy:
             return
 
         rsi_h4 = df_h4["rsi"].iloc[-1]
-        direction = self._check_trend_direction_4h(rsi_h4)
-        self.logger.info(f"[PullbackStrategy] direction={direction}, rsi_h4={rsi_h4:.2f} for {symbol}")
+
+        # Haal MACD; als kolom ontbreekt, zet macd_h4=0
+        if "macd" in df_h4.columns:
+            macd_h4 = df_h4["macd"].iloc[-1]
+        else:
+            macd_h4 = 0.0
+
+        direction = self._check_trend_direction_4h(rsi_h4, macd_h4)  # let op: extra arg
+        self.logger.info(
+            f"[PullbackStrategy] direction={direction}, rsi_h4={rsi_h4:.2f}, macd_h4={macd_h4:.2f} for {symbol}")
 
         # [UITGECOMMENTARIEERD] daily-check
         # df_daily = self._fetch_and_indicator(symbol, self.daily_timeframe, limit=60)
@@ -368,10 +376,16 @@ class PullbackAccumulateStrategy:
             self._manage_open_position(symbol, current_price, atr_value)
 
     # Simpele check: rsi_h4 > self.h4_bull_rsi => bull, < self.h4_bear_rsi => bear, anders range
-    def _check_trend_direction_4h(self, rsi_h4: float) -> str:
-        if rsi_h4 > self.h4_bull_rsi:
+    def _check_trend_direction_4h(self, rsi_h4: float, macd_h4: float) -> str:
+        """
+        Bepaalt de 'direction' op 4h op basis van RSI óf MACD.
+        Als RSI > h4_bull_rsi of macd_h4>0 => bull
+        Als RSI < h4_bear_rsi of macd_h4<0 => bear
+        Anders => range
+        """
+        if (rsi_h4 > self.h4_bull_rsi) or (macd_h4 > 0):
             return "bull"
-        elif rsi_h4 < self.h4_bear_rsi:
+        elif (rsi_h4 < self.h4_bear_rsi) or (macd_h4 < 0):
             return "bear"
         else:
             return "range"

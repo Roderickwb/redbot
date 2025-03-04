@@ -507,7 +507,7 @@ class BreakoutStrategy:
         # child-trade in DB
         raw_pnl = (current_price - entry_price) * Decimal(str(amt)) if side=="buy" else (entry_price - current_price)*Decimal(str(amt))
         trade_cost = float(current_price * amt)
-        fees = float(trade_cost * Decimal("0.0025"))
+        fees = trade_cost * 0.004  # Gewoon beide als float houden
         realized_pnl = float(raw_pnl) - fees
 
         child_data = {

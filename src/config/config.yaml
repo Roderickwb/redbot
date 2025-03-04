@@ -71,8 +71,8 @@ pullback_accumulate_strategy:
   max_position_pct: 0.05   # max 5% van je capital
   max_position_eur: 15  # of direct een vast bedrag
 
-  sl_atr_mult: 1.5        # SL => full close
-  tp1_atr_mult: 1.5       # 50% close
+  sl_atr_mult: 1.0        # SL => full close
+  tp1_atr_mult: 1.0       # 50% close
   tp1_portion_pct: 0.50
   trailing_atr_mult: 1.0  # voor de rolling 50%
   initial_capital: 350

@@ -554,13 +554,14 @@ class PullbackAccumulateStrategy:
             stop_loss_price = entry - (atr_value * self.sl_atr_mult)
             if current_price <= stop_loss_price:
                 self.logger.info(f"[ManagePos] LONG STOPLOSS => close entire {symbol}")
+
+                # (A) Pak master_id direct uit pos en zet master op 'closed'
+                master_id = pos["master_id"]
+                self.db_manager.update_trade(master_id, {"status": "closed"})
+                self.logger.info(f"[StopLoss] Master {master_id} => closed in DB")
+
+                # (B) Nu pas child-trade voor portion=1.0
                 self._sell_portion(symbol, amount, portion=Decimal("1.0"), reason="StopLoss", exec_price=current_price)
-                # B) Zet direct master-trade op 'closed' in DB
-                pos = self.open_positions.get(symbol)
-                master_id = pos.get("master_id") if pos else None
-                if master_id:
-                    self.db_manager.update_trade(master_id, {"status": "closed"})
-                    self.logger.info(f"Master {master_id} => closed via StopLoss shortcut.")
 
                 if symbol in self.open_positions:
                     del self.open_positions[symbol]
@@ -586,6 +587,9 @@ class PullbackAccumulateStrategy:
                 )
                 if current_price <= trailing_stop_price:
                     self.logger.info(f"[TrailingStop] => close entire leftover => {symbol}")
+                    master_id = pos["master_id"]
+                    self.db_manager.update_trade(master_id, {"status": "closed"})
+                    self.logger.info(f"[TrailingStop] Master {master_id} => closed in DB")
                     self._sell_portion(symbol, amount, portion=Decimal("1.0"), reason="TrailingStop",
                                        exec_price=current_price)
                     if symbol in self.open_positions:
@@ -594,13 +598,14 @@ class PullbackAccumulateStrategy:
             stop_loss_price = entry + (one_r * self.sl_atr_mult)
             if current_price >= stop_loss_price:
                 self.logger.info(f"[ManagePos] SHORT STOPLOSS => close entire {symbol}")
-                self._buy_portion(symbol, amount, portion=Decimal("1.0"), reason="StopLoss", exec_price=current_price)
 
-                pos = self.open_positions.get(symbol)
-                master_id = pos.get("master_id") if pos else None
-                if master_id:
-                    self.db_manager.update_trade(master_id, {"status": "closed"})
-                    self.logger.info(f"[StopLoss Shortcut] Master trade {master_id} => status=closed")
+                # (1) Master direct closed
+                master_id = pos["master_id"]
+                self.db_manager.update_trade(master_id, {"status": "closed"})
+                self.logger.info(f"[StopLoss] Master {master_id} => closed in DB")
+
+                # (2) Child => buy leftover
+                self._buy_portion(symbol, amount, portion=Decimal("1.0"), reason="StopLoss", exec_price=current_price)
 
                 if symbol in self.open_positions:
                     del self.open_positions[symbol]
@@ -626,8 +631,16 @@ class PullbackAccumulateStrategy:
                 )
                 if current_price >= trailing_stop_price:
                     self.logger.info(f"[TrailingStop] => close entire leftover => {symbol}")
+
+                    # (1) Master closed
+                    master_id = pos["master_id"]
+                    self.db_manager.update_trade(master_id, {"status": "closed"})
+                    self.logger.info(f"[TrailingStop] Master {master_id} => closed in DB")
+
+                    # (2) leftover => portion=1.0
                     self._buy_portion(symbol, amount, portion=Decimal("1.0"), reason="TrailingStop",
                                       exec_price=current_price)
+
                     if symbol in self.open_positions:
                         del self.open_positions[symbol]
 
@@ -973,16 +986,9 @@ class PullbackAccumulateStrategy:
                     new_fees = old_fees + fees
                     new_pnl = old_pnl + realized_pnl
                     self.db_manager.update_trade(master_id, {
-                        "status": "closed",
                         "fees": new_fees,
                         "pnl_eur": new_pnl
                     })
-                    self.logger.info(f"[PullbackStrategy] Master trade {master_id} => status=closed in DB")
-
-            self.__record_trade_signals(master_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
-
-            if symbol in self.open_positions:
-                del self.open_positions[symbol]
 
         else:
             if master_id:
@@ -1003,12 +1009,6 @@ class PullbackAccumulateStrategy:
                         f"[PullbackStrategy] updated master trade {master_id} => partial fees={new_fees}, pnl={new_pnl}"
                     )
             self.__record_trade_signals(master_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
-
-        if reason in ["StopLoss", "TrailingStop"] and portion == Decimal("1.0"):
-            self.logger.info(f"[Shortcut {reason}] => close Master in DB for {symbol}")
-            if master_id:
-                self.db_manager.update_trade(master_id, {"status": "closed"})
-                self.logger.info(f"[{reason} Shortcut] Master trade {master_id} => closed in DB (buy_portion)")
 
         # *** extra debug eind ***
         self.logger.debug(
@@ -1135,15 +1135,9 @@ class PullbackAccumulateStrategy:
                     new_pnl = old_pnl + realized_pnl
                     self.logger.debug(f"[MASTER CLOSE DEBUG] master_id={master_id}, leftover={leftover_amt}")
                     self.db_manager.update_trade(master_id, {
-                        "status": "closed",
                         "fees": new_fees,
                         "pnl_eur": new_pnl
                     })
-                    self.logger.info(f"[PullbackStrategy] Master trade {master_id} => status=closed in DB")
-
-            self.__record_trade_signals(master_id, event_type="closed", symbol=symbol, atr_mult=self.pullback_atr_mult)
-            if symbol in self.open_positions:
-                del self.open_positions[symbol]
 
         else:
             if master_id:
@@ -1162,12 +1156,6 @@ class PullbackAccumulateStrategy:
                         f"[PullbackStrategy] updated master trade {master_id} => partial => fees={new_fees}, pnl={new_pnl}"
                     )
             self.__record_trade_signals(master_id, event_type="partial", symbol=symbol, atr_mult=self.pullback_atr_mult)
-
-        if reason in ["StopLoss", "TrailingStop"] and portion == Decimal("1.0"):
-            self.logger.info(f"[Shortcut {reason}] => close Master in DB for {symbol}")
-            if master_id:
-                self.db_manager.update_trade(master_id, {"status": "closed"})
-                self.logger.info(f"[{reason} Shortcut] Master trade {master_id} => closed in DB (sell_portion)")
 
         # onderaan:
         self.logger.debug(

@@ -27,7 +27,7 @@ class JSONFormatter(logging.Formatter):
 ################################################################################
 def setup_logger(name,
                  log_file,
-                 level=logging.DEBUG,  # Default: DEBUG
+                 level=logging.INFO,  # Default: DEBUG Kan altijd weer
                  max_bytes=5_000_000,  # 5 MB standaard (pas dit aan indien nodig)
                  backup_count=5,
                  use_json=False):

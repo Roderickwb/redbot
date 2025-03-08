@@ -65,7 +65,7 @@ class PullbackAccumulateStrategy:
             self.strategy_config = PULLBACK_CONFIG
 
         self.logger = setup_logger("pullback_strategy", PULLBACK_STRATEGY_LOG_FILE,
-                                   logging.DEBUG)  # kan weer naar INFO indien nodig
+                                   logging.INFO)  # kan weer naar INFO indien nodig
         if config_path:
             self.logger.debug("[PullbackAccumulateStrategy] init with config_path=%s", config_path)
         else:
@@ -161,7 +161,6 @@ class PullbackAccumulateStrategy:
         self.last_processed_candle_ts = {}  # [ADDED] dict: {symbol: last_candle_ms we used}
 
     def execute_strategy(self, symbol: str):
-        self.logger.info(f"[Pullback DEBUG] execute_strategy() called for {symbol}")
         meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
         """
         Eenvoudige flow:
@@ -188,7 +187,6 @@ class PullbackAccumulateStrategy:
             return
 
         # -- ER IS GEEN MELTDOWN, GA DOOR --
-        self.logger.info(f"[PullbackStrategy] Start for {symbol}")
 
         # Concurrency-check / check of we al open trades hebben in DB
         existing_db_trades = self.db_manager.execute_query(
@@ -256,7 +254,7 @@ class PullbackAccumulateStrategy:
         if atr_value is None:
             self.logger.warning(f"[PullbackStrategy] Not enough data => skip {symbol}")
             return
-        self.logger.info(f"[ATR-info] {symbol} => ATR({self.atr_window})={atr_value}")
+
 
         # Pullback => 15m
         df_entry = self._fetch_and_indicator(symbol, self.entry_timeframe, limit=100)
@@ -346,8 +344,12 @@ class PullbackAccumulateStrategy:
         #    self.logger.info("[PullbackStrategy] +25%% => next pullback => invest extra in %s", symbol)
 
         has_position = (symbol in self.open_positions)
-        self.logger.info(f"[Decision Info] symbol={symbol}, direction={direction}, pullback={pullback_detected},"
-                         f" ml_signal={ml_signal}, depth_score={depth_score:.2f}, current_price={current_price}")
+
+        self.logger.info(
+            f"[execute_strategy] {symbol} | meltdown={meltdown_active} | "
+            f"ATR={atr_value:.3f} | direction={direction} | pullback={pullback_detected} | "
+            f"ml={ml_signal} | cprice={current_price:.2f}"
+        )
 
         # Als we geen positie hebben, maar wel pullback + bull => open long
         # no daily rsi check anymore, just h4-based direction + pullback
@@ -1315,7 +1317,7 @@ class PullbackAccumulateStrategy:
         """
         Check SL/TP/etc in real-time (intra-candle).
         """
-        self.logger.info("[PullbackStrategy] manage_intra_candle_exits => start SL/TP checks.")
+        self.logger.debug("[PullbackStrategy] manage_intra_candle_exits => start SL/TP checks.")
         self.logger.debug(f"[manage_intra_candle_exits] open_positions keys => {list(self.open_positions.keys())}")
 
         for sym in list(self.open_positions.keys()):

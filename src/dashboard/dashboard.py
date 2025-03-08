@@ -8,6 +8,7 @@ import pandas as pd
 import yaml
 import streamlit as st
 from dotenv import load_dotenv
+import logging
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -22,8 +23,8 @@ from src.main import db_manager  # Zorg dat db_manager in main.py correct is ge�
 # =========================================
 st.set_page_config(page_title="Crypto Dashboard", layout="wide")
 
-logger = setup_logger('dashboard', DASHBOARD_LOG_FILE)
-logger.info("Dashboard gestart.")
+logger = setup_logger('dashboard', DASHBOARD_LOG_FILE, level=logging.WARNING)
+logger.DEBUG("Dashboard gestart.")
 
 def get_current_local_timestamp():
     """
@@ -40,9 +41,9 @@ st.write(f"🔍 **Database pad:** {DB_FILE}")
 st.write(f"🔍 **Huidige werkdirectory:** {os.getcwd()}")
 st.write(f"🔍 **sys.path:** {sys.path}")
 
-logger.info("DatabaseManager succesvol geïmporteerd! (debug)")
-logger.info(f"CWD: {os.getcwd()}")
-logger.info(f"sys.path: {sys.path}")
+logger.DEBUG("DatabaseManager succesvol geïmporteerd! (debug)")
+logger.DEBUG(f"CWD: {os.getcwd()}")
+logger.DEBUG(f"sys.path: {sys.path}")
 
 # =========================================
 # 2) YAML-config laden en pairs selecteren
@@ -154,7 +155,7 @@ def fetch_data_cached(table_name, market=None, interval=None, limit=100, exchang
     Haal data op via db_manager.fetch_data(...), voeg een extra 'datetime' (UTC) kolom toe.
     Filter (optioneel) op 'exchange' (Bitvavo / Kraken).
     """
-    logger.info(f"Ophalen data: Tabel={table_name}, Markt={market}, Interval={interval}, Limit={limit}, Exchange={exchange}")
+    logger.debug(f"Ophalen data: Tabel={table_name}, Markt={market}, Interval={interval}, Limit={limit}, Exchange={exchange}")
     try:
         df = db_manager.fetch_data(
             table_name=table_name,

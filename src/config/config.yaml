@@ -153,7 +153,6 @@ kraken:
   intervals_realtime:
     - 15
   intervals_poll:
-    - 1
     - 5
     - 15
     - 60

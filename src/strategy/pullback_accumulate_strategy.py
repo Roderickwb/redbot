@@ -643,6 +643,17 @@ class PullbackAccumulateStrategy:
 
                     if symbol in self.open_positions:
                         del self.open_positions[symbol]
+                    return
+
+        # ===== leftover=0 check =====
+        pos = self.open_positions.get(symbol)
+        if pos:
+            leftover_amt = pos["amount"]
+            if leftover_amt <= 0 or leftover_amt < self._get_min_lot(symbol):
+                master_id = pos["master_id"]
+                self.logger.info(f"[Leftover=0 check] => close master {master_id} for {symbol}")
+                self.db_manager.update_trade(master_id, {"status": "closed"})
+                del self.open_positions[symbol]
 
         # 5) Debug-log EINDE
         self.logger.debug(f"[_manage_open_position] END => symbol={symbol}, final pos={pos}")

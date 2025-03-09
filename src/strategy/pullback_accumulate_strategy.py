@@ -998,7 +998,8 @@ class PullbackAccumulateStrategy:
                     new_pnl = old_pnl + realized_pnl
                     self.db_manager.update_trade(master_id, {
                         "fees": new_fees,
-                        "pnl_eur": new_pnl
+                        "pnl_eur": new_pnl,
+                        "amount": float(leftover_amt)
                     })
 
         else:
@@ -1014,7 +1015,8 @@ class PullbackAccumulateStrategy:
                     self.db_manager.update_trade(master_id, {
                         "status": "partial",
                         "fees": new_fees,
-                        "pnl_eur": new_pnl
+                        "pnl_eur": new_pnl,
+                        "amount": float(leftover_amt)
                     })
                     self.logger.info(
                         f"[PullbackStrategy] updated master trade {master_id} => partial fees={new_fees}, pnl={new_pnl}"
@@ -1161,7 +1163,8 @@ class PullbackAccumulateStrategy:
                     self.db_manager.update_trade(master_id, {
                         "status": "partial",
                         "fees": new_fees,
-                        "pnl_eur": new_pnl
+                        "pnl_eur": new_pnl,
+                        "amount": float(leftover_amt)
                     })
                     self.logger.info(
                         f"[PullbackStrategy] updated master trade {master_id} => partial => fees={new_fees}, pnl={new_pnl}"

@@ -58,7 +58,7 @@ pullback_accumulate_strategy:
 
   main_timeframe: "1h"
   trend_timeframe: "4h"
-  entry_timeframe: "15m"
+  entry_timeframe: "1h"
   daily_timeframe: "1d"
   flash_crash_timeframe: "5m"
   atr_window: 14
@@ -80,7 +80,7 @@ pullback_accumulate_strategy:
   use_depth_trend: true
   pivot_points_window: 20
   rsi_window: 14
-  pullback_rolling_window: 10
+  pullback_rolling_window: 8
   macd_fast: 12
   macd_slow: 26
   macd_signal: 9

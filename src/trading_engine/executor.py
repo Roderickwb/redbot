@@ -179,12 +179,12 @@ class Executor:
 
         # BREAKOUT (Kraken)
         self.breakout_strategy_kraken = None
-        if self.kraken_order_client:
-            self.breakout_strategy_kraken = BreakoutStrategy(
-                client=self.kraken_order_client,
-                db_manager=self.db_manager,
-                config_path="src/config/config.yaml"
-            )
+        #if self.kraken_order_client:
+        #    self.breakout_strategy_kraken = BreakoutStrategy(
+        #        client=self.kraken_order_client,
+        #        db_manager=self.db_manager,
+        #        config_path="src/config/config.yaml"
+        #    )
 
         # ALTCOIN SCANNER (Kraken)
         self.altcoin_scanner_kraken = None

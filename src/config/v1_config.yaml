@@ -1,0 +1,223 @@
+database:
+  user: some_user
+  host: localhost
+
+
+bitvavo:
+  websocket_url: "wss://ws.bitvavo.com/v2/"
+  pairs:
+    - BTC-EUR
+    - ETH-EUR
+    - XRP-EUR
+    - DOGE-EUR
+    - SOL-EUR
+    - ADA-EUR
+    - TRX-EUR
+    - SPX-EUR
+    - BNB-EUR
+    - XVG-EUR
+    - LTC-EUR
+    - XLM-EUR
+    - PEPE-EUR
+    - LINK-EUR
+    - UNI-EUR
+    - ATOM-EUR
+
+# [OPTIONEEL, net als voorheen]
+intervals:
+  - "5m"
+  - "15m"
+  - "1h"
+  - "4h"
+  - "1d"
+
+
+### PULLBACK_ACCUMULATE_STRATEGY ###
+pullback_accumulate_strategy:
+  # STAP 1 DE GROTE TREND: CHECK DIRECTION
+  daily_bull_rsi: 50
+  daily_bear_rsi: 50
+  h4_bull_rsi: 60
+  h4_bear_rsi: 40
+
+  # Optioneel worden nu niet gebruik maar kan op de 15M candle:
+  rsi_bull_threshold: 40   # RSI <= 40 => oversold => bullisch pullback
+  rsi_bear_threshold: 60   # RSI >= 60 => overbought => bearisch pullback
+
+  # Nieuw (om depth_score-checks te configureren!)
+  depth_threshold_bull: -0.3 # orderboek-analyse om te checken of er voldoende volume is om een trend te ondersteuen idealiter > 0)
+  depth_threshold_bear: 0.3
+
+  macd_bull_threshold: -1  # minder streng is -1
+  macd_bear_threshold: 1   # minder stregn is +1
+
+  # bepaald hoever de pullback van de weerstand of support ,oet bewegen om in te stappen = pullback = true
+  pullback_atr_mult: 1.5 # normaal 1.5
+
+  ml_model_enabled: true
+
+  main_timeframe: "1h"
+  trend_timeframe: "4h"
+  entry_timeframe: "15m"
+  daily_timeframe: "1d"
+  flash_crash_timeframe: "5m"
+  atr_window: 14
+  accumulate_threshold: 1.1 # als er 10% winst is gemaakt mag dat geinvesteerd worden in coins. Door al bij 10% te doen cummuleer je sneller meerdere coins
+
+  # (Nieuw)
+  min_lot_multiplier: 2.1  # min. 2.1× minLot
+  max_position_pct: 0.1   # max 5% van je capital
+  max_position_eur: 15  # of direct een vast bedrag
+
+  sl_atr_mult: 1        # SL => full close
+  tp1_atr_mult: 1       # 50% close
+  tp1_portion_pct: 0.50
+  trailing_atr_mult: 1  # voor de rolling 50%
+  initial_capital: 250
+
+  use_depth_trend: true
+  pivot_points_window: 20
+  rsi_window: 14
+  pullback_rolling_window: 10
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+
+  # [NIEUW] EMA-checks:
+  use_ema_pullback_check: false
+  ema_fast_period: 9
+  ema_slow_period: 20
+  use_ema_trend_200: false
+  ema_trend_period: 200
+
+ml_engine:
+  model_path: "models/pullback_model.pkl"
+
+ml_settings:
+  auto_overwrite_params: false
+
+#### BREAKOUT STRATEGY ####
+breakout_strategy:
+  log_file: "logs/breakout_strategy.log"
+  daily_timeframe: "1d"
+  main_timeframe: "4h"
+  lookback_candles: 20
+  breakout_buffer_pct: 0.5
+  volume_threshold_factor: 1.2
+  rsi_bull_level: 55
+  rsi_bear_level: 45
+  atr_window: 14
+
+  trailing_enabled: true
+  trailing_pct: 2
+  sl_pct: 2
+
+  min_lot_multiplier: 1.1
+  sl_atr_mult: 1.0
+  trailing_atr_mult: 1.0
+  # geen partial => alles in 1 keer
+
+  max_position_pct: 0.1   # max 5% van je capital
+  max_position_eur: 15  # of direct een vast bedrag
+
+kraken:
+  # <--- Nieuwe opzet: alleen 'pairs' en intervals.
+  # Als je private WS wilt, kun je hier ook 'apiKey: ...' en 'apiSecret: ...' toevoegen.
+  pairs:
+    - XBT-EUR
+    - ETH-EUR
+    - XRP-EUR
+    - XDG-EUR
+    - ADA-EUR
+    - SOL-EUR
+    - DOT-EUR
+    - MATIC-EUR
+    - TRX-EUR
+    - LTC-EUR
+    - LINK-EUR
+    - XLM-EUR
+    - UNI-EUR
+    - ATOM-EUR
+    - ALGO-EUR
+    - AAVE-EUR
+    - ETC-EUR
+    - SAND-EUR
+    - AVAX-EUR
+    - BCH-EUR
+
+  # intervals
+  intervals_realtime:
+    - 15
+  intervals_poll:
+    - 1
+    - 5
+    - 15
+    - 60
+    - 240
+    - 1440
+  poll_interval_seconds: 30
+
+### Altcoin "Momentum/RotationScanner"-strategy ###
+altcoin_scanner_strategy:
+  enabled: true
+  log_file: "logs/altcoin_scanner_strategy.log"
+
+  # Je kunt eventueel BTC-EUR / ETH-EUR uitsluiten, of andere "large caps".
+  exclude_symbols: ["BTC-EUR", "ETH-EUR", "XRP-EUR"]
+
+  # Scanner-instellingen
+  timeframe: "15m"
+  lookback: 6
+
+  # PRICELIMIT: pump_min/max => in LAATSTE 'pump_lookback_candles'
+  pump_min_pct: 5
+  pump_max_pct: 10
+  pump_lookback_candles: 3   # 4 * 15m => 60min
+
+  # RSI
+  rsi_15m_threshold: 70      # RSI(15m) moet < 70
+
+  # ATR:
+  atr_window: 14
+  sl_atr_mult: 1.5           # bv. 1.5 => SL = current_price - (1.5 * ATR)
+
+  # volume
+  volume_threshold_factor: 2.0
+  min_base_volume: 5000
+
+  position_size_pct: 0.03
+  max_positions_equity_pct: 0.50
+
+  # trailing
+  trailing_enabled: true
+  trailing_pct: 2.0
+  trailing_atr_mult: 1.0
+
+  # positie management
+  min_lot_multiplier: 1.1  # min. 2.1× minLot
+  max_position_pct: 0.1   # max 5% van je capital
+  max_position_eur: 15  # of direct een vast bedrag
+
+  initial_capital: 250
+
+### MELTDOWN MANAGER ###
+meltdown_manager:
+  daily_loss_pct: 30              # meltdown als daily portfolio drop >= 20%
+  flash_crash_pct: 20             # meltdown als >=2 coins > 20% daling
+  rsi_reentry_threshold: 30       # meltdown eindigt als RSI > 30
+  meltdown_coins: ["BTC-EUR", "XRP-EUR", "ETH-EUR"]   # barometer
+  meltdown_coins_needed: 2        # min. 2 coins in meltdown_coins >= flash_crash_pct => meltdown
+  meltdown_tf: "5m"               # timeframe voor flash crash check
+  meltdown_lookback: 3            # #candles om te vergelijken (bv. 3x 5m => ~15m)
+
+
+### SCALPING STRATEGY ###
+scalping:
+  stop_loss_pct: 0.0075
+  tp1_pct: 0.03
+  tp2_pct: 0.05
+  rsi_lower: 40
+  rsi_upper: 60
+  use_trailing_for_last25: true
+  volatility_threshold: 0.0
+  volume_factor: 0.0

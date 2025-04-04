@@ -351,7 +351,7 @@ class Executor:
                 self.logger.error(f"[IntraCandleThread] Fout in exit-check: {e}", exc_info=True)
 
             # 5 seconden rust
-            time.sleep(60)
+            time.sleep(30)
 
     # =========================================================================
     # TIMED run() elke 15m, met 3 passes Pullback en Breakout/AltScanner

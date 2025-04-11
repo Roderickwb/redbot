@@ -33,3 +33,4 @@ dist/
 *.swp
 data.zip
 
+"src/config/peak_state.yaml" 

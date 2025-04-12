@@ -921,7 +921,7 @@ class PullbackAccumulateStrategy:
         # 4) Bereken fees / realized pnl
         raw_pnl = (entry_price - current_price) * amt_to_buy
         trade_cost = current_price * amt_to_buy
-        fees = float(trade_cost * Decimal("0.004"))
+        fees = float(trade_cost * Decimal("0.0025"))
         realized_pnl = float(raw_pnl) - fees
 
         # 5) Child-status

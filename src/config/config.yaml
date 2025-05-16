@@ -35,14 +35,14 @@ intervals:
 ### PULLBACK_ACCUMULATE_STRATEGY ###
 pullback_accumulate_strategy:
   # STAP 1 DE GROTE TREND: CHECK DIRECTION
-  daily_bull_rsi: 50
-  daily_bear_rsi: 50
+  daily_bull_rsi: 55
+  daily_bear_rsi: 45
   h4_bull_rsi: 55
-  h4_bear_rsi: 45
+  h4_bear_rsi: 35
 
   # Optioneel worden nu niet gebruik maar kan op de 15M candle:
-  rsi_bull_threshold: 40   # RSI <= 40 => oversold => bullisch pullback
-  rsi_bear_threshold: 60   # RSI >= 60 => overbought => bearisch pullback
+  rsi_bull_threshold: 30   # RSI <= 40 => oversold => bullisch pullback
+  rsi_bear_threshold: 70   # RSI >= 60 => overbought => bearisch pullback
 
   # Nieuw (om depth_score-checks te configureren!)
   depth_threshold_bull: -0.3 # orderboek-analyse om te checken of er voldoende volume is om een trend te ondersteuen idealiter > 0)
@@ -52,7 +52,7 @@ pullback_accumulate_strategy:
   macd_bear_threshold: 0   # minder stregn is +1 alleen short als < 0
 
   # bepaald hoever de pullback van de weerstand of support ,oet bewegen om in te stappen = pullback = true
-  pullback_atr_mult: 2.0 # normaal 1.5
+  pullback_atr_mult: 3.0 # normaal 1.5
 
   ml_model_enabled: true
 
@@ -71,10 +71,10 @@ pullback_accumulate_strategy:
   max_position_pct: 0.05   # max 5% van je capital
   max_position_eur: 15  # of direct een vast bedrag
 
-  sl_atr_mult: 0.75        # SL => full close
-  tp1_atr_mult: 1.0       # 50% close
+  sl_atr_mult: 1.2        # SL => full close
+  tp1_atr_mult: 1.5       # 50% close
   tp1_portion_pct: 0.50
-  trailing_atr_mult: 0.5  # voor de rolling 50%
+  trailing_atr_mult: 1.0  # voor de rolling 50%
   initial_capital: 350
 
   use_depth_trend: true

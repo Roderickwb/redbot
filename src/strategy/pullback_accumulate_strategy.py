@@ -921,7 +921,7 @@ class PullbackAccumulateStrategy:
         # 4) Bereken fees / realized pnl
         raw_pnl = (entry_price - current_price) * amt_to_buy
         trade_cost = current_price * amt_to_buy
-        fees = float(trade_cost * Decimal("0.0025"))
+        fees = float(trade_cost * Decimal("0.0035"))
         realized_pnl = float(raw_pnl) - fees
 
         # 5) Child-status
@@ -1076,7 +1076,7 @@ class PullbackAccumulateStrategy:
         # realized PnL
         raw_pnl = (current_price - entry_price) * amt_to_sell
         trade_cost = current_price * amt_to_sell
-        fees = float(trade_cost * Decimal("0.0025"))
+        fees = float(trade_cost * Decimal("0.0035"))
         realized_pnl = float(raw_pnl) - fees
 
         if portion < 1:
@@ -1180,7 +1180,7 @@ class PullbackAccumulateStrategy:
     @staticmethod
     def _calculate_fees_and_pnl(self, side: str, amount: float, price: float, reason: str) -> (float, float):
         trade_cost = amount * price
-        fees = 0.0025 * trade_cost
+        fees = 0.0035 * trade_cost
         if reason.startswith("TP") or reason == "TrailingStop":
             realized_pnl = trade_cost - fees
         elif side.lower() == "sell":

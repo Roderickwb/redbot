@@ -42,8 +42,8 @@ pullback_accumulate_strategy:
 
   use_rsi_slope_filter: true
   # Alleen als je verschillende drempels wilt voor bull vs. bear:
-  rsi_slope_min_change_bull: 0.2
-  rsi_slope_min_change_bear: -0.2
+  rsi_slope_min_change_bull: 3.0
+  rsi_slope_min_change_bear: -3.0
 
   # Optioneel worden nu niet gebruik maar kan op de 15M candle:
   rsi_bull_threshold: 30   # RSI <= 40 => oversold => bullisch pullback

@@ -255,6 +255,33 @@ class PullbackAccumulateStrategy:
             self.logger.warning(f"[PullbackStrategy] Not enough data => skip {symbol}")
             return
 
+        # ============== BEGIN RSI-SLOPE SNIPPET ==============
+        # 1) Lees filter-instellingen uit config
+        use_slope_filter = bool(self.strategy_config.get("use_rsi_slope_filter", False))
+        slope_bull = float(self.strategy_config.get("rsi_slope_min_change_bull", 0.0))
+        slope_bear = float(self.strategy_config.get("rsi_slope_min_change_bear", 0.0))
+
+        # 2) Voeg kolom 'rsi_slope' toe (verschil van de laatste 2 candles)
+        if "rsi" not in df_main.columns:
+                self.logger.warning(f"[RSI-slope] df_main for {symbol} heeft geen RSI-kolom => skip slope check.")
+        else:
+                df_main["rsi_slope"] = df_main["rsi"].diff()
+                rsi_slope_now = df_main["rsi_slope"].iloc[-1]
+
+                if use_slope_filter:
+                    # Als direction=bull, maar RSI-slope <= slope_bull => skip LONG.
+                    if direction == "bull" and rsi_slope_now <= slope_bull:
+                        self.logger.info(
+                            f"[RSI-slope] bull-richting, maar slope={rsi_slope_now:.2f} <= {slope_bull} => skip LONG {symbol}"
+                        )
+                        return
+
+                    # Als direction=bear, maar RSI-slope >= slope_bear => skip SHORT.
+                    if direction == "bear" and rsi_slope_now >= slope_bear:
+                        self.logger.info(
+                            f"[RSI-slope] bear-richting, maar slope={rsi_slope_now:.2f} >= {slope_bear} => skip SHORT {symbol}"
+                        )
+                        return
 
         # Pullback => 15m
         df_entry = self._fetch_and_indicator(symbol, self.entry_timeframe, limit=100)

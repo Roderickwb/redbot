@@ -21,7 +21,7 @@ mdurl==0.1.2
 memory-profiler==0.61.0
 mysql-connector-python==9.2.0
 narwhals==1.21.1
-numpy==1.23.5
+numpy~=2.2.4
 packaging==24.2
 pandas==2.2.3
 pandas_ta==0.3.14b0
@@ -66,3 +66,7 @@ xgboost==2.1.4
 zipp==3.21.0
 
 PyMySQL~=1.1.1
+ccxt~=4.4.70
+SQLAlchemy~=2.0.39
+seaborn~=0.13.2
+matplotlib~=3.10.3

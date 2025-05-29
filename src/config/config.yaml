@@ -37,8 +37,13 @@ pullback_accumulate_strategy:
   # STAP 1 DE GROTE TREND: CHECK DIRECTION
   daily_bull_rsi: 55
   daily_bear_rsi: 45
-  h4_bull_rsi: 55
-  h4_bear_rsi: 35
+  h4_bull_rsi: 60
+  h4_bear_rsi: 40
+
+  use_rsi_slope_filter: true
+  # Alleen als je verschillende drempels wilt voor bull vs. bear:
+  rsi_slope_min_change_bull: 0.2
+  rsi_slope_min_change_bear: -0.2
 
   # Optioneel worden nu niet gebruik maar kan op de 15M candle:
   rsi_bull_threshold: 30   # RSI <= 40 => oversold => bullisch pullback
@@ -48,11 +53,11 @@ pullback_accumulate_strategy:
   depth_threshold_bull: -0.3 # orderboek-analyse om te checken of er voldoende volume is om een trend te ondersteuen idealiter > 0)
   depth_threshold_bear: 0.3
 
-  macd_bull_threshold: 0  # minder streng is -1 alleen long als > 0
-  macd_bear_threshold: 0   # minder stregn is +1 alleen short als < 0
+  macd_bull_threshold: 0.2  # minder streng is -1 alleen long als > 0
+  macd_bear_threshold: -0.2   # minder stregn is +1 alleen short als < 0
 
   # bepaald hoever de pullback van de weerstand of support ,oet bewegen om in te stappen = pullback = true
-  pullback_atr_mult: 3.0 # normaal 1.5
+  pullback_atr_mult: 2.0 # normaal 1.5
 
   ml_model_enabled: true
 

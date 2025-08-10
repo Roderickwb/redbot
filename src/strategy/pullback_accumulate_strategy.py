@@ -326,11 +326,13 @@ class PullbackAccumulateStrategy:
         # ---------------- ADX FILTERS (NIEUW) ----------------
         # 4h ADX (multitimeframe trendsterkte)
         adx_h4 = None
-        if "adx" in df_h4.columns and not df_h4["adx"].empty:
-            try:
-                adx_h4 = float(df_h4["adx"].iloc[-1])
-            except Exception:
-                adx_h4 = None
+        if "adx" in df_h4.columns:
+            adx_h4_series = df_h4["adx"].dropna()
+            if not adx_h4_series.empty:
+                try:
+                    adx_h4 = float(adx_h4_series.iloc[-1])
+                except Exception:
+                    adx_h4 = None
 
         if self.use_adx_multitimeframe:
             if adx_h4 is None or adx_h4 < self.adx_high_tf_threshold:
@@ -338,12 +340,12 @@ class PullbackAccumulateStrategy:
                 return
 
         # Entry‑TF ADX (nu 1h, want entry_timeframe is '1h' in je config)
-        if "adx" not in df_entry.columns or df_entry["adx"].empty:
-            self.logger.warning(f"[ADX-entry] kolom 'adx' ontbreekt op {self.entry_timeframe} => skip {symbol}")
+        if "adx" not in df_entry.columns or df_entry["adx"].dropna().empty:
+            self.logger.warning(f"[ADX-entry] geen bruikbare ADX op {self.entry_timeframe} => skip {symbol}")
             return
 
         try:
-            adx_entry = float(df_entry["adx"].iloc[-1])
+            adx_entry = float(df_entry["adx"].dropna().iloc[-1])
         except Exception:
             adx_entry = 0.0
 
@@ -352,15 +354,19 @@ class PullbackAccumulateStrategy:
             return
 
         # Richtingsfilter met DI+/DI- op entry‑TF
-        if self.use_adx_directional_filter:
-            if "di_pos" not in df_entry.columns or "di_neg" not in df_entry.columns:
-                self.logger.warning(f"[ADX-DI] kolommen ontbreken op {self.entry_timeframe} => skip {symbol}")
-                return
-            try:
-                di_pos = float(df_entry["di_pos"].iloc[-1])
-                di_neg = float(df_entry["di_neg"].iloc[-1])
-            except Exception:
-                di_pos, di_neg = None, None
+        if "di_pos" not in df_entry.columns or "di_neg" not in df_entry.columns:
+            self.logger.warning(f"[ADX-DI] kolommen ontbreken op {self.entry_timeframe} => skip {symbol}")
+            return
+        di_pos_series = df_entry["di_pos"].dropna()
+        di_neg_series = df_entry["di_neg"].dropna()
+        if di_pos_series.empty or di_neg_series.empty:
+            self.logger.warning(f"[ADX-DI] DI niet bruikbaar (NaN) op {self.entry_timeframe} => skip {symbol}")
+            return
+        try:
+            di_pos = float(di_pos_series.iloc[-1])
+            di_neg = float(di_neg_series.iloc[-1])
+        except Exception:
+            di_pos, di_neg = None, None
 
             if di_pos is None or di_neg is None:
                 self.logger.warning(f"[ADX-DI] DI waarden niet leesbaar => skip {symbol}")
@@ -1572,10 +1578,17 @@ class PullbackAccumulateStrategy:
 
             # === ADX + DI's (trendsterkte) ===
             try:
-                adx_obj = ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=self.adx_window)
-                df["adx"] = adx_obj.adx()
-                df["di_pos"] = adx_obj.adx_pos()  # +DI
-                df["di_neg"] = adx_obj.adx_neg()  # -DI
+                # Veiligheidscheck: alleen berekenen bij voldoende candles
+                # (kleine marge boven window om NaN/edge-cases te vermijden)
+                needed = self.adx_window + 5
+                if len(df) >= needed:
+                    adx_obj = ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=self.adx_window)
+                    df["adx"] = adx_obj.adx()
+                    df["di_pos"] = adx_obj.adx_pos()  # +DI
+                    df["di_neg"] = adx_obj.adx_neg()  # -DI
+                else:
+                    # Kolommen niet aanmaken (scheelt downstream checks); gewoon overslaan
+                    self.logger.debug(f"[ADX] Skip on interval={interval}: len(df)={len(df)} < needed={needed}")
             except Exception as e:
                 self.logger.warning(f"[ADX] Kon ADX niet berekenen ({e}) voor interval={interval}.")
 

@@ -347,6 +347,10 @@ class Executor:
                 if self.pullback_strategy_kraken:
                     self.pullback_strategy_kraken.manage_intra_candle_exits()
 
+                # 1b) Trend exit-check  ⬅️ HIER INVOEGEN
+                if self.trend_strategy_kraken:
+                    self.trend_strategy_kraken.manage_intra_candle_exits()
+
                 # 2) Breakout exit-check
                 if self.breakout_strategy_kraken:
                     self.breakout_strategy_kraken.manage_intra_candle_exits()
@@ -417,9 +421,10 @@ class Executor:
                 # 4h-trendstrategie (watch-only): draai bij nieuwe 1h of 4h candle
                 if self.trend_strategy_kraken and self.kraken_data_client:
                     for symbol in self.kraken_data_client.pairs:
-                        if (self._has_new_closed_candle("candles_kraken", symbol, "1h")
-                                or self._has_new_closed_candle("candles_kraken", symbol, "4h")):
+                        if (self._has_new_closed_candle("candles_kraken", symbol, "60")
+                                or self._has_new_closed_candle("candles_kraken", symbol, "240")):
                             try:
+                                self.logger.debug("[Executor] Trend trigger for %s (new 60/240 candle)", symbol)
                                 self.trend_strategy_kraken.execute_strategy(symbol)
                             except Exception as e:
                                 self.logger.warning("[Executor] TrendStrategy4H error for %s: %s", symbol, e)
@@ -595,6 +600,18 @@ class Executor:
         self.logger.debug(
             f"[_has_new_closed_candle] table={table_name}, sym={symbol}, interval={interval}, newest_ts={newest_ts}"
         )
+
+        # Hard guard: voorkom “tussenstanden” voor 1h/4h
+        ts = datetime.utcfromtimestamp(newest_ts / 1000.0)  # UTC
+        if interval == "1h":
+            if ts.minute != 0:
+                self.logger.debug(f"[_has_new_closed_candle] guard 1h: minute={ts.minute} != 0 => skip.")
+                return False
+        elif interval == "4h":
+            if ts.minute != 0 or (ts.hour % 4) != 0:
+                self.logger.debug(
+                    f"[_has_new_closed_candle] guard 4h: {ts.hour:02d}:{ts.minute:02d} not a 4h close => skip.")
+                return False
 
         # Check of candle closed
         closed = is_candle_closed(newest_ts, interval)

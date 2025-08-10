@@ -244,6 +244,7 @@ scalping:
 ### TREND STRATEGY 4H ###
 trend_strategy_4h:
   enabled: true                # eerst uit, straks aan
+  trading_mode: "watch"        # "watch" | "auto" | "dryrun"
   log_file: "logs/trend_strategy_4h.log"
 
   # Timeframes
@@ -269,10 +270,14 @@ trend_strategy_4h:
 
   # Risk / positionering (zelfde stijl als pullback)
   atr_window: 14
+  atr_timeframe_for_risk: "1h"     # "1h" (entry TF). Later kun je "4h" of "5m" testen.
   sl_atr_mult: 1.5
   tp1_atr_mult: 1.5
   tp1_portion_pct: 0.50
   trailing_atr_mult: 1.0
+
+  # Intra-candle exit checks (jij hebt al ~30s in executor)
+  exit_check_intra_seconds: 30
 
   # Limieten
   min_lot_multiplier: 2.1

@@ -421,8 +421,8 @@ class Executor:
                 # 4h-trendstrategie (watch-only): draai bij nieuwe 1h of 4h candle
                 if self.trend_strategy_kraken and self.kraken_data_client:
                     for symbol in self.kraken_data_client.pairs:
-                        if (self._has_new_closed_candle("candles_kraken", symbol, "60")
-                                or self._has_new_closed_candle("candles_kraken", symbol, "240")):
+                        if (self._has_new_closed_candle("candles_kraken", symbol, "1h")
+                                or self._has_new_closed_candle("candles_kraken", symbol, "4h")):
                             try:
                                 self.logger.debug("[Executor] Trend trigger for %s (new 60/240 candle)", symbol)
                                 self.trend_strategy_kraken.execute_strategy(symbol)

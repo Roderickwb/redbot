@@ -14,6 +14,7 @@ from src.my_websocket.fake_client import FakeClient
 
 # Strategy modules
 from src.strategy.pullback_accumulate_strategy import PullbackAccumulateStrategy
+from src.strategy.trend_strategy_4h import TrendStrategy4H
 from src.strategy.breakout_strategy import BreakoutStrategy
 
 from src.ml_engine.ml_engine import MLEngine
@@ -210,6 +211,16 @@ class Executor:
             )
             self.pullback_strategy_kraken.set_ml_engine(self.ml_engine)
 
+        # TREND (Kraken) — watch-only skeleton
+        self.trend_strategy_kraken = None
+        if self.kraken_order_client:
+            self.trend_strategy_kraken = TrendStrategy4H(
+                data_client=self.kraken_data_client,
+                order_client=self.kraken_order_client,
+                db_manager=self.db_manager,
+                config_path="src/config/config.yaml"
+            )
+
         self.logger.info("Executor init completed.")
         self.logger.info(
             f"[Executor] use_websocket={self.use_websocket}, paper_trading={self.paper_trading}, "
@@ -402,6 +413,16 @@ class Executor:
 
                 self.logger.info("[Executor] run_once_pullback_15m()")
                 self.run_once_pullback_15m()
+
+                # 4h-trendstrategie (watch-only): draai bij nieuwe 1h of 4h candle
+                if self.trend_strategy_kraken and self.kraken_data_client:
+                    for symbol in self.kraken_data_client.pairs:
+                        if (self._has_new_closed_candle("candles_kraken", symbol, "1h")
+                                or self._has_new_closed_candle("candles_kraken", symbol, "4h")):
+                            try:
+                                self.trend_strategy_kraken.execute_strategy(symbol)
+                            except Exception as e:
+                                self.logger.warning("[Executor] TrendStrategy4H error for %s: %s", symbol, e)
 
                 # 4) Breakout => ...
                 if self.breakout_strategy_kraken and self.kraken_data_client:

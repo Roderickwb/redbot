@@ -240,3 +240,47 @@ scalping:
   use_trailing_for_last25: true
   volatility_threshold: 0.0
   volume_factor: 0.0
+
+### TREND STRATEGY 4H ###
+trend_strategy_4h:
+  enabled: false                # eerst uit, straks aan
+  log_file: "logs/trend_strategy_4h.log"
+
+  # Timeframes
+  trend_timeframe: "4h"         # richting & trend-structuur
+  entry_timeframe: "1h"         # timing/trigger
+
+  # Trend & momentum filters
+  use_adx_filter: true
+  adx_entry_tf_threshold: 20
+  use_adx_multitimeframe: true
+  adx_high_tf_threshold: 20
+  use_adx_directional_filter: true
+
+  # EMA-structuur (klassiek trend-volgen)
+  ema_fast: 20
+  ema_slow: 50
+  require_trend_stack: true     # prijs boven fast>slow voor long; onder voor short
+
+  # Optional: Supertrend gate (we vullen later in)
+  use_supertrend: false
+  supertrend_period: 10
+  supertrend_multiplier: 3.0
+
+  # Risk / positionering (zelfde stijl als pullback)
+  atr_window: 14
+  sl_atr_mult: 1.5
+  tp1_atr_mult: 1.5
+  tp1_portion_pct: 0.50
+  trailing_atr_mult: 1.0
+
+  # Limieten
+  min_lot_multiplier: 2.1
+  max_position_pct: 0.05
+  max_position_eur: 15
+
+  # LLM gate kan later hier ook op aan
+  use_llm_guard: false
+  llm_model: "gpt-4.1-mini"
+  llm_timeout_sec: 4
+

@@ -243,7 +243,7 @@ scalping:
 
 ### TREND STRATEGY 4H ###
 trend_strategy_4h:
-  enabled: false                # eerst uit, straks aan
+  enabled: true                # eerst uit, straks aan
   log_file: "logs/trend_strategy_4h.log"
 
   # Timeframes

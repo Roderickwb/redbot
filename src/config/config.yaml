@@ -90,6 +90,17 @@ pullback_accumulate_strategy:
   macd_slow: 26
   macd_signal: 9
 
+  # === ADX (trendsterkte) FILTERS ===
+  # Zet aan/uit per filter
+  use_adx_filter: true                  # entry-TF moet genoeg trendsterkte hebben
+  use_adx_directional_filter: true      # +DI/-DI moeten richting bevestigen
+  use_adx_multitimeframe: true          # óók 4h ADX moet sterk genoeg zijn
+
+  # ADX-parameters
+  adx_window: 14
+  adx_entry_tf_threshold: 20            # drempel voor je entry-timeframe (nu: 1h), verlaag naar 18 als te weinig entry
+  adx_high_tf_threshold: 20             # drempel voor 4h, verhoog naar 25 als er nog teveel chop is
+
   # [NIEUW] EMA-checks:
   use_ema_pullback_check: false
 

@@ -11,6 +11,7 @@ from collections import deque
 # TA-bibliotheken
 from ta.volatility import AverageTrueRange
 from ta.trend import MACD
+from ta.trend import ADXIndicator  # NIEUW
 
 # Lokale imports
 from src.config.config import PULLBACK_STRATEGY_LOG_FILE, PULLBACK_CONFIG, load_config_file
@@ -133,6 +134,15 @@ class PullbackAccumulateStrategy:
         self.macd_fast = int(self.strategy_config.get("macd_fast", 12))
         self.macd_slow = int(self.strategy_config.get("macd_slow", 26))
         self.macd_signal = int(self.strategy_config.get("macd_signal", 9))
+
+        # === ADX-config (uit YAML) ===
+        self.use_adx_filter = bool(self.strategy_config.get("use_adx_filter", False))
+        self.use_adx_directional_filter = bool(self.strategy_config.get("use_adx_directional_filter", False))
+        self.use_adx_multitimeframe = bool(self.strategy_config.get("use_adx_multitimeframe", False))
+
+        self.adx_window = int(self.strategy_config.get("adx_window", 14))
+        self.adx_entry_tf_threshold = float(self.strategy_config.get("adx_entry_tf_threshold", 20.0))  # op entry TF (nu 1h)
+        self.adx_high_tf_threshold = float(self.strategy_config.get("adx_high_tf_threshold", 20.0))  # op 4h
 
         # ML
         self.ml_model_enabled = bool(self.strategy_config.get("ml_model_enabled", False))
@@ -312,6 +322,57 @@ class PullbackAccumulateStrategy:
             return
 
         self.last_processed_candle_ts[symbol] = last_candle_ms
+
+        # ---------------- ADX FILTERS (NIEUW) ----------------
+        # 4h ADX (multitimeframe trendsterkte)
+        adx_h4 = None
+        if "adx" in df_h4.columns and not df_h4["adx"].empty:
+            try:
+                adx_h4 = float(df_h4["adx"].iloc[-1])
+            except Exception:
+                adx_h4 = None
+
+        if self.use_adx_multitimeframe:
+            if adx_h4 is None or adx_h4 < self.adx_high_tf_threshold:
+                self.logger.info(f"[ADX-4h] adx_h4={adx_h4} < {self.adx_high_tf_threshold} => skip {symbol}")
+                return
+
+        # Entry‑TF ADX (nu 1h, want entry_timeframe is '1h' in je config)
+        if "adx" not in df_entry.columns or df_entry["adx"].empty:
+            self.logger.warning(f"[ADX-entry] kolom 'adx' ontbreekt op {self.entry_timeframe} => skip {symbol}")
+            return
+
+        try:
+            adx_entry = float(df_entry["adx"].iloc[-1])
+        except Exception:
+            adx_entry = 0.0
+
+        if self.use_adx_filter and adx_entry < self.adx_entry_tf_threshold:
+            self.logger.info(f"[ADX-entry] adx={adx_entry:.2f} < {self.adx_entry_tf_threshold} => skip {symbol}")
+            return
+
+        # Richtingsfilter met DI+/DI- op entry‑TF
+        if self.use_adx_directional_filter:
+            if "di_pos" not in df_entry.columns or "di_neg" not in df_entry.columns:
+                self.logger.warning(f"[ADX-DI] kolommen ontbreken op {self.entry_timeframe} => skip {symbol}")
+                return
+            try:
+                di_pos = float(df_entry["di_pos"].iloc[-1])
+                di_neg = float(df_entry["di_neg"].iloc[-1])
+            except Exception:
+                di_pos, di_neg = None, None
+
+            if di_pos is None or di_neg is None:
+                self.logger.warning(f"[ADX-DI] DI waarden niet leesbaar => skip {symbol}")
+                return
+
+            if direction == "bull" and not (di_pos > di_neg):
+                self.logger.info(f"[ADX-DI] bull maar +DI<=-DI ({di_pos:.2f}<= {di_neg:.2f}) => skip LONG {symbol}")
+                return
+            if direction == "bear" and not (di_neg > di_pos):
+                self.logger.info(f"[ADX-DI] bear maar -DI<=+DI ({di_neg:.2f}<= {di_pos:.2f}) => skip SHORT {symbol}")
+                return
+        # -------------- EINDE ADX FILTERS --------------------
 
         # Haal current price
         candle_close_price = Decimal(str(df_entry["close"].iloc[-1]))
@@ -532,7 +593,7 @@ class PullbackAccumulateStrategy:
         if direction == "bull":
             # bull: we willen dat de prijs boven 20ema zit (grotere uptrend)
             # en net even onder 9ema of rond 9ema => pullback
-            if (last_close > last_ema20) and (last_close <= last_ema9 * Decimal("1.01")):
+            if (last_close > last_ema20) and (last_close <= last_ema9 * 1.01):
                 self.logger.info(f"[EMA-check-bull] close={last_close}, ema9={last_ema9}, ema20={last_ema20} => True")
                 return True
             else:
@@ -540,7 +601,7 @@ class PullbackAccumulateStrategy:
 
         elif direction == "bear":
             # bear: we willen dat de prijs onder 20ema zit, en net even boven 9ema => pullback
-            if (last_close < last_ema20) and (last_close >= last_ema9 * Decimal("0.99")):
+            if (last_close < last_ema20) and (last_close >= last_ema9 * 0.99):
                 self.logger.info(f"[EMA-check-bear] close={last_close}, ema9={last_ema9}, ema20={last_ema20} => True")
                 return True
             else:
@@ -1509,6 +1570,15 @@ class PullbackAccumulateStrategy:
             df["bb_upper"] = bb["bb_upper"]
             df["bb_lower"] = bb["bb_lower"]
 
+            # === ADX + DI's (trendsterkte) ===
+            try:
+                adx_obj = ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=self.adx_window)
+                df["adx"] = adx_obj.adx()
+                df["di_pos"] = adx_obj.adx_pos()  # +DI
+                df["di_neg"] = adx_obj.adx_neg()  # -DI
+            except Exception as e:
+                self.logger.warning(f"[ADX] Kon ADX niet berekenen ({e}) voor interval={interval}.")
+
             if interval == "4h" and len(df) >= 2:
                 df = self._ensure_closed_4h_candle(df)
 
@@ -1578,6 +1648,25 @@ class PullbackAccumulateStrategy:
                 "rsi_h4": rsi_4h,
                 "timestamp": int(time.time() * 1000)
             }
+
+            # === LOG-ONLY: ADX/DI (geen DB-schema wijziging nodig) ===
+            try:
+                adx_15m = float(df_15m["adx"].iloc[-1]) if ("adx" in df_15m.columns and not df_15m.empty) else None
+                di_pos_15m = float(df_15m["di_pos"].iloc[-1]) if "di_pos" in df_15m.columns else None
+                di_neg_15m = float(df_15m["di_neg"].iloc[-1]) if "di_neg" in df_15m.columns else None
+            except Exception:
+                adx_15m, di_pos_15m, di_neg_15m = None, None, None
+
+            try:
+                adx_4h = float(df_4h["adx"].iloc[-1]) if ("adx" in df_4h.columns and not df_4h.empty) else None
+            except Exception:
+                adx_4h = None
+
+            self.logger.info(
+                f"[Signals][{symbol}] ADX_15m={adx_15m} | +DI_15m={di_pos_15m} | -DI_15m={di_neg_15m} | ADX_4h={adx_4h}"
+            )
+            # === einde LOG-ONLY ===
+
             self.db_manager.save_trade_signals(signals_data)
             self.logger.debug(f"[__record_trade_signals] trade_id={trade_id}, event={event_type}, symbol={symbol}")
         except Exception as e:

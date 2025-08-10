@@ -246,6 +246,7 @@ trend_strategy_4h:
   enabled: true                # eerst uit, straks aan
   trading_mode: "dryrun"        # "watch" | "auto" | "dryrun"
   log_file: "logs/trend_strategy_4h.log"
+  intra_log_verbose: true
 
   # Timeframes
   trend_timeframe: "4h"         # richting & trend-structuur

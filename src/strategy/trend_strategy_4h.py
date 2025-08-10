@@ -105,6 +105,10 @@ class TrendStrategy4H:
         # Interne state
         self.open_positions: Dict[str, dict] = {}   # per symbol
         self.last_processed_candle_ts: Dict[str, int] = {}
+        # << NIEUW >>
+        self._load_open_positions_from_db()
+
+        self.intra_log_verbose = bool(cfg.get("intra_log_verbose", True))
 
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
 
@@ -245,6 +249,40 @@ class TrendStrategy4H:
             px = self._latest_price(sym)
             if px <= 0:
                 continue
+
+            if self.intra_log_verbose:
+                pos = self.open_positions[sym]
+                side = pos["side"]
+                entry = pos["entry_price"]
+                one_r = pos["atr"]
+                tp1_done = pos.get("tp1_done", False)
+                trail_active = pos.get("trail_active", False)
+                trail_high = pos.get("trail_high", entry)
+
+                if side == "buy":
+                    sl = entry - (one_r * self.sl_atr_mult)
+                    tp1 = entry + (one_r * self.tp1_atr_mult)
+                    trailing = (trail_high - (one_r * self.trailing_atr_mult)) if trail_active else None
+                else:
+                    sl = entry + (one_r * self.sl_atr_mult)
+                    tp1 = entry - (one_r * self.tp1_atr_mult)
+                    trailing = (trail_high + (one_r * self.trailing_atr_mult)) if trail_active else None
+
+                if trailing is not None:
+                    self.logger.info(
+                        "[INTRA][%s] %s price=%.4f | SL=%.4f | TP1=%.4f | trail_stop=%.4f | tp1_done=%s | trail_active=%s",
+                        sym, ("LONG" if side == "buy" else "SHORT"),
+                        float(px), float(sl), float(tp1), float(trailing),
+                        tp1_done, trail_active
+                    )
+                else:
+                    self.logger.info(
+                        "[INTRA][%s] %s price=%.4f | SL=%.4f | TP1=%.4f | trail_stop=-- | tp1_done=%s | trail_active=%s",
+                        sym, ("LONG" if side == "buy" else "SHORT"),
+                        float(px), float(sl), float(tp1),
+                        tp1_done, trail_active
+                    )
+
             self._manage_position(sym, current_price=_to_decimal(px), atr_value=pos["atr"])
 
     # ---------------------------------------------------------
@@ -641,3 +679,46 @@ class TrendStrategy4H:
             self.db_manager.save_trade_signals(data)
         except Exception as e:
             self.logger.debug("[signals] kon niet opslaan: %s", e)
+
+    def _load_open_positions_from_db(self):
+        """
+        Herlaadt open/partial MASTER trades (is_master=1) met strategy_name='trend_4h'
+        en zet ze terug in self.open_positions, incl. ATR (1h) voor risk-management.
+        """
+        try:
+            rows = self.db_manager.execute_query("""
+                SELECT id, symbol, side, amount, price, position_id, position_type, status
+                  FROM trades
+                 WHERE is_master=1
+                   AND status IN ('open','partial')
+                   AND strategy_name=?
+            """, (self.STRATEGY_NAME,))
+        except Exception as e:
+            self.logger.warning("[reload] kon DB niet lezen: %s", e)
+            return
+
+        if not rows:
+            self.logger.info("[reload] geen open/partial trend_4h master trades gevonden.")
+            return
+
+        for (db_id, symbol, side, amount, entry_price, position_id, position_type, status) in rows:
+            # ATR opnieuw uit 1h voor actuele R
+            df_1h = self._fetch_df(symbol, self.entry_tf, limit=200)
+            atr_val = self._compute_atr(df_1h, self.atr_window)
+            if not atr_val:
+                self.logger.info("[reload][%s] geen ATR beschikbaar => skip herstel.", symbol)
+                continue
+
+            self.open_positions[symbol] = {
+                "side": side,
+                "entry_price": _to_decimal(entry_price),
+                "amount": _to_decimal(amount),
+                "atr": _to_decimal(atr_val),
+                "tp1_done": False,  # we houden het lean; eventueel kun je dit later uit signals afleiden
+                "trail_active": False,
+                "trail_high": _to_decimal(entry_price),
+                "master_id": db_id,
+            }
+            self.logger.info("[reload][%s] hersteld: side=%s, amt=%s @ %s, ATR=%.4f, master_id=%s",
+                             symbol, side, str(amount), str(entry_price), float(atr_val), db_id)
+

@@ -106,7 +106,7 @@ class TrendStrategy4H:
         self.open_positions: Dict[str, dict] = {}   # per symbol
         self.last_processed_candle_ts: Dict[str, int] = {}
         # << NIEUW >>
-        self._load_open_positions_from_db()
+        self.reload_open_positions()
 
         self.intra_log_verbose = bool(cfg.get("intra_log_verbose", True))
 
@@ -245,13 +245,16 @@ class TrendStrategy4H:
         """Aangeroepen door executor (aparte thread)."""
         if not self.enabled or self.trading_mode == "watch":
             return
+        # Extra failsafe: als er geen open posities zijn, stop
+        if not self.open_positions:
+            return
+
         for sym, pos in list(self.open_positions.items()):
             px = self._latest_price(sym)
             if px <= 0:
                 continue
 
             if self.intra_log_verbose:
-                pos = self.open_positions[sym]
                 side = pos["side"]
                 entry = pos["entry_price"]
                 one_r = pos["atr"]
@@ -428,6 +431,8 @@ class TrendStrategy4H:
 
         # === DB: master trade (in dryrun/auto). In watch doen we niets. ===
         master_id = None
+        pos_id = f"{symbol}-{int(time.time())}"  # ← nieuw, altijd vóór gebruik
+
         if self.trading_mode in ("dryrun", "auto"):
             trade_data = {
                 "symbol": symbol,
@@ -435,7 +440,7 @@ class TrendStrategy4H:
                 "amount": float(amount),
                 "price": float(entry_price),
                 "timestamp": int(time.time() * 1000),
-                "position_id": f"{symbol}-{int(time.time())}",
+                "position_id": pos_id,  # ← nu geen error
                 "position_type": "long" if side == "buy" else "short",
                 "status": "open",
                 "pnl_eur": 0.0,
@@ -457,11 +462,12 @@ class TrendStrategy4H:
         self.open_positions[symbol] = {
             "side": side,
             "entry_price": entry_price,
-            "amount": _to_decimal(amount),
+            "amount": amount,
             "atr": atr_value,
             "tp1_done": False,
             "trail_active": False,
-            "trail_high": entry_price if side == "buy" else entry_price,  # reuse field for both
+            "trail_high": entry_price,
+            "position_id": pos_id,  # ← zelfde waarde als in DB
             "master_id": master_id,
         }
 
@@ -573,7 +579,7 @@ class TrendStrategy4H:
                 "amount": float(amt_to_close),
                 "price": float(px),
                 "timestamp": int(time.time() * 1000),
-                "position_id": f"{symbol}-{int(time.time())}",
+                "position_id": pos["position_id"],
                 "position_type": "long" if side == "buy" else "short",
                 "status": "partial" if portion < 1 else "closed",
                 "pnl_eur": realized_pnl,
@@ -680,45 +686,109 @@ class TrendStrategy4H:
         except Exception as e:
             self.logger.debug("[signals] kon niet opslaan: %s", e)
 
-    def _load_open_positions_from_db(self):
-        """
-        Herlaadt open/partial MASTER trades (is_master=1) met strategy_name='trend_4h'
-        en zet ze terug in self.open_positions, incl. ATR (1h) voor risk-management.
-        """
+    def _sum_child_trade_amounts(self, position_id: str) -> Optional[Decimal]:
+        """Sommeer amount van alle child-trades (is_master=0) met dezelfde position_id."""
         try:
-            rows = self.db_manager.execute_query("""
-                SELECT id, symbol, side, amount, price, position_id, position_type, status
-                  FROM trades
-                 WHERE is_master=1
-                   AND status IN ('open','partial')
-                   AND strategy_name=?
-            """, (self.STRATEGY_NAME,))
+            row = self.db_manager.execute_query(
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM trades
+                WHERE is_master=0
+                  AND position_id=?
+                """,
+                (position_id,)
+            )
+            if row and row[0] and row[0][0] is not None:
+                return _to_decimal(row[0][0])
         except Exception as e:
-            self.logger.warning("[reload] kon DB niet lezen: %s", e)
-            return
+            self.logger.debug("[reload] child-sum query faalde voor %s: %s", position_id, e)
+        return None
 
-        if not rows:
-            self.logger.info("[reload] geen open/partial trend_4h master trades gevonden.")
-            return
+    def reload_open_positions(self):
+        """Lees open/partial master trades (trend_4h) uit DB en herstel self.open_positions."""
+        try:
+            rows = self.db_manager.execute_query(
+                """
+                SELECT id, symbol, side, price, amount, position_id
+                FROM trades
+                WHERE is_master=1
+                  AND status IN ('open','partial')
+                  AND strategy_name=?
+                """,
+                (self.STRATEGY_NAME,)
+            )
 
-        for (db_id, symbol, side, amount, entry_price, position_id, position_type, status) in rows:
-            # ATR opnieuw uit 1h voor actuele R
-            df_1h = self._fetch_df(symbol, self.entry_tf, limit=200)
-            atr_val = self._compute_atr(df_1h, self.atr_window)
-            if not atr_val:
-                self.logger.info("[reload][%s] geen ATR beschikbaar => skip herstel.", symbol)
+        except Exception as e:
+            self.logger.warning("[reload] DB-query faalde: %s", e)
+            rows = []
+
+        restored = 0
+        self.open_positions = {}  # reset
+
+        for (trade_id, symbol, side, price, amount, position_id) in rows or []:
+            # 1) ATR proberen te halen uit laatste signals van deze trade
+            atr_val = self._load_atr_from_signals(trade_id)
+            if atr_val is None:
+                # fallback: bereken ATR op 1h
+                df_1h = self._fetch_df(symbol, self.entry_tf, limit=100)
+                atr_val = self._compute_atr(df_1h, self.atr_window) if not df_1h.empty else None
+            if atr_val is None:
+                self.logger.info("[reload] %s trade %s zonder ATR => skip", symbol, trade_id)
+                continue
+
+            entry_price = _to_decimal(price)
+            amt = _to_decimal(amount)
+
+            # Min-lot check (gebruik de bestaande helper)
+            min_lot = self._min_lot(symbol)
+            if amt <= 0 or (min_lot > 0 and amt < min_lot):
+                self.logger.info("[reload] %s trade %s onder min lot => skip", symbol, trade_id)
+                continue
+
+            # Child-som check: als children de master al (bijna) leeg hebben, skip
+            total_child_amount = self._sum_child_trade_amounts(position_id)
+            if total_child_amount is not None and amt <= total_child_amount:
+                self.logger.info("[reload] %s trade %s reeds afgebouwd door children => skip", symbol, trade_id)
                 continue
 
             self.open_positions[symbol] = {
-                "side": side,
-                "entry_price": _to_decimal(entry_price),
-                "amount": _to_decimal(amount),
+                "side": side,  # "buy" of "sell"
+                "entry_price": entry_price,
+                "amount": amt,
                 "atr": _to_decimal(atr_val),
-                "tp1_done": False,  # we houden het lean; eventueel kun je dit later uit signals afleiden
+                "tp1_done": False,  # kan je later afleiden uit child-trades
                 "trail_active": False,
-                "trail_high": _to_decimal(entry_price),
-                "master_id": db_id,
+                "trail_high": entry_price,  # wordt tijdens runtime bijgewerkt
+                "position_id": position_id,
+                "master_id": trade_id,
             }
-            self.logger.info("[reload][%s] hersteld: side=%s, amt=%s @ %s, ATR=%.4f, master_id=%s",
-                             symbol, side, str(amount), str(entry_price), float(atr_val), db_id)
+            restored += 1
+            self.logger.info("[reload] hersteld: %s (%s) entry=%.4f amount=%.8f ATR=%.5f",
+                             symbol, "LONG" if side == "buy" else "SHORT",
+                             float(entry_price), float(amt), float(atr_val))
+
+        if restored == 0:
+            self.logger.info("[reload] geen open/partial trend_4h master trades gevonden.")
+        else:
+            self.logger.info("[reload] %d open positie(s) hersteld voor trend_4h.", restored)
+
+    def _load_atr_from_signals(self, trade_id: int):
+        """Pak laatste atr_value uit signals voor deze trade_id."""
+        try:
+            row = self.db_manager.execute_query(
+                """
+                SELECT atr_value
+                FROM signals
+                WHERE trade_id=?
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (trade_id,)
+            )
+            if row and row[0] and row[0][0] is not None:
+                return float(row[0][0])
+        except Exception:
+            pass
+        return None
+
 

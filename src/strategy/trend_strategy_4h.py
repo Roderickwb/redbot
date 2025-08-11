@@ -107,7 +107,7 @@ class TrendStrategy4H:
         self.last_processed_candle_ts: Dict[str, int] = {}
         # << NIEUW >>
         self.reload_open_positions()
-
+        self.cold_start_until = time.time() + 60  # 60s
         self.intra_log_verbose = bool(cfg.get("intra_log_verbose", True))
 
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
@@ -156,13 +156,58 @@ class TrendStrategy4H:
             self.logger.info("[%s] trend=range (ema%u vs ema%u) => skip", symbol, self.ema_fast, self.ema_slow)
             return
 
+        # [A] EMA-slope check (4h): som van de laatste 3 fast-EMA deltas moet richting trend zijn
+        try:
+            ema_fast_series_4h = df_4h[f"ema_{self.ema_fast}"]
+            ema_fast_slope_4h = float(ema_fast_series_4h.diff().iloc[-3:].sum())
+            if trend_dir == "bull" and ema_fast_slope_4h <= 0:
+                self.logger.info("[%s] bull maar EMA-fast slope<=0 (%.6f) => skip", symbol, ema_fast_slope_4h)
+                return
+            if trend_dir == "bear" and ema_fast_slope_4h >= 0:
+                self.logger.info("[%s] bear maar EMA-fast slope>=0 (%.6f) => skip", symbol, ema_fast_slope_4h)
+                return
+        except Exception:
+            # Geen harde stop als slope niet te berekenen is
+            pass
+
         # 2) Entry-context op 1h
         df_1h = self._fetch_df(symbol, self.entry_tf, limit=200)
         if df_1h.empty or not self._last_candle_closed(df_1h):
             return
 
+        # --- Candle gate: verwerk elke 1h-candle maar 1x per symbol ---
+        try:
+            last_ms = int(df_1h["timestamp_ms"].iloc[-1])
+        except Exception:
+            # Failsafe: als timestamp ontbreekt, niet gate-en
+            last_ms = None
+
+        if last_ms is not None:
+            prev_ms = self.last_processed_candle_ts.get(symbol)
+            if prev_ms == last_ms:
+                # deze 1h-candle is al verwerkt → klaar
+                return
+            # markeer dat we deze candle nu gaan verwerken
+            self.last_processed_candle_ts[symbol] = last_ms
+        # ---------------------------------------------------------------
+
         # RSI + MACD op 1h
         df_1h = self._add_rsi_macd(df_1h)
+
+        # [B] MACD-histogram bevestigt de trendrichting
+        try:
+            macd_val = float(df_1h["macd"].iloc[-1])
+            macd_sig = float(df_1h["macd_signal"].iloc[-1])
+            macd_hist_1h = macd_val - macd_sig
+            if trend_dir == "bull" and macd_hist_1h <= 0:
+                self.logger.info("[%s] bull maar MACD-hist<=0 (%.6f) => skip", symbol, macd_hist_1h)
+                return
+            if trend_dir == "bear" and macd_hist_1h >= 0:
+                self.logger.info("[%s] bear maar MACD-hist>=0 (%.6f) => skip", symbol, macd_hist_1h)
+                return
+        except Exception:
+            # Als MACD niet beschikbaar is, niet hard blokken
+            pass
 
         # ADX + DI op 1h
         adx_1h, di_pos_1h, di_neg_1h = self._compute_adx_di(df_1h)
@@ -245,6 +290,11 @@ class TrendStrategy4H:
         """Aangeroepen door executor (aparte thread)."""
         if not self.enabled or self.trading_mode == "watch":
             return
+
+        # COLD-START GUARD: skip de eerste seconden na start
+        if hasattr(self, "cold_start_until") and time.time() < self.cold_start_until:
+            return
+
         # Extra failsafe: als er geen open posities zijn, stop
         if not self.open_positions:
             return
@@ -364,22 +414,47 @@ class TrendStrategy4H:
             return None
 
     def _latest_price(self, symbol: str) -> Decimal:
-        # probeeer WS prijs via data_client
+        # 1) WS eerst (zoals pullback)
         try:
             px = self.data_client.get_latest_ws_price(symbol)
             if px and px > 0:
                 return _to_decimal(px)
         except Exception:
             pass
-        # backfill via DB 1m
+
+        # 2) Fallback: laatste 1m close (maar gegarandeerd de nieuwste & niet te oud)
         df = self.db_manager.fetch_data(
             table_name="candles_kraken",
-            limit=1,
+            limit=5,  # pak een paar, zodat we zelf kunnen sorteren
             market=symbol,
             interval="1m"
         )
-        if isinstance(df, pd.DataFrame) and not df.empty and "close" in df.columns:
-            return _to_decimal(df["close"].iloc[0])
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            # sorteer op timestamp_ms als die kolom er is
+            ts_col = "timestamp_ms" if "timestamp_ms" in df.columns else None
+            try:
+                if ts_col:
+                    df[ts_col] = pd.to_numeric(df[ts_col], errors="coerce")
+                    df = df.dropna(subset=[ts_col]).sort_values(ts_col)
+                    last_close = df["close"].iloc[-1] if "close" in df.columns else None
+                    last_ts = int(df[ts_col].iloc[-1]) if pd.notna(df[ts_col].iloc[-1]) else None
+                else:
+                    if "datetime_utc" in df.columns:
+                        df["datetime_utc"] = pd.to_datetime(df["datetime_utc"], utc=True, errors="coerce")
+                        df = df.dropna(subset=["datetime_utc"]).sort_values("datetime_utc")
+                    last_close = df["close"].iloc[-1] if "close" in df.columns else None
+                    last_ts = None
+            except Exception:
+                last_close, last_ts = None, None
+
+            # staleness guard: >3 min oud? liever 0 teruggeven zodat call-site skipt
+            if last_close is not None:
+                if last_ts is not None:
+                    now_ms = int(time.time() * 1000)
+                    if now_ms - last_ts > 3 * 60 * 1000:
+                        return Decimal("0")
+                return _to_decimal(last_close)
+
         return Decimal("0")
 
     def _min_lot(self, symbol: str) -> Decimal:

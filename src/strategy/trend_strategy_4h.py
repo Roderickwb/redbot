@@ -104,13 +104,21 @@ class TrendStrategy4H:
         self.max_position_eur = _to_decimal(cfg.get("max_position_eur", "15"))
 
         # Interne state
-        self.open_positions: Dict[str, dict] = {}   # per symbol
+        self.open_positions: Dict[str, dict] = {}  # per symbol
         self.last_processed_candle_ts: Dict[str, int] = {}
-        # << NIEUW >>
+
+        # ===== NIEUW: definieer extra guards/caches =====
+        self.cold_start_until = time.time() + 180  # 3 min warm‑up
+        self.max_price_age_ms = 180_000  # 3 min max leeftijd voor 1m fallback
+        self.last_good_px: Dict[str, Decimal] = {}  # cache laatste geldige prijs per symbool
+        # ===============================================
+
+        # herlaad open posities en seed de cache
         self.reload_open_positions()
-        self.cold_start_until = time.time() + 60  # 60s
+        for sym, pos in self.open_positions.items():
+            self.last_good_px[sym] = pos["entry_price"]
+
         self.intra_log_verbose = bool(cfg.get("intra_log_verbose", True))
-        self.max_price_age_ms = int(cfg.get("max_price_age_ms", 180000))  # 3 min
 
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
 
@@ -304,15 +312,28 @@ class TrendStrategy4H:
         for sym, pos in list(self.open_positions.items()):
             px = self._latest_price(sym)
             if px <= 0:
-                # Eenmalige waarschuwing om spam te voorkomen
-                if not hasattr(self, "_warned_price_zero") or not self._warned_price_zero:
+                if not getattr(self, "_warned_price_zero", False):
                     self.logger.info("[INTRA][%s] price unavailable (WS down of 1m too old) => skip manage", sym)
                     self._warned_price_zero = True
                 continue
-            else:
-                # Reset de flag zodra het weer goed gaat
-                if hasattr(self, "_warned_price_zero"):
-                    self._warned_price_zero = False
+
+            # prijs is OK → reset ‘eenmalige waarschuwing’
+            if getattr(self, "_warned_price_zero", False):
+                self._warned_price_zero = False
+
+            # extra vangnet: na herstart geen >30% gap vs entry toestaan
+            try:
+                if time.time() < (self.cold_start_until + 120):
+                    entry = pos["entry_price"]
+                    if entry > 0:
+                        dev = abs((px - entry) / entry)
+                        if dev > Decimal("0.30"):
+                            self.logger.warning(
+                                "[INTRA][%s] prijs outlier %.4f vs entry %.4f (dev=%.1f%%) => skip tick",
+                                sym, float(px), float(entry), float(dev * 100))
+                            continue
+            except Exception:
+                pass
 
             if self.intra_log_verbose:
                 side = pos["side"]
@@ -424,47 +445,66 @@ class TrendStrategy4H:
             return None
 
     def _latest_price(self, symbol: str) -> Decimal:
-        # 1) WS eerst (zoals pullback)
+        # 1) WebSocket prijs eerst
         try:
             px = self.data_client.get_latest_ws_price(symbol)
             if px and px > 0:
-                return _to_decimal(px)
+                d = _to_decimal(px)
+                self.last_good_px[symbol] = d
+                return d
         except Exception:
             pass
 
-        # 2) Fallback: laatste 1m close (maar gegarandeerd de nieuwste & niet te oud)
+        # 2) Ticker mid-price fallback (best_bid/best_ask)
+        try:
+            df_ticker = self.db_manager.fetch_data(
+                table_name="ticker_kraken", limit=1, market=symbol
+            )
+            if isinstance(df_ticker, pd.DataFrame) and not df_ticker.empty:
+                bid = float(df_ticker["best_bid"].iloc[0]) if "best_bid" in df_ticker.columns else 0.0
+                ask = float(df_ticker["best_ask"].iloc[0]) if "best_ask" in df_ticker.columns else 0.0
+                if bid > 0 and ask > 0:
+                    d = _to_decimal((bid + ask) / 2)
+                    self.last_good_px[symbol] = d
+                    return d
+        except Exception:
+            pass
+
+        # 3) Candles 1m fallback: sorteer + verouderingscheck
         df = self.db_manager.fetch_data(
-            table_name="candles_kraken",
-            limit=5,  # pak een paar, zodat we zelf kunnen sorteren
-            market=symbol,
-            interval="1m"
+            table_name="candles_kraken", limit=5, market=symbol, interval="1m"
         )
         if isinstance(df, pd.DataFrame) and not df.empty:
-            # sorteer op timestamp_ms als die kolom er is
-            ts_col = "timestamp_ms" if "timestamp_ms" in df.columns else None
+            # bepaal timestamp-kolom
+            ts_col = "timestamp_ms" if "timestamp_ms" in df.columns else (
+                "timestamp" if "timestamp" in df.columns else None)
             try:
                 if ts_col:
                     df[ts_col] = pd.to_numeric(df[ts_col], errors="coerce")
                     df = df.dropna(subset=[ts_col]).sort_values(ts_col)
-                    last_close = df["close"].iloc[-1] if "close" in df.columns else None
-                    last_ts = int(df[ts_col].iloc[-1]) if pd.notna(df[ts_col].iloc[-1]) else None
+                    last_ts = int(df[ts_col].iloc[-1])
                 else:
-                    if "datetime_utc" in df.columns:
-                        df["datetime_utc"] = pd.to_datetime(df["datetime_utc"], utc=True, errors="coerce")
-                        df = df.dropna(subset=["datetime_utc"]).sort_values("datetime_utc")
-                    last_close = df["close"].iloc[-1] if "close" in df.columns else None
                     last_ts = None
+                last_close = df["close"].iloc[-1] if "close" in df.columns else None
             except Exception:
-                last_close, last_ts = None, None
+                last_ts, last_close = None, None
 
-            # staleness guard: ouder dan max_price_age_ms? liever 0 teruggeven zodat caller skipt
             if last_close is not None:
                 if last_ts is not None:
                     now_ms = int(time.time() * 1000)
-                    max_age = getattr(self, "max_price_age_ms", 180000)  # <- gebruikt setting uit __init__
-                    if now_ms - last_ts > max_age:
+                    if now_ms - last_ts > self.max_price_age_ms:
+                        self.logger.debug("[price stale][%s] 1m close too old: age=%dms > %dms",
+                                          symbol, now_ms - last_ts, self.max_price_age_ms)
                         return Decimal("0")
-                return _to_decimal(last_close)
+                d = _to_decimal(last_close)
+                self.last_good_px[symbol] = d
+                return d
+
+        # 4) Laatste bekende goede prijs als redmiddel
+        if symbol in self.last_good_px:
+            return self.last_good_px[symbol]
+
+        return Decimal("0")
 
     def _min_lot(self, symbol: str) -> Decimal:
         try:

@@ -742,9 +742,17 @@ class TrendStrategy4H:
 
             # Min-lot check (gebruik de bestaande helper)
             min_lot = self._min_lot(symbol)
-            if amt <= 0 or (min_lot > 0 and amt < min_lot):
-                self.logger.info("[reload] %s trade %s onder min lot => skip", symbol, trade_id)
+            if amt <= 0:
+                self.logger.info("[reload] %s trade %s amount<=0 => skip", symbol, trade_id)
                 continue
+
+            if (min_lot > 0 and amt < min_lot):
+                if self.trading_mode == "auto":
+                    self.logger.info("[reload] %s trade %s onder min lot => skip (auto)", symbol, trade_id)
+                    continue
+                else:
+                    self.logger.info("[reload] %s trade %s onder min lot => HERSTEL (dryrun)", symbol, trade_id)
+                    # Niet 'continue' in dryrun
 
             # Child-som check: als children de master al (bijna) leeg hebben, skip
             total_child_amount = self._sum_child_trade_amounts(position_id)

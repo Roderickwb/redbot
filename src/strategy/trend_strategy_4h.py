@@ -55,6 +55,7 @@ class TrendStrategy4H:
         """
         cfg = yaml_config.get("trend_strategy_4h", {})
         log_file = cfg.get("log_file", "logs/trend_strategy_4h.log")
+
         self.logger = setup_logger("trend_strategy_4h", log_file, logging.INFO)
 
         self.data_client = data_client
@@ -109,6 +110,7 @@ class TrendStrategy4H:
         self.reload_open_positions()
         self.cold_start_until = time.time() + 60  # 60s
         self.intra_log_verbose = bool(cfg.get("intra_log_verbose", True))
+        self.max_price_age_ms = int(cfg.get("max_price_age_ms", 180000))  # 3 min
 
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
 
@@ -302,7 +304,15 @@ class TrendStrategy4H:
         for sym, pos in list(self.open_positions.items()):
             px = self._latest_price(sym)
             if px <= 0:
+                # Eenmalige waarschuwing om spam te voorkomen
+                if not hasattr(self, "_warned_price_zero") or not self._warned_price_zero:
+                    self.logger.info("[INTRA][%s] price unavailable (WS down of 1m too old) => skip manage", sym)
+                    self._warned_price_zero = True
                 continue
+            else:
+                # Reset de flag zodra het weer goed gaat
+                if hasattr(self, "_warned_price_zero"):
+                    self._warned_price_zero = False
 
             if self.intra_log_verbose:
                 side = pos["side"]
@@ -447,15 +457,14 @@ class TrendStrategy4H:
             except Exception:
                 last_close, last_ts = None, None
 
-            # staleness guard: >3 min oud? liever 0 teruggeven zodat call-site skipt
+            # staleness guard: ouder dan max_price_age_ms? liever 0 teruggeven zodat caller skipt
             if last_close is not None:
                 if last_ts is not None:
                     now_ms = int(time.time() * 1000)
-                    if now_ms - last_ts > 3 * 60 * 1000:
+                    max_age = getattr(self, "max_price_age_ms", 180000)  # <- gebruikt setting uit __init__
+                    if now_ms - last_ts > max_age:
                         return Decimal("0")
                 return _to_decimal(last_close)
-
-        return Decimal("0")
 
     def _min_lot(self, symbol: str) -> Decimal:
         try:

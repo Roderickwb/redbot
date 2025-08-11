@@ -1358,39 +1358,29 @@ class PullbackAccumulateStrategy:
             position_type = row[6]
             # is_master = row[7]  # niet nodig, isMaster=1
 
-            # leftover-check
-            if amount < self._get_min_lot(symbol):
-                self.db_manager.update_trade(db_id, {"status": "closed"})
-                self.logger.info(
-                    f"[_load_open_positions_from_db] leftover=0/<minlot => {symbol} db_id={db_id} direct closed."
-                )
-                continue
-
-            # child_sum => master wellicht ook dicht?
-            query_sum = """
-                SELECT SUM(amount) AS total_children
+            # Bepaal leftover = master - som(children) — GEEN DB-updates hier!
+            sum_rows = self.db_manager.execute_query(
+                """
+                SELECT COALESCE(SUM(amount), 0)
                 FROM trades
-                WHERE position_id=?
-                  AND is_master=0
-                  AND strategy_name='pullback'
-            """
-            sum_rows = self.db_manager.execute_query(query_sum, (position_id,))
+                WHERE position_id=? AND is_master=0 AND strategy_name='pullback'
+                """,
+                (position_id,)
+            )
+            child_sum = Decimal(str(sum_rows[0][0])) if sum_rows and sum_rows[0][0] is not None else Decimal("0")
 
-            if sum_rows and sum_rows[0][0] is not None:
-                child_sum = Decimal(str(sum_rows[0][0]))
-                if child_sum >= amount:
-                    # Dan is master feitelijk afgebouwd
-                    self.db_manager.update_trade(db_id, {"status": "closed"})
-                    self.logger.info(
-                        f"[_load_open_positions_from_db] {symbol} master_id={db_id}: child_sum={child_sum} >= master={amount} => closed."
-                    )
-                    continue
+            # amount = master-amount uit de row
+            leftover = amount - child_sum
+            if leftover <= 0:
+                self.logger.info(
+                    f"[_load_open_positions_from_db] {symbol} leftover=0 => NIET herstellen (en GEEN DB-wijziging).")
+                continue
 
             # Anders: pos is nog echt open/partial
             pos_data = {
                 "side": side,
                 "entry_price": entry_price,
-                "amount": amount,
+                "amount": leftover,
                 "atr": Decimal("0.0"),
                 "tp1_done": False,
                 "tp2_done": False,

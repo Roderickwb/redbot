@@ -695,8 +695,9 @@ class TrendStrategy4H:
                 FROM trades
                 WHERE is_master=0
                   AND position_id=?
+                  AND strategy_name=?
                 """,
-                (position_id,)
+                (position_id, self.STRATEGY_NAME)
             )
             if row and row[0] and row[0][0] is not None:
                 return _to_decimal(row[0][0])

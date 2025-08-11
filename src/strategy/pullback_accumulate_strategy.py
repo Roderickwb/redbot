@@ -201,15 +201,17 @@ class PullbackAccumulateStrategy:
         # Concurrency-check / check of we al open trades hebben in DB
         existing_db_trades = self.db_manager.execute_query(
             """
-            SELECT id 
+            SELECT id
               FROM trades
-             WHERE symbol=? 
+             WHERE symbol=?
                AND is_master=1
                AND status IN ('open','partial')
+               AND strategy_name='pullback'
              LIMIT 1
             """,
             (symbol,)
         )
+
         if existing_db_trades:
             self.logger.info(
                 f"[execute_strategy] Already have open/partial MASTER trade in DB for {symbol} => skip opening.")
@@ -1339,6 +1341,7 @@ class PullbackAccumulateStrategy:
             FROM trades
             WHERE is_master=1
               AND status IN ('open','partial')
+              AND strategy_name='pullback'              
         """
         rows = self.db_manager.execute_query(query)
         if not rows:
@@ -1369,8 +1372,10 @@ class PullbackAccumulateStrategy:
                 FROM trades
                 WHERE position_id=?
                   AND is_master=0
+                  AND strategy_name='pullback'
             """
             sum_rows = self.db_manager.execute_query(query_sum, (position_id,))
+
             if sum_rows and sum_rows[0][0] is not None:
                 child_sum = Decimal(str(sum_rows[0][0]))
                 if child_sum >= amount:

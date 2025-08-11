@@ -370,16 +370,18 @@ class PullbackAccumulateStrategy:
         except Exception:
             di_pos, di_neg = None, None
 
-            if di_pos is None or di_neg is None:
-                self.logger.warning(f"[ADX-DI] DI waarden niet leesbaar => skip {symbol}")
-                return
+        if di_pos is None or di_neg is None:
+            self.logger.warning(f"[ADX-DI] DI waarden niet leesbaar => skip {symbol}")
+            return
 
-            if direction == "bull" and not (di_pos > di_neg):
-                self.logger.info(f"[ADX-DI] bull maar +DI<=-DI ({di_pos:.2f}<= {di_neg:.2f}) => skip LONG {symbol}")
-                return
-            if direction == "bear" and not (di_neg > di_pos):
-                self.logger.info(f"[ADX-DI] bear maar -DI<=+DI ({di_neg:.2f}<= {di_pos:.2f}) => skip SHORT {symbol}")
-                return
+        if direction == "bull" and not (di_pos > di_neg):
+            self.logger.info(f"[ADX-DI] bull maar +DI<=-DI ({di_pos:.2f}<= {di_neg:.2f}) => skip LONG {symbol}")
+            return
+
+        if direction == "bear" and not (di_neg > di_pos):
+            self.logger.info(f"[ADX-DI] bear maar -DI<=+DI ({di_neg:.2f}<= {di_pos:.2f}) => skip SHORT {symbol}")
+            return
+
         # -------------- EINDE ADX FILTERS --------------------
 
         # Haal current price
@@ -1274,7 +1276,7 @@ class PullbackAccumulateStrategy:
 
     # [Hulp-code]
     @staticmethod
-    def _calculate_fees_and_pnl(self, side: str, amount: float, price: float, reason: str) -> (float, float):
+    def _calculate_fees_and_pnl(side: str, amount: float, price: float, reason: str) -> (float, float):
         trade_cost = amount * price
         fees = 0.0035 * trade_cost
         if reason.startswith("TP") or reason == "TrailingStop":

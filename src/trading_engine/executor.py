@@ -44,7 +44,8 @@ class Executor:
         api_secret=None,
         use_kraken=True,
         kraken_paper=True,
-        yaml_config=None
+        yaml_config=None,
+        notifier=None,
     ):
         """
         :param db_manager:      DatabaseManager

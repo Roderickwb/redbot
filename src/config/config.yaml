@@ -296,3 +296,14 @@ trend_strategy_4h:
   llm_model: "gpt-4.1-mini"
   llm_timeout_sec: 4
 
+telegram:
+  enabled: true
+  bot_token: "8428736345:AAEJwzJMJQ9ubWdDmpxMlIDdvh2b8cwWP98"
+  chat_id: 8256312700
+
+notifier:
+  enabled: true
+  chat_id: 8256312700        # <- yours
+  token_env: TELEGRAM_BOT_TOKEN
+
+

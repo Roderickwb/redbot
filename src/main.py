@@ -9,12 +9,16 @@ from dotenv import load_dotenv
 import yaml
 from datetime import datetime, timedelta, timezone
 
+
 # Lokale imports
 # Let op: we importeren direct config_logger niet - we vertrouwen op de logger uit config of elders
 from src.config.config import DB_FILE, MAIN_LOG_FILE, yaml_config
 from src.logger.logger import setup_logger, setup_database_logger
 from src.database_manager.database_manager import DatabaseManager
 from src.trading_engine.executor import Executor
+from src.utils.notifier import Notifier
+from src.notifier.telegram_notifier import TelegramNotifier
+from src.notifier.bus import set_notifier
 
 # Stel de "main" logger in (RotatingFileHandler via setup_logger)
 logger = setup_logger(name="main", log_file=MAIN_LOG_FILE, level=logging.INFO)
@@ -129,6 +133,24 @@ def main():
     yaml_config["kraken"]["apiSecret"] = KRAKEN_API_SECRET
 
     logger.debug(f"Kraken-configuratie in main.py: {yaml_config.get('kraken', {})}")
+
+    # --- NOTIFIER (Telegram) ---
+    n_cfg = yaml_config.get("notifier", {})
+    notifier = Notifier(
+        enabled=bool(n_cfg.get("enabled", False)),
+        chat_id=str(n_cfg.get("chat_id", "")),
+        token_env=str(n_cfg.get("token_env", "TELEGRAM_BOT_TOKEN")),
+    )
+    # --- END NOTIFIER ---
+
+    # --- Telegram notifier (optional) ---
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        set_notifier(TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID))
+        logger.info("Telegram notifier enabled.")
+    else:
+        logger.info("Telegram notifier not configured (set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID).")
 
     # === Stap 5) Maak Executor aan ===
     executor = Executor(

@@ -35,6 +35,7 @@ from src.logger.logger import setup_logger
 from src.config.config import yaml_config  # al door main geladen
 from src.indicator_analysis.indicators import IndicatorAnalysis
 from src.meltdown_manager.meltdown_manager import MeltdownManager
+from src.notifier.bus import send as notify
 
 def _to_decimal(x) -> Decimal:
     try:
@@ -769,6 +770,9 @@ class TrendStrategy4H:
                          symbol, "LONG" if side == "buy" else "SHORT",
                          float(entry_price), float(atr_value), self.trading_mode)
 
+        notify(f"[OPEN] {symbol} {'LONG' if side == 'buy' else 'SHORT'} @ {float(entry_price):.4f} "
+               f"(ATR={float(atr_value):.4f}, mode={self.trading_mode})")
+
         # log signals bij open
         try:
             self._save_trade_signals(master_id, "open", symbol, atr_value)
@@ -916,6 +920,8 @@ class TrendStrategy4H:
 
         self.logger.info("[PARTIAL CLOSE][%s] portion=%.2f, px=%.4f, reason=%s",
                          symbol, float(portion), float(px), reason)
+
+        notify(f"[{reason}] {symbol} portion={float(portion):.2f} px={float(px):.4f}")
 
         # log signals bij partial
         # log signals with correct event

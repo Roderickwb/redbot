@@ -303,7 +303,7 @@ telegram:
 
 notifier:
   enabled: true
-  chat_id: 8256312700        # <- yours
+  chat_id: TELEGRAM_CHAT_ID        # <- yours
   token_env: TELEGRAM_BOT_TOKEN
 
 

@@ -58,6 +58,13 @@ class TrendStrategy4H:
         log_file = cfg.get("log_file", "logs/trend_strategy_4h.log")
         self.strategy_config = cfg
         self.logger = setup_logger("trend_strategy_4h", log_file, logging.INFO)
+
+        # --- equity fallback like pullback ---
+        self.initial_capital = _to_decimal(self.strategy_config.get("initial_capital", "100"))
+        # Optional alias: allow YAML to use 'equity_eur' instead of 'initial_capital'
+        if "equity_eur" in self.strategy_config and "initial_capital" not in self.strategy_config:
+            self.initial_capital = _to_decimal(self.strategy_config.get("equity_eur"))
+
         # allow overriding the DB tag via YAML, but keep default
         self.STRATEGY_NAME = cfg.get("strategy_name", self.STRATEGY_NAME)
         self.logger.info("[TrendStrategy4H] strategy tag=%s", self.STRATEGY_NAME)
@@ -166,6 +173,83 @@ class TrendStrategy4H:
             return bool(row)
         except Exception:
             return False
+
+    def _get_equity_estimate(self) -> Decimal:
+        """
+        SAME behavior as PullbackAccumulateStrategy:
+        - Try full wallet valuation in EUR (EUR + coins*EUR price)
+        - Use live/paper get_balance() if available
+        - Fall back to initial_capital from this strategy's config
+        Never crash — always return a Decimal.
+        """
+        # If we have no order_client, fall back to configured initial_capital
+        if not getattr(self, "order_client", None):
+            return getattr(self, "initial_capital", Decimal("100"))
+
+        try:
+            bal = self.order_client.get_balance() or {}
+        except Exception:
+            # balance lookup failed => fallback to configured initial_capital
+            return getattr(self, "initial_capital", Decimal("100"))
+
+        total_wallet_eur = Decimal("0")
+        for asset, amount_str in bal.items():
+            amt = Decimal(str(amount_str))
+            if asset.upper() == "EUR":
+                total_wallet_eur += amt
+            else:
+                # Convert asset -> EUR using latest price
+                symbol = f"{asset.upper()}-EUR"
+                price = self._get_latest_price(symbol)
+                if price > 0:
+                    total_wallet_eur += (amt * price)
+
+        return total_wallet_eur
+
+    def _get_latest_price(self, symbol: str) -> Decimal:
+        """
+        Mirror of pullback’s price helper:
+        - Prefer live ws price (via data_client)
+        - Fallback to last 1m close in DB
+        """
+        # Try ticker (live WS mid price)
+        if getattr(self, "data_client", None):
+            try:
+                px_float = self.data_client.get_latest_ws_price(symbol)
+                if px_float and px_float > 0.0:
+                    return Decimal(str(px_float))
+            except Exception:
+                pass
+
+        # Fallback: last 1m close from DB
+        try:
+            df_1m = self.db_manager.fetch_data(
+                table_name="candles_kraken",
+                limit=1,
+                market=symbol,
+                interval="1m"
+            )
+            if isinstance(df_1m, pd.DataFrame) and not df_1m.empty and "close" in df_1m.columns:
+                last_close = df_1m["close"].iloc[0]
+                return Decimal(str(last_close))
+        except Exception:
+            pass
+
+        return Decimal("0")
+
+    def _get_ws_price(self, symbol: str) -> Decimal:
+        """
+        Convenience (if you happen to use it in Trend too).
+        """
+        if not getattr(self, "data_client", None):
+            return Decimal("0")
+        try:
+            px_float = self.data_client.get_latest_ws_price(symbol)
+            if px_float and px_float > 0.0:
+                return Decimal(str(px_float))
+        except Exception:
+            pass
+        return Decimal("0")
 
     # ---------------------------------------------------------
     # Public API
@@ -636,24 +720,6 @@ class TrendStrategy4H:
         except Exception:
             return Decimal("0.0001")
 
-    def _equity_estimate(self) -> Decimal:
-        # zelfde aanpak als pullback: som wallet (EUR + assets in EUR)
-        try:
-            bal = self.order_client.get_balance()
-        except Exception:
-            return Decimal("0")
-        total = Decimal("0")
-        for asset, amt in bal.items():
-            amt = _to_decimal(amt)
-            if asset.upper() == "EUR":
-                total += amt
-            else:
-                sym = f"{asset.upper()}-EUR"
-                px = self._latest_price(sym)
-                if px > 0:
-                    total += (amt * px)
-        return total
-
     # ---------------------------------------------------------
     # Trading (dryrun/auto) - in lijn met pullback
     # ---------------------------------------------------------
@@ -662,9 +728,9 @@ class TrendStrategy4H:
             return
 
         # sizing: 5% equity capped by max_position_eur, minimaal min_lot*multiplier
-        equity = self._equity_estimate()
+        equity = self._get_equity_estimate()
         allowed_eur_pct = equity * self.max_position_pct
-        allowed_eur = allowed_eur_pct if allowed_eur_pct < self.max_position_eur else self.max_position_eur
+        allowed_eur = min(allowed_eur_pct, self.max_position_eur)
 
         min_lot = self._min_lot(symbol)
         needed_eur_for_min = min_lot * self.min_lot_multiplier * entry_price

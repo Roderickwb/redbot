@@ -441,9 +441,13 @@ class TrendStrategy4H:
         # 5) Mode-actie
         #    - watch: alleen signals opslaan
         #    - dryrun/auto: positioneren (als geen open positie)
-        current_price = _to_decimal(df_1h["close"].iloc[-1])
 
-        # eventueel signal logging naar DB
+        live_px = self._latest_price(symbol)
+        if live_px <= 0:
+            self.logger.info("[%s] live price unavailable => skip open this candle", symbol)
+            return
+        current_price = live_px
+
         try:
             self._save_signal_snapshot(symbol, trend_dir, adx_4h, adx_1h, di_pos_1h, di_neg_1h, atr_1h)
         except Exception:

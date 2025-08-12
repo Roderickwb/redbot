@@ -248,6 +248,7 @@ trend_strategy_4h:
   trading_mode: "dryrun"        # "watch" | "auto" | "dryrun"
   log_file: "logs/trend_strategy_4h.log"
   intra_log_verbose: true
+  require_fresh_price: false   # keep false while you’re away
 
   # Timeframes
   trend_timeframe: "4h"         # richting & trend-structuur
@@ -288,7 +289,7 @@ trend_strategy_4h:
   # Limieten
   min_lot_multiplier: 2.1
   max_position_pct: 0.05
-  max_position_eur: 15
+  max_position_eur: 20
 
   # LLM gate kan later hier ook op aan
   fee_rate: 0.0035

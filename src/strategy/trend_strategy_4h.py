@@ -34,7 +34,7 @@ from ta.trend import ADXIndicator, MACD
 from src.logger.logger import setup_logger
 from src.config.config import yaml_config  # al door main geladen
 from src.indicator_analysis.indicators import IndicatorAnalysis
-
+from src.meltdown_manager.meltdown_manager import MeltdownManager
 
 def _to_decimal(x) -> Decimal:
     try:
@@ -55,6 +55,8 @@ class TrendStrategy4H:
         """
         cfg = yaml_config.get("trend_strategy_4h", {})
         log_file = cfg.get("log_file", "logs/trend_strategy_4h.log")
+        self.strategy_config = cfg
+        self.strategy_name = cfg.get("strategy_name", "trend_4h")
 
         self.logger = setup_logger("trend_strategy_4h", log_file, logging.INFO)
 
@@ -91,6 +93,10 @@ class TrendStrategy4H:
         self.supertrend_period = int(cfg.get("supertrend_period", 10))
         self.supertrend_multiplier = float(cfg.get("supertrend_multiplier", 3.0))
 
+        # EMA-200 trend gate (optional)
+        self.use_ema_trend_200 = bool(cfg.get("use_ema_trend_200", False))
+        self.ema_trend_period = int(cfg.get("ema_trend_period", 200))
+
         # Risk / positionering
         self.atr_window = int(cfg.get("atr_window", 14))
         self.sl_atr_mult = _to_decimal(cfg.get("sl_atr_mult", "1.5"))
@@ -102,6 +108,14 @@ class TrendStrategy4H:
         self.min_lot_multiplier = _to_decimal(cfg.get("min_lot_multiplier", "2.1"))
         self.max_position_pct = _to_decimal(cfg.get("max_position_pct", "0.05"))
         self.max_position_eur = _to_decimal(cfg.get("max_position_eur", "15"))
+
+        # --- Global risk gate (same as pullback) ---
+        meltdown_cfg = yaml_config.get("meltdown_manager", {})
+        self.meltdown_manager = MeltdownManager(
+            meltdown_cfg,
+            db_manager=self.db_manager,
+            logger=setup_logger("meltdown_manager_trend", "logs/meltdown_manager_trend.log", logging.DEBUG)
+        )
 
         # Interne state
         self.open_positions: Dict[str, dict] = {}  # per symbol
@@ -123,11 +137,40 @@ class TrendStrategy4H:
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
 
     # ---------------------------------------------------------
+    # Helper: check if an open/partial master exists in DB (per strategy)
+    # ---------------------------------------------------------
+    def _has_open_master_in_db(self, symbol: str) -> bool:
+        try:
+            row = self.db_manager.execute_query(
+                """
+                SELECT 1
+                FROM trades
+                WHERE symbol=? AND is_master=1
+                    AND status IN ('open','partial')
+                    AND strategy_name=?
+                LIMIT 1
+                """,
+                (symbol, self.STRATEGY_NAME)
+            )
+            return bool(row)
+        except Exception:
+            return False
+
+    # ---------------------------------------------------------
     # Public API
     # ---------------------------------------------------------
     def execute_strategy(self, symbol: str):
         """Wordt aangeroepen bij nieuwe 1h of 4h candle (via executor)."""
         if not self.enabled:
+            return
+
+        # Global meltdown gate: no new entries, still manage open positions
+        meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
+        if meltdown_active:
+            if symbol in self.open_positions:
+                px = self._latest_price(symbol)
+                if px > 0:
+                    self._manage_position(symbol, current_price=_to_decimal(px), atr_value=self.open_positions[symbol]["atr"])
             return
 
         # 1) Trend op 4h
@@ -157,6 +200,16 @@ class TrendStrategy4H:
             trend_dir = "bull"
         elif last_ema_fast_4h < last_ema_slow_4h and last_close_4h < last_ema_fast_4h:
             trend_dir = "bear"
+
+        # Optional: 4h EMA-200 gate
+        if self.use_ema_trend_200:
+            ema200_4h = df_4h["close"].ewm(span=self.ema_trend_period).mean().iloc[-1]
+            if trend_dir == "bull" and not (last_close_4h > ema200_4h):
+                self.logger.info("[%s] EMA200 gate: long blocked (close %.4f <= ema200 %.4f)", symbol, float(last_close_4h), float(ema200_4h))
+                return
+            if trend_dir == "bear" and not (last_close_4h < ema200_4h):
+                self.logger.info("[%s] EMA200 gate: short blocked (close %.4f >= ema200 %.4f)", symbol, float(last_close_4h), float(ema200_4h))
+                return
 
         if self.use_adx_multitimeframe and adx_4h is not None and adx_4h < self.adx_high_tf_threshold:
             self.logger.info("[%s] 4h adx=%.2f<th=%.1f => skip context", symbol, adx_4h, self.adx_high_tf_threshold)
@@ -238,6 +291,22 @@ class TrendStrategy4H:
                 self.logger.warning("[supertrend] niet beschikbaar in IndicatorAnalysis => gate overslaan")
                 # je kunt hier desgewenst self.use_supertrend=False zetten
 
+        # >>> ADD THIS RIGHT BELOW THE BLOCK ABOVE <<<
+        # Only act as a gate if ST is enabled AND was computed
+        if self.use_supertrend and "supertrend" in df_1h.columns:
+            st_val = float(df_1h["supertrend"].iloc[-1])
+            close_1h = float(df_1h["close"].iloc[-1])
+
+            if trend_dir == "bull" and close_1h <= st_val:
+                self.logger.info("[%s] Supertrend gate: long blocked (close %.4f <= ST %.4f)", symbol, close_1h,
+                                         st_val)
+                return
+
+            if trend_dir == "bear" and close_1h >= st_val:
+                self.logger.info("[%s] Supertrend gate: short blocked (close %.4f >= ST %.4f)", symbol,
+                                    close_1h, st_val)
+                return
+
         # Logging van setup
         self.logger.info(
             "[SETUP][%s] trend=%s | 4h(adx=%.2f, ema%d=%.2f, ema%d=%.2f) | 1h(adx=%.2f, +DI=%.2f, -DI=%.2f, rsi=%.1f, macd=%.3f)",
@@ -290,7 +359,7 @@ class TrendStrategy4H:
             # niets openen, alleen kijken
             return
 
-        if not has_pos and trend_dir in ("bull", "bear"):
+        if (not has_pos) and (not self._has_open_master_in_db(symbol)) and trend_dir in ("bull", "bear"):
             side = "buy" if trend_dir == "bull" else "sell"
             self._open_position(symbol, side=side, entry_price=current_price, atr_value=_to_decimal(atr_1h))
 
@@ -553,6 +622,43 @@ class TrendStrategy4H:
         buy_eur = needed_eur_for_min
         amount = buy_eur / entry_price
 
+        if side == "buy" and self.trading_mode == "auto":
+            try:
+                bal = self.order_client.get_balance()
+                eur = _to_decimal(bal.get("EUR", "0"))
+                if eur < buy_eur:
+                    self.logger.info("[%s] long skipped: EUR %.2f < needed %.2f", symbol, float(eur), float(buy_eur))
+                    return
+            except Exception as e:
+                self.logger.warning("[%s] EUR balance check failed (%s) => skip", symbol, e)
+                return
+
+        # === SPOT SHORT SAFETY (same behavior as pullback) ===
+        if side == "sell":
+            try:
+                bal = self.order_client.get_balance() if self.order_client else {}
+            except Exception:
+                bal = {}
+
+            base = symbol.split("-")[0].upper()
+            have = _to_decimal(bal.get(base, "0"))
+            needed_coins = self._min_lot(symbol) * self.min_lot_multiplier
+
+            # 1) must own the base coin
+            if have <= 0:
+                self.logger.warning("[OPEN][%s] skip SHORT: no %s in wallet.", symbol, base)
+                return
+
+            # 2) must have at least min_lot * multiplier (same rule as pullback)
+            if have < needed_coins:
+                self.logger.warning(
+                    "[OPEN][%s] skip SHORT: have %.8f %s < needed %.8f (min_lot*multiplier).",
+                    symbol, float(have), base, float(needed_coins)
+                )
+                return
+        # === END SPOT SHORT SAFETY ===
+
+
         # === DB: master trade (in dryrun/auto). In watch doen we niets. ===
         master_id = None
         pos_id = f"{symbol}-{int(time.time())}"  # ← nieuw, altijd vóór gebruik
@@ -716,20 +822,31 @@ class TrendStrategy4H:
 
             # update leftover
             pos["amount"] = amount - amt_to_close
-            # update master pnl/fees (best-effort)
+
             master_id = pos.get("master_id")
             if master_id:
                 try:
-                    old = self.db_manager.execute_query("SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1",
-                                                        (master_id,))
+                    old = self.db_manager.execute_query(
+                        "SELECT fees, pnl_eur FROM trades WHERE id=? LIMIT 1",
+                        (master_id,)
+                    )
                     if old:
                         old_fees, old_pnl = old[0]
-                        self.db_manager.update_trade(master_id, {
-                            "status": "partial" if pos["amount"] > 0 else "closed",
-                            "fees": old_fees + fees,
-                            "pnl_eur": old_pnl + realized_pnl,
-                            "amount": float(pos["amount"])
-                        })
+                        if pos["amount"] > 0:
+                            # PARTIAL: update ook leftover amount
+                            self.db_manager.update_trade(master_id, {
+                                "status": "partial",
+                                "fees": old_fees + fees,
+                                "pnl_eur": old_pnl + realized_pnl,
+                                "amount": float(pos["amount"])
+                            })
+                        else:
+                            # CLOSED: géén 'amount' meer wegschrijven (laat laatste leftover staan)
+                            self.db_manager.update_trade(master_id, {
+                                "status": "closed",
+                                "fees": old_fees + fees,
+                                "pnl_eur": old_pnl + realized_pnl
+                            })
                 except Exception:
                     pass
 

@@ -243,6 +243,7 @@ scalping:
 
 ### TREND STRATEGY 4H ###
 trend_strategy_4h:
+  strategy_name: "trend_4h"
   enabled: true                # eerst uit, straks aan
   trading_mode: "dryrun"        # "watch" | "auto" | "dryrun"
   log_file: "logs/trend_strategy_4h.log"
@@ -263,6 +264,10 @@ trend_strategy_4h:
   ema_fast: 20
   ema_slow: 50
   require_trend_stack: true     # prijs boven fast>slow voor long; onder voor short
+
+  # NEW — optional high-TF trend gate
+  use_ema_trend_200: true
+  ema_trend_period: 200
 
   # Optional: Supertrend gate (we vullen later in)
   use_supertrend: false

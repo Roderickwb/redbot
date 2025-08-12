@@ -298,7 +298,7 @@ trend_strategy_4h:
 
 telegram:
   enabled: true
-  bot_token: "8428736345:AAEJwzJMJQ9ubWdDmpxMlIDdvh2b8cwWP98"
+  bot_token: TELEGRAM_BOT_TOKEN
   chat_id: 8256312700
 
 notifier:

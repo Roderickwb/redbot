@@ -6,7 +6,7 @@ import os
 import threading
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.logger.logger import setup_logger
 from src.my_websocket.client import WebSocketClient
@@ -419,6 +419,8 @@ class Executor:
                 self.logger.info("[Executor] run_once_pullback_15m()")
                 self.run_once_pullback_15m()
 
+                self.logger.info("[Executor][TREND] check 1h/4h for %d pairs", len(self.kraken_data_client.pairs))
+
                 # 4h-trendstrategie (watch-only): draai bij nieuwe 1h of 4h candle
                 if self.trend_strategy_kraken and self.kraken_data_client:
                     for symbol in self.kraken_data_client.pairs:
@@ -590,6 +592,18 @@ class Executor:
         Voor pullback (15m) niet meer gebruikt, want we doen 2-pass skip-not-closed.
         """
         df = self.db_manager.fetch_data(table_name, limit=1, market=symbol, interval=interval)
+
+        # DEBUG: if trend seems silent, show what we actually see in DB for 1h/4h
+        if interval in ("1h", "4h"):
+            if df.empty:
+                self.logger.info(f"[_has_new_closed_candle][DEBUG] {symbol}-{interval} => DB empty")
+            else:
+                newest_ts = int(df['timestamp'].iloc[0])
+                now_ms = int(time.time() * 1000)
+                self.logger.info(
+                    f"[_has_new_closed_candle][DEBUG] {symbol}-{interval} newest_ts={newest_ts} "
+                    f"now_ms={now_ms} closed={now_ms >= newest_ts}"
+                )
 
         if df.empty:
             self.logger.debug(

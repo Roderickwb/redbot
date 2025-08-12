@@ -224,7 +224,7 @@ meltdown_manager:
   daily_loss_pct: 30              # meltdown als daily portfolio drop >= 20%
   flash_crash_pct: 20             # meltdown als >=2 coins > 20% daling
   rsi_reentry_threshold: 30       # meltdown eindigt als RSI > 30
-  meltdown_coins: ["BTC-EUR", "XRP-EUR", "ETH-EUR"]   # barometer
+  meltdown_coins: ["XBT-EUR", "XRP-EUR", "ETH-EUR"]   # barometer
   meltdown_coins_needed: 2        # min. 2 coins in meltdown_coins >= flash_crash_pct => meltdown
   meltdown_tf: "5m"               # timeframe voor flash crash check
   meltdown_lookback: 3            # #candles om te vergelijken (bv. 3x 5m => ~15m)
@@ -291,6 +291,7 @@ trend_strategy_4h:
   max_position_eur: 15
 
   # LLM gate kan later hier ook op aan
+  fee_rate: 0.0035
   use_llm_guard: false
   llm_model: "gpt-4.1-mini"
   llm_timeout_sec: 4

@@ -56,9 +56,10 @@ class TrendStrategy4H:
         cfg = yaml_config.get("trend_strategy_4h", {})
         log_file = cfg.get("log_file", "logs/trend_strategy_4h.log")
         self.strategy_config = cfg
-        self.strategy_name = cfg.get("strategy_name", "trend_4h")
-
         self.logger = setup_logger("trend_strategy_4h", log_file, logging.INFO)
+        # allow overriding the DB tag via YAML, but keep default
+        self.STRATEGY_NAME = cfg.get("strategy_name", self.STRATEGY_NAME)
+        self.logger.info("[TrendStrategy4H] strategy tag=%s", self.STRATEGY_NAME)
 
         self.data_client = data_client
         self.order_client = order_client
@@ -97,6 +98,12 @@ class TrendStrategy4H:
         self.use_ema_trend_200 = bool(cfg.get("use_ema_trend_200", False))
         self.ema_trend_period = int(cfg.get("ema_trend_period", 200))
 
+        # LLM guard (optional)
+        self.use_llm_guard = bool(cfg.get("use_llm_guard", False))
+        self.llm_model = cfg.get("llm_model", "gpt-4.1-mini")
+        self.llm_timeout_sec = int(cfg.get("llm_timeout_sec", 4))
+        self.llm_client = None  # injectable
+
         # Risk / positionering
         self.atr_window = int(cfg.get("atr_window", 14))
         self.sl_atr_mult = _to_decimal(cfg.get("sl_atr_mult", "1.5"))
@@ -108,6 +115,9 @@ class TrendStrategy4H:
         self.min_lot_multiplier = _to_decimal(cfg.get("min_lot_multiplier", "2.1"))
         self.max_position_pct = _to_decimal(cfg.get("max_position_pct", "0.05"))
         self.max_position_eur = _to_decimal(cfg.get("max_position_eur", "15"))
+
+        # Fees (maker/taker baseline). Change per exchange in YAML.
+        self.fee_rate = _to_decimal(cfg.get("fee_rate", "0.0035"))
 
         # --- Global risk gate (same as pullback) ---
         meltdown_cfg = yaml_config.get("meltdown_manager", {})
@@ -258,6 +268,7 @@ class TrendStrategy4H:
         df_1h = self._add_rsi_macd(df_1h)
 
         # [B] MACD-histogram bevestigt de trendrichting
+        macd_hist_1h = 0.0  # default for LLM guard / logs
         try:
             macd_val = float(df_1h["macd"].iloc[-1])
             macd_sig = float(df_1h["macd_signal"].iloc[-1])
@@ -353,6 +364,18 @@ class TrendStrategy4H:
         except Exception:
             pass
 
+        # Optional LLM veto (after all technical filters; before open)
+        if self.use_llm_guard:
+            rsi_1h_val = float(df_1h["rsi"].iloc[-1]) if "rsi" in df_1h.columns else 50.0
+            ema_fast_slope_val = 0.0
+            try:
+                ema_fast_slope_val = float(df_4h[f"ema_{self.ema_fast}"].diff().iloc[-3:].sum())
+            except Exception:
+                pass
+            if not self._llm_guard(symbol, trend_dir, adx_4h, adx_1h, di_pos_1h, di_neg_1h,
+                                   rsi_1h_val, macd_hist_1h, ema_fast_slope_val):
+                return
+
         has_pos = (symbol in self.open_positions)
 
         if self.trading_mode == "watch":
@@ -441,6 +464,37 @@ class TrendStrategy4H:
     # ---------------------------------------------------------
     # Helpers
     # ---------------------------------------------------------
+    def set_llm_client(self, client):
+        """Inject an LLM client with .judge(symbol, payload, model, timeout) -> 'allow'/'block'."""
+        self.llm_client = client
+
+    def _llm_guard(self, symbol: str, trend_dir: str,
+                   adx_4h, adx_1h, di_pos_1h, di_neg_1h,
+                   rsi_1h, macd_hist_1h, ema_fast_slope_4h) -> bool:
+        """Return True to allow, False to block. Fail-open (allow) on any error."""
+        if not self.llm_client:
+            return True
+        try:
+            payload = {
+                "symbol": symbol,
+                "trend_dir": trend_dir,
+                "adx_4h": adx_4h, "adx_1h": adx_1h,
+                "di_pos_1h": di_pos_1h, "di_neg_1h": di_neg_1h,
+                "rsi_1h": rsi_1h, "macd_hist_1h": macd_hist_1h,
+                "ema_fast_slope_4h": ema_fast_slope_4h,
+            }
+            verdict = self.llm_client.judge(
+                symbol, payload, model=self.llm_model, timeout=self.llm_timeout_sec
+            )
+            allow = str(verdict).strip().lower().startswith("allow")
+            if not allow:
+                self.logger.info("[LLM GUARD][%s] blocked by LLM verdict=%s payload=%s",
+                                 symbol, verdict, payload)
+            return allow
+        except Exception as e:
+            self.logger.warning("[LLM GUARD][%s] error: %s -> default ALLOW", symbol, e)
+            return True
+
     def _fetch_df(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
         df = self.db_manager.fetch_data(
             table_name="candles_kraken",
@@ -656,8 +710,18 @@ class TrendStrategy4H:
                     symbol, float(have), base, float(needed_coins)
                 )
                 return
-        # === END SPOT SHORT SAFETY ===
 
+            # ensure we never try to sell more than we own
+            max_sell_amt = have
+            if amount > max_sell_amt:
+                amount = max_sell_amt
+
+            # also cap by risk budget (same allowed_eur you computed above)
+            max_by_risk = allowed_eur / entry_price
+            if amount > max_by_risk:
+                amount = max_by_risk
+
+        # === END SPOT SHORT SAFETY ===
 
         # === DB: master trade (in dryrun/auto). In watch doen we niets. ===
         master_id = None
@@ -675,7 +739,7 @@ class TrendStrategy4H:
                 "status": "open",
                 "pnl_eur": 0.0,
                 "fees": 0.0,
-                "trade_cost": float(buy_eur),
+                "trade_cost": float(entry_price * amount),
                 "strategy_name": self.STRATEGY_NAME,
                 "is_master": 1
             }
@@ -800,7 +864,7 @@ class TrendStrategy4H:
         if self.trading_mode in ("dryrun", "auto"):
             pnl_raw = (px - pos["entry_price"]) * amt_to_close if side == "buy" else (pos["entry_price"] - px) * amt_to_close
             trade_cost = px * amt_to_close
-            fees = float(trade_cost * Decimal("0.0035"))
+            fees = float(trade_cost * self.fee_rate)
             realized_pnl = float(pnl_raw) - fees
 
             child = {
@@ -854,8 +918,10 @@ class TrendStrategy4H:
                          symbol, float(portion), float(px), reason)
 
         # log signals bij partial
+        # log signals with correct event
         try:
-            self._save_trade_signals(pos.get("master_id"), "partial", symbol, pos["atr"])
+            ev = "close" if portion == Decimal("1.0") else "partial"
+            self._save_trade_signals(pos.get("master_id"), ev, symbol, pos["atr"])
         except Exception:
             pass
 

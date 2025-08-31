@@ -92,6 +92,30 @@ class TrendStrategy4H:
         self.adx_high_tf_threshold = float(cfg.get("adx_high_tf_threshold", 20.0))
         self.use_adx_directional_filter = bool(cfg.get("use_adx_directional_filter", True))
 
+        # --- Flip-early ---
+        fe = cfg.get("flip_early", {})
+        self.flip_early_enabled = bool(fe.get("enabled", True))
+        self.flip_hl_window = int(fe.get("hl_pivot_window", 5))
+        self.flip_ema_fast = int(fe.get("ema_fast", 20))
+        self.flip_ema_slow = int(fe.get("ema_slow", 50))
+        self.flip_recent_cross_h4 = int(fe.get("recent_cross_lookback_h4", 3))
+
+        # --- Unified ADX params ---
+        self.adx_check_timeframes = list(cfg.get("adx_check_timeframes", ["1h", "4h"]))
+        self.adx_logic = str(cfg.get("adx_logic", "either")).lower()
+        self.require_di_alignment = bool(cfg.get("require_di_alignment", True))
+
+        # --- Confirms ---
+        volc = cfg.get("volume_confirm", {})
+        self.vol_confirm_enabled = bool(volc.get("enabled", True))
+        self.vol_mult = float(volc.get("mult", 1.20))
+        self.vol_min_bars = int(volc.get("min_bars", 20))
+
+        cq = cfg.get("candle_quality", {})
+        self.cq_enabled = bool(cq.get("enabled", True))
+        self.cq_body_atr_min = float(cq.get("body_atr_min", 0.60))
+        self.cq_wick_body_max = float(cq.get("wick_body_max", 1.00))
+
         # EMA-structuur
         self.ema_fast = int(cfg.get("ema_fast", 20))
         self.ema_slow = int(cfg.get("ema_slow", 50))
@@ -283,7 +307,7 @@ class TrendStrategy4H:
         df_4h[f"ema_{self.ema_fast}"] = ema_fast_4h
         df_4h[f"ema_{self.ema_slow}"] = ema_slow_4h
 
-        adx_4h, _, _ = self._compute_adx_di(df_4h)
+        adx_4h, di_pos_4h, di_neg_4h = self._compute_adx_di(df_4h)
 
         # Trendrichting
         last_close_4h = df_4h["close"].iloc[-1]
@@ -305,10 +329,6 @@ class TrendStrategy4H:
             if trend_dir == "bear" and not (last_close_4h < ema200_4h):
                 self.logger.info("[%s] EMA200 gate: short blocked (close %.4f >= ema200 %.4f)", symbol, float(last_close_4h), float(ema200_4h))
                 return
-
-        if self.use_adx_multitimeframe and adx_4h is not None and adx_4h < self.adx_high_tf_threshold:
-            self.logger.info("[%s] 4h adx=%.2f<th=%.1f => skip context", symbol, adx_4h, self.adx_high_tf_threshold)
-            return
 
         if self.require_trend_stack and trend_dir == "range":
             self.logger.info("[%s] trend=range (ema%u vs ema%u) => skip", symbol, self.ema_fast, self.ema_slow)
@@ -368,6 +388,28 @@ class TrendStrategy4H:
             # Als MACD niet beschikbaar is, niet hard blokken
             pass
 
+        # --- Flip-early gate (uses recent EMA cross on 4h + 1h/4h confirmations) ---
+        if self.flip_early_enabled:
+            is_flip = self._is_flip_early_h4(df_4h)
+            if is_flip:
+                try:
+                    ema20_4h = self._ema(df_4h["close"], self.flip_ema_fast).iloc[-1]
+                    ema50_4h = self._ema(df_4h["close"], self.flip_ema_slow).iloc[-1]
+                    body_floor = min(df_4h["open"].iloc[-1], df_4h["close"].iloc[-1])
+                    body_top = max(df_4h["open"].iloc[-1], df_4h["close"].iloc[-1])
+
+                    cond_1h = self._hl_lh_confirm_1h(df_1h, trend_dir)
+                    cond_4h_bull = bool(body_floor > max(ema20_4h, ema50_4h))
+                    cond_4h_bear = bool(body_top < min(ema20_4h, ema50_4h))
+                    cond_4h = cond_4h_bull if trend_dir == "bull" else cond_4h_bear
+
+                    if not (cond_1h or cond_4h):
+                        self.logger.info("[%s] flip_early but no confirmation (1h/4h) => HOLD", symbol)
+                        return
+                except Exception:
+                    self.logger.info("[%s] flip_early unable to confirm => HOLD", symbol)
+                    return
+
         # ADX + DI op 1h
         adx_1h, di_pos_1h, di_neg_1h = self._compute_adx_di(df_1h)
 
@@ -404,32 +446,91 @@ class TrendStrategy4H:
                 return
 
         # Logging van setup
+        win = getattr(self, "adx_window", 14)
         self.logger.info(
-            "[SETUP][%s] trend=%s | 4h(adx=%.2f, ema%d=%.2f, ema%d=%.2f) | 1h(adx=%.2f, +DI=%.2f, -DI=%.2f, rsi=%.1f, macd=%.3f)",
+            "[SETUP][%s] trend=%s | 4h(ADX(%d)=%.2f, ema%d=%.2f, ema%d=%.2f) | 1h(ADX(%d)=%.2f, +DI=%.2f, -DI=%.2f, rsi=%.1f, macd=%.3f)",
             symbol, trend_dir,
-            adx_4h if adx_4h is not None else -1.0,
+            win, adx_4h if adx_4h is not None else -1.0,
             self.ema_fast, last_ema_fast_4h,
             self.ema_slow, last_ema_slow_4h,
-            adx_1h if adx_1h is not None else -1.0,
+            win, adx_1h if adx_1h is not None else -1.0,
             di_pos_1h if di_pos_1h is not None else -1.0,
             di_neg_1h if di_neg_1h is not None else -1.0,
             df_1h["rsi"].iloc[-1] if "rsi" in df_1h.columns else -1.0,
             df_1h["macd"].iloc[-1] if "macd" in df_1h.columns else 0.0
         )
 
-        # 3) Entry filters (lean)
+        # --- Unified ADX check across TFs (either/both) + DI alignment on the passing TF(s) ---
         if self.use_adx_filter:
-            if adx_1h is None or adx_1h < self.adx_entry_tf_threshold:
-                self.logger.info("[%s] entry ADX=%.2f<th=%.1f => skip",
-                                 symbol, adx_1h if adx_1h is not None else -1.0, self.adx_entry_tf_threshold)
+            passes = []
+            for tf in self.adx_check_timeframes:
+                if tf == "1h":
+                    ok = self._adx_tf_pass(df_1h, trend_dir, self.adx_entry_tf_threshold)
+                    passes.append(ok)
+                elif tf == "4h":
+                    ok = self._adx_tf_pass(df_4h, trend_dir, self.adx_high_tf_threshold)
+                    passes.append(ok)
+
+            if self.adx_logic == "both":
+                adx_ok = all(passes) if passes else False
+            else:  # "either"
+                adx_ok = any(passes) if passes else False
+
+            if not adx_ok:
+                self.logger.info("[%s] ADX unified check failed (logic=%s)", symbol, self.adx_logic)
                 return
 
-        if self.use_adx_directional_filter and di_pos_1h is not None and di_neg_1h is not None:
-            if trend_dir == "bull" and not (di_pos_1h > di_neg_1h):
-                self.logger.info("[%s] bull maar +DI<=-DI (%.2f<=%.2f) => skip", symbol, di_pos_1h, di_neg_1h)
-                return
-            if trend_dir == "bear" and not (di_neg_1h > di_pos_1h):
-                self.logger.info("[%s] bear maar -DI<=+DI (%.2f<=%.2f) => skip", symbol, di_neg_1h, di_pos_1h)
+        # --- Volume confirm (1h) ---
+        if self.vol_confirm_enabled:
+            try:
+                # use completed bars: average over last 20 COMPLETED bars (exclude current)
+                if len(df_1h) < (self.vol_min_bars + 1):
+                    self.logger.info("[%s] volume confirm skipped (not enough bars)", symbol)
+                else:
+                    vol_now = float(df_1h["volume"].iloc[-1])
+                    avg20 = float(df_1h["volume"].iloc[-(self.vol_min_bars+1):-1].mean())
+                    if not (vol_now >= self.vol_mult * avg20):
+                        self.logger.info("[%s] volume confirm failed (%.2f < %.2f*%.2f)", symbol,
+                                         vol_now, self.vol_mult, avg20)
+                        return
+            except Exception:
+                # be fail-open or fail-safe? we choose fail-open if volume missing
+                self.logger.info("[%s] volume data unavailable => skipping volume confirm", symbol)
+
+        # --- Candle quality confirm (1h) ---
+        if self.cq_enabled:
+            try:
+                o = float(df_1h["open"].iloc[-1])
+                h = float(df_1h["high"].iloc[-1])
+                l = float(df_1h["low"].iloc[-1])
+                c = float(df_1h["close"].iloc[-1])
+                body = abs(c - o)
+                upper_wick = h - max(o, c)
+                lower_wick = min(o, c) - l
+
+                atr_1h_tmp = self._compute_atr(df_1h, self.atr_window)
+                if atr_1h_tmp is None or atr_1h_tmp <= 0:
+                    self.logger.info("[%s] candle quality skipped (no ATR)", symbol)
+                else:
+                    # A) body strength
+                    if not (body >= self.cq_body_atr_min * atr_1h_tmp):
+                        self.logger.info("[%s] candle quality failed: body %.4f < %.2f*ATR(%.4f)",
+                                         symbol, body, self.cq_body_atr_min, atr_1h_tmp)
+                        return
+
+                    # B) wick control (directional)
+                    if trend_dir == "bull":
+                        ratio = (upper_wick / body) if body > 0 else float("inf")
+                    else:
+                        ratio = (lower_wick / body) if body > 0 else float("inf")
+
+                    if not (ratio <= self.cq_wick_body_max):
+                        self.logger.info("[%s] candle quality failed: wick/body %.2f > max %.2f",
+                                         symbol, ratio, self.cq_wick_body_max)
+                        return
+            except Exception:
+                # if values missing, play safe and block (to keep quality high)
+                self.logger.info("[%s] candle quality error => block this entry", symbol)
                 return
 
         # 4) ATR (1h) voor risk
@@ -640,7 +741,8 @@ class TrendStrategy4H:
 
     def _compute_adx_di(self, df: pd.DataFrame):
         try:
-            adx_obj = ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=14)
+            win = getattr(self, "adx_window", 14)
+            adx_obj = ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=win)
             adx = float(adx_obj.adx().iloc[-1])
             di_pos = float(adx_obj.adx_pos().iloc[-1])
             di_neg = float(adx_obj.adx_neg().iloc[-1])
@@ -655,6 +757,97 @@ class TrendStrategy4H:
             return float(val) if pd.notna(val) else None
         except Exception:
             return None
+
+    def _ema(self, series: pd.Series, span: int) -> pd.Series:
+        return series.ewm(span=span).mean()
+
+    def _is_flip_early_h4(self, df_4h: pd.DataFrame) -> bool:
+        """
+        Define flip_early if a fast/slow EMA cross happened in the last N (recent_cross_h4) closed 4h bars.
+        """
+        try:
+            if df_4h is None or len(df_4h) < max(self.flip_ema_fast, self.flip_ema_slow) + 3:
+                return False
+
+            ema_f = self._ema(df_4h["close"], self.flip_ema_fast)
+            ema_s = self._ema(df_4h["close"], self.flip_ema_slow)
+
+            # Use Series methods so static analyzers know this is vectorized
+            sig = ema_f.gt(ema_s).astype("int8")  # 1 if fast>slow else 0 (Series)
+            cross = sig.diff().fillna(0)  # +1/-1 when state changes
+
+            lookback = min(self.flip_recent_cross_h4, int(len(cross)))
+            if lookback <= 0:
+                return False
+
+            recent = cross.iloc[-lookback:]
+            return bool((recent != 0).any())
+        except Exception:
+            return False
+
+    def _hl_lh_confirm_1h(self, df_1h: pd.DataFrame, direction: str) -> bool:
+        """
+        For longs: confirmed HL + close>EMA20(1h)
+        For shorts: confirmed LH + close<EMA20(1h)
+        Uses pivot window self.flip_hl_window.
+        """
+        try:
+            ema20_1h = self._ema(df_1h["close"], self.flip_ema_fast).iloc[-1]
+            # need at least 2 pivots (prev & now)
+            w = self.flip_hl_window
+            if len(df_1h) < 2 * w + 1:
+                return False
+
+            # current pivot center
+            low_now = df_1h["low"].iloc[-w:]; high_now = df_1h["high"].iloc[-w:]
+            pivot_low_now = df_1h["low"].iloc[-(w//2+1)]
+            pivot_high_now = df_1h["high"].iloc[-(w//2+1)]
+            is_pl_now = (pivot_low_now == low_now.min())
+            is_ph_now = (pivot_high_now == high_now.max())
+
+            # previous window
+            low_prev = df_1h["low"].iloc[-(2*w):-w]; high_prev = df_1h["high"].iloc[-(2*w):-w]
+            pivot_low_prev = df_1h["low"].iloc[-(w + (w//2+1))]
+            pivot_high_prev = df_1h["high"].iloc[-(w + (w//2+1))]
+            is_pl_prev = (pivot_low_prev == low_prev.min())
+            is_ph_prev = (pivot_high_prev == high_prev.max())
+
+            close_1h = float(df_1h["close"].iloc[-1])
+
+            if direction == "bull":
+                hl_ok = bool(is_pl_now and is_pl_prev and (pivot_low_now > pivot_low_prev))
+                return bool(hl_ok and (close_1h > float(ema20_1h)))
+            elif direction == "bear":
+                lh_ok = bool(is_ph_now and is_ph_prev and (pivot_high_now < pivot_high_prev))
+                return bool(lh_ok and (close_1h < float(ema20_1h)))
+            return False
+        except Exception:
+            return False
+
+    def _adx_tf_pass(self, df: pd.DataFrame, direction: str, threshold: float) -> bool:
+        adx, dip, din = self._compute_adx_di(df)
+        win = getattr(self, "adx_window", 14)
+
+        if adx is None:
+            self.logger.info("[ADX(%d)] result=None => fail", win)
+            return False
+
+        if adx < threshold:
+            self.logger.info("[ADX(%d)] %.2f < th=%.1f => fail", win, adx, threshold)
+            return False
+
+        if self.require_di_alignment and dip is not None and din is not None:
+            if direction == "bull" and not (dip > din):
+                self.logger.info("[ADX(%d)] %.2f passed but +DI<=-DI (%.2f<=%.2f) => fail",
+                                 win, adx, dip, din)
+                return False
+            if direction == "bear" and not (din > dip):
+                self.logger.info("[ADX(%d)] %.2f passed but -DI<=+DI (%.2f<=%.2f) => fail",
+                                 win, adx, din, dip)
+                return False
+
+        self.logger.info("[ADX(%d)] %.2f >= th=%.1f => pass (dir=%s)", win, adx, threshold, direction)
+        return True
 
     def _latest_price(self, symbol: str) -> Decimal:
         # 1) WebSocket prijs eerst

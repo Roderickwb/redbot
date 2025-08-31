@@ -257,9 +257,11 @@ trend_strategy_4h:
   # Trend & momentum filters
   use_adx_filter: true
   adx_entry_tf_threshold: 20
-  use_adx_multitimeframe: true
   adx_high_tf_threshold: 20
-  use_adx_directional_filter: true
+  adx_window: 14                 # keep equal to _compute_adx_di
+  adx_check_timeframes: [ "1h","4h" ]
+  adx_logic: "either"            # "either" | "both"
+  require_di_alignment: true
 
   # EMA-structuur (klassiek trend-volgen)
   ema_fast: 20
@@ -296,6 +298,25 @@ trend_strategy_4h:
   use_llm_guard: false
   llm_model: "gpt-4.1-mini"
   llm_timeout_sec: 4
+
+  flip_early:
+    enabled: true
+    hl_pivot_window: 5     # 1h HL/LH pivot window
+    ema_fast: 20
+    ema_slow: 50
+    recent_cross_lookback_h4: 3   # bars to call it "flip_early"
+
+  # --- Confirms ---
+  volume_confirm:
+    enabled: true
+    mult: 1.20                   # Vol >= mult * SMA20(Vol)
+    min_bars: 20                 # need at least 20 completed bars; else skip this confirm
+
+  candle_quality:
+    enabled: true
+    body_atr_min: 0.60           # Body >= 0.60 * ATR(1h)
+    wick_body_max: 1.00          # Long: upper_wick/body <= 1.0 ; Short: lower_wick/body <= 1.0
+
 
 telegram:
   enabled: true

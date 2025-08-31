@@ -758,6 +758,74 @@ class TrendStrategy4H:
         except Exception:
             return None
 
+    def _notify_close_summary(self, symbol: str, pos: dict, master_id: Optional[int], reason: str, exit_px: Decimal):
+        """
+        Send a Telegram summary when a position is fully closed.
+        Pulls net PnL/fees/trade_cost/side/open time from the master trade row.
+        """
+        if not master_id:
+            return
+        try:
+            row = self.db_manager.execute_query(
+                """
+                SELECT price, trade_cost, pnl_eur, fees, side, timestamp
+                FROM trades
+                WHERE id=? LIMIT 1
+                """,
+                (master_id,)
+            )
+            if not row:
+                return
+
+            entry_price = _to_decimal(row[0][0])
+            trade_cost = _to_decimal(row[0][1])
+            pnl_eur = _to_decimal(row[0][2])
+            fees_eur = _to_decimal(row[0][3])
+            side_db = str(row[0][4] or pos.get("side", "buy"))
+            opened_ms = int(row[0][5] or 0)
+
+            # Holding time (hours)
+            now_ms = int(time.time() * 1000)
+            hold_hrs = (now_ms - opened_ms) / 3_600_000.0 if opened_ms > 0 else 0.0
+
+            # #partials for this position_id
+            c_row = self.db_manager.execute_query(
+                """
+                SELECT COUNT(*)
+                FROM trades
+                WHERE is_master=0 AND position_id=? AND strategy_name=?
+                """,
+                (pos.get("position_id"), self.STRATEGY_NAME)
+            )
+            partial_count = int(c_row[0][0]) if c_row and c_row[0] and c_row[0][0] is not None else 0
+
+            # ROI % vs initial notional (trade_cost on open)
+            roi_pct = float(pnl_eur) / float(trade_cost) * 100.0 if trade_cost > 0 else 0.0
+
+            # Last-bar R at exit (quick feel metric)
+            last_r = None
+            try:
+                one_r = pos.get("atr", Decimal("0"))
+                if one_r > 0:
+                    move = (exit_px - entry_price) if side_db == "buy" else (entry_price - exit_px)
+                    last_r = float(move / one_r)
+            except Exception:
+                pass
+
+            side_label = "LONG" if side_db == "buy" else "SHORT"
+            msg = (
+                f"[CLOSE] {symbol} {side_label} via {reason} @ {float(exit_px):.4f}\n"
+                f"PNL(net): €{float(pnl_eur):.2f}  |  Fees: €{float(fees_eur):.2f}\n"
+                f"ROI: {roi_pct:.2f}% on €{float(trade_cost):.2f}\n"
+                f"Held: {hold_hrs:.2f}h  |  Partials: {partial_count}"
+            )
+            if last_r is not None:
+                msg += f"  |  Last-bar R: {last_r:.2f}"
+
+            notify(msg)
+        except Exception as e:
+            self.logger.debug("[notify_close_summary][%s] error: %s", symbol, e)
+
     def _ema(self, series: pd.Series, span: int) -> pd.Series:
         return series.ewm(span=span).mean()
 
@@ -1202,6 +1270,12 @@ class TrendStrategy4H:
                     self.db_manager.update_trade(mid, {"status": "closed"})
                 except Exception:
                     pass
+                # Send close summary (includes net PnL/fees/ROI/hold-time/partials)
+                try:
+                    self._notify_close_summary(symbol, pos, mid, reason, px)
+                except Exception as e:
+                    self.logger.debug("[notify summary][%s] %s", symbol, e)
+
             del self.open_positions[symbol]
 
     def _close_all(self, symbol: str, reason: str, exec_price: Optional[Decimal] = None):

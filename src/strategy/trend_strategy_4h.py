@@ -34,8 +34,7 @@ from ta.trend import ADXIndicator, MACD
 from src.logger.logger import setup_logger
 from src.config.config import yaml_config  # al door main geladen
 from src.indicator_analysis.indicators import IndicatorAnalysis
-from src.meltdown_manager.meltdown_manager import MeltdownManager
-from src.notifier.bus import send as notify
+
 
 def _to_decimal(x) -> Decimal:
     try:
@@ -56,18 +55,7 @@ class TrendStrategy4H:
         """
         cfg = yaml_config.get("trend_strategy_4h", {})
         log_file = cfg.get("log_file", "logs/trend_strategy_4h.log")
-        self.strategy_config = cfg
         self.logger = setup_logger("trend_strategy_4h", log_file, logging.INFO)
-
-        # --- equity fallback like pullback ---
-        self.initial_capital = _to_decimal(self.strategy_config.get("initial_capital", "100"))
-        # Optional alias: allow YAML to use 'equity_eur' instead of 'initial_capital'
-        if "equity_eur" in self.strategy_config and "initial_capital" not in self.strategy_config:
-            self.initial_capital = _to_decimal(self.strategy_config.get("equity_eur"))
-
-        # allow overriding the DB tag via YAML, but keep default
-        self.STRATEGY_NAME = cfg.get("strategy_name", self.STRATEGY_NAME)
-        self.logger.info("[TrendStrategy4H] strategy tag=%s", self.STRATEGY_NAME)
 
         self.data_client = data_client
         self.order_client = order_client
@@ -91,30 +79,7 @@ class TrendStrategy4H:
         self.use_adx_multitimeframe = bool(cfg.get("use_adx_multitimeframe", True))
         self.adx_high_tf_threshold = float(cfg.get("adx_high_tf_threshold", 20.0))
         self.use_adx_directional_filter = bool(cfg.get("use_adx_directional_filter", True))
-
-        # --- Flip-early ---
-        fe = cfg.get("flip_early", {})
-        self.flip_early_enabled = bool(fe.get("enabled", True))
-        self.flip_hl_window = int(fe.get("hl_pivot_window", 5))
-        self.flip_ema_fast = int(fe.get("ema_fast", 20))
-        self.flip_ema_slow = int(fe.get("ema_slow", 50))
-        self.flip_recent_cross_h4 = int(fe.get("recent_cross_lookback_h4", 3))
-
-        # --- Unified ADX params ---
-        self.adx_check_timeframes = list(cfg.get("adx_check_timeframes", ["1h", "4h"]))
-        self.adx_logic = str(cfg.get("adx_logic", "either")).lower()
-        self.require_di_alignment = bool(cfg.get("require_di_alignment", True))
-
-        # --- Confirms ---
-        volc = cfg.get("volume_confirm", {})
-        self.vol_confirm_enabled = bool(volc.get("enabled", True))
-        self.vol_mult = float(volc.get("mult", 1.20))
-        self.vol_min_bars = int(volc.get("min_bars", 20))
-
-        cq = cfg.get("candle_quality", {})
-        self.cq_enabled = bool(cq.get("enabled", True))
-        self.cq_body_atr_min = float(cq.get("body_atr_min", 0.60))
-        self.cq_wick_body_max = float(cq.get("wick_body_max", 1.00))
+        self.adx_window = int(cfg.get("adx_window", 14))  # NEW
 
         # EMA-structuur
         self.ema_fast = int(cfg.get("ema_fast", 20))
@@ -126,16 +91,6 @@ class TrendStrategy4H:
         self.supertrend_period = int(cfg.get("supertrend_period", 10))
         self.supertrend_multiplier = float(cfg.get("supertrend_multiplier", 3.0))
 
-        # EMA-200 trend gate (optional)
-        self.use_ema_trend_200 = bool(cfg.get("use_ema_trend_200", False))
-        self.ema_trend_period = int(cfg.get("ema_trend_period", 200))
-
-        # LLM guard (optional)
-        self.use_llm_guard = bool(cfg.get("use_llm_guard", False))
-        self.llm_model = cfg.get("llm_model", "gpt-4.1-mini")
-        self.llm_timeout_sec = int(cfg.get("llm_timeout_sec", 4))
-        self.llm_client = None  # injectable
-
         # Risk / positionering
         self.atr_window = int(cfg.get("atr_window", 14))
         self.sl_atr_mult = _to_decimal(cfg.get("sl_atr_mult", "1.5"))
@@ -143,137 +98,26 @@ class TrendStrategy4H:
         self.tp1_portion_pct = _to_decimal(cfg.get("tp1_portion_pct", "0.50"))
         self.trailing_atr_mult = _to_decimal(cfg.get("trailing_atr_mult", "1.0"))
 
+        # NEW exit/guard flags
+        self.breakeven_after_tp1 = bool(cfg.get("breakeven_after_tp1", True))
+        self.max_hold_hours = int(cfg.get("max_hold_hours", 0))  # 0 = disabled
+        self.time_stop_action = str(cfg.get("time_stop_action", "breakeven")).lower()
+
         # Limieten
         self.min_lot_multiplier = _to_decimal(cfg.get("min_lot_multiplier", "2.1"))
         self.max_position_pct = _to_decimal(cfg.get("max_position_pct", "0.05"))
         self.max_position_eur = _to_decimal(cfg.get("max_position_eur", "15"))
-
-        # Fees (maker/taker baseline). Change per exchange in YAML.
-        self.fee_rate = _to_decimal(cfg.get("fee_rate", "0.0035"))
-
-        # --- Global risk gate (same as pullback) ---
-        meltdown_cfg = yaml_config.get("meltdown_manager", {})
-        self.meltdown_manager = MeltdownManager(
-            meltdown_cfg,
-            db_manager=self.db_manager,
-            logger=setup_logger("meltdown_manager_trend", "logs/meltdown_manager_trend.log", logging.DEBUG)
-        )
+        self.fee_rate = _to_decimal(cfg.get("fee_rate", "0.0035"))  # NEW
 
         # Interne state
-        self.open_positions: Dict[str, dict] = {}  # per symbol
+        self.open_positions: Dict[str, dict] = {}   # per symbol
         self.last_processed_candle_ts: Dict[str, int] = {}
-
-        # ===== NIEUW: definieer extra guards/caches =====
-        self.cold_start_until = time.time() + 180  # 3 min warm‑up
-        self.max_price_age_ms = 180_000  # 3 min max leeftijd voor 1m fallback
-        self.last_good_px: Dict[str, Decimal] = {}  # cache laatste geldige prijs per symbool
-        # ===============================================
-
-        # herlaad open posities en seed de cache
-        self.reload_open_positions()
-        for sym, pos in self.open_positions.items():
-            self.last_good_px[sym] = pos["entry_price"]
+        # << NIEUW >>
+        self._load_open_positions_from_db()
 
         self.intra_log_verbose = bool(cfg.get("intra_log_verbose", True))
 
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
-
-    # ---------------------------------------------------------
-    # Helper: check if an open/partial master exists in DB (per strategy)
-    # ---------------------------------------------------------
-    def _has_open_master_in_db(self, symbol: str) -> bool:
-        try:
-            row = self.db_manager.execute_query(
-                """
-                SELECT 1
-                FROM trades
-                WHERE symbol=? AND is_master=1
-                    AND status IN ('open','partial')
-                    AND strategy_name=?
-                LIMIT 1
-                """,
-                (symbol, self.STRATEGY_NAME)
-            )
-            return bool(row)
-        except Exception:
-            return False
-
-    def _get_equity_estimate(self) -> Decimal:
-        """
-        SAME behavior as PullbackAccumulateStrategy:
-        - Try full wallet valuation in EUR (EUR + coins*EUR price)
-        - Use live/paper get_balance() if available
-        - Fall back to initial_capital from this strategy's config
-        Never crash — always return a Decimal.
-        """
-        # If we have no order_client, fall back to configured initial_capital
-        if not getattr(self, "order_client", None):
-            return getattr(self, "initial_capital", Decimal("100"))
-
-        try:
-            bal = self.order_client.get_balance() or {}
-        except Exception:
-            # balance lookup failed => fallback to configured initial_capital
-            return getattr(self, "initial_capital", Decimal("100"))
-
-        total_wallet_eur = Decimal("0")
-        for asset, amount_str in bal.items():
-            amt = Decimal(str(amount_str))
-            if asset.upper() == "EUR":
-                total_wallet_eur += amt
-            else:
-                # Convert asset -> EUR using latest price
-                symbol = f"{asset.upper()}-EUR"
-                price = self._get_latest_price(symbol)
-                if price > 0:
-                    total_wallet_eur += (amt * price)
-
-        return total_wallet_eur
-
-    def _get_latest_price(self, symbol: str) -> Decimal:
-        """
-        Mirror of pullback’s price helper:
-        - Prefer live ws price (via data_client)
-        - Fallback to last 1m close in DB
-        """
-        # Try ticker (live WS mid price)
-        if getattr(self, "data_client", None):
-            try:
-                px_float = self.data_client.get_latest_ws_price(symbol)
-                if px_float and px_float > 0.0:
-                    return Decimal(str(px_float))
-            except Exception:
-                pass
-
-        # Fallback: last 1m close from DB
-        try:
-            df_1m = self.db_manager.fetch_data(
-                table_name="candles_kraken",
-                limit=1,
-                market=symbol,
-                interval="1m"
-            )
-            if isinstance(df_1m, pd.DataFrame) and not df_1m.empty and "close" in df_1m.columns:
-                last_close = df_1m["close"].iloc[0]
-                return Decimal(str(last_close))
-        except Exception:
-            pass
-
-        return Decimal("0")
-
-    def _get_ws_price(self, symbol: str) -> Decimal:
-        """
-        Convenience (if you happen to use it in Trend too).
-        """
-        if not getattr(self, "data_client", None):
-            return Decimal("0")
-        try:
-            px_float = self.data_client.get_latest_ws_price(symbol)
-            if px_float and px_float > 0.0:
-                return Decimal(str(px_float))
-        except Exception:
-            pass
-        return Decimal("0")
 
     # ---------------------------------------------------------
     # Public API
@@ -281,15 +125,6 @@ class TrendStrategy4H:
     def execute_strategy(self, symbol: str):
         """Wordt aangeroepen bij nieuwe 1h of 4h candle (via executor)."""
         if not self.enabled:
-            return
-
-        # Global meltdown gate: no new entries, still manage open positions
-        meltdown_active = self.meltdown_manager.update_meltdown_state(strategy=self, symbol=symbol)
-        if meltdown_active:
-            if symbol in self.open_positions:
-                px = self._latest_price(symbol)
-                if px > 0:
-                    self._manage_position(symbol, current_price=_to_decimal(px), atr_value=self.open_positions[symbol]["atr"])
             return
 
         # 1) Trend op 4h
@@ -307,7 +142,7 @@ class TrendStrategy4H:
         df_4h[f"ema_{self.ema_fast}"] = ema_fast_4h
         df_4h[f"ema_{self.ema_slow}"] = ema_slow_4h
 
-        adx_4h, di_pos_4h, di_neg_4h = self._compute_adx_di(df_4h)
+        adx_4h, _, _ = self._compute_adx_di(df_4h)
 
         # Trendrichting
         last_close_4h = df_4h["close"].iloc[-1]
@@ -320,95 +155,21 @@ class TrendStrategy4H:
         elif last_ema_fast_4h < last_ema_slow_4h and last_close_4h < last_ema_fast_4h:
             trend_dir = "bear"
 
-        # Optional: 4h EMA-200 gate
-        if self.use_ema_trend_200:
-            ema200_4h = df_4h["close"].ewm(span=self.ema_trend_period).mean().iloc[-1]
-            if trend_dir == "bull" and not (last_close_4h > ema200_4h):
-                self.logger.info("[%s] EMA200 gate: long blocked (close %.4f <= ema200 %.4f)", symbol, float(last_close_4h), float(ema200_4h))
-                return
-            if trend_dir == "bear" and not (last_close_4h < ema200_4h):
-                self.logger.info("[%s] EMA200 gate: short blocked (close %.4f >= ema200 %.4f)", symbol, float(last_close_4h), float(ema200_4h))
-                return
+        if self.use_adx_multitimeframe and adx_4h is not None and adx_4h < self.adx_high_tf_threshold:
+            self.logger.info("[%s] 4h adx=%.2f<th=%.1f => skip context", symbol, adx_4h, self.adx_high_tf_threshold)
+            return
 
         if self.require_trend_stack and trend_dir == "range":
             self.logger.info("[%s] trend=range (ema%u vs ema%u) => skip", symbol, self.ema_fast, self.ema_slow)
             return
-
-        # [A] EMA-slope check (4h): som van de laatste 3 fast-EMA deltas moet richting trend zijn
-        try:
-            ema_fast_series_4h = df_4h[f"ema_{self.ema_fast}"]
-            ema_fast_slope_4h = float(ema_fast_series_4h.diff().iloc[-3:].sum())
-            if trend_dir == "bull" and ema_fast_slope_4h <= 0:
-                self.logger.info("[%s] bull maar EMA-fast slope<=0 (%.6f) => skip", symbol, ema_fast_slope_4h)
-                return
-            if trend_dir == "bear" and ema_fast_slope_4h >= 0:
-                self.logger.info("[%s] bear maar EMA-fast slope>=0 (%.6f) => skip", symbol, ema_fast_slope_4h)
-                return
-        except Exception:
-            # Geen harde stop als slope niet te berekenen is
-            pass
 
         # 2) Entry-context op 1h
         df_1h = self._fetch_df(symbol, self.entry_tf, limit=200)
         if df_1h.empty or not self._last_candle_closed(df_1h):
             return
 
-        # --- Candle gate: verwerk elke 1h-candle maar 1x per symbol ---
-        try:
-            last_ms = int(df_1h["timestamp_ms"].iloc[-1])
-        except Exception:
-            # Failsafe: als timestamp ontbreekt, niet gate-en
-            last_ms = None
-
-        if last_ms is not None:
-            prev_ms = self.last_processed_candle_ts.get(symbol)
-            if prev_ms == last_ms:
-                # deze 1h-candle is al verwerkt → klaar
-                return
-            # markeer dat we deze candle nu gaan verwerken
-            self.last_processed_candle_ts[symbol] = last_ms
-        # ---------------------------------------------------------------
-
         # RSI + MACD op 1h
         df_1h = self._add_rsi_macd(df_1h)
-
-        # [B] MACD-histogram bevestigt de trendrichting
-        macd_hist_1h = 0.0  # default for LLM guard / logs
-        try:
-            macd_val = float(df_1h["macd"].iloc[-1])
-            macd_sig = float(df_1h["macd_signal"].iloc[-1])
-            macd_hist_1h = macd_val - macd_sig
-            if trend_dir == "bull" and macd_hist_1h <= 0:
-                self.logger.info("[%s] bull maar MACD-hist<=0 (%.6f) => skip", symbol, macd_hist_1h)
-                return
-            if trend_dir == "bear" and macd_hist_1h >= 0:
-                self.logger.info("[%s] bear maar MACD-hist>=0 (%.6f) => skip", symbol, macd_hist_1h)
-                return
-        except Exception:
-            # Als MACD niet beschikbaar is, niet hard blokken
-            pass
-
-        # --- Flip-early gate (uses recent EMA cross on 4h + 1h/4h confirmations) ---
-        if self.flip_early_enabled:
-            is_flip = self._is_flip_early_h4(df_4h)
-            if is_flip:
-                try:
-                    ema20_4h = self._ema(df_4h["close"], self.flip_ema_fast).iloc[-1]
-                    ema50_4h = self._ema(df_4h["close"], self.flip_ema_slow).iloc[-1]
-                    body_floor = min(df_4h["open"].iloc[-1], df_4h["close"].iloc[-1])
-                    body_top = max(df_4h["open"].iloc[-1], df_4h["close"].iloc[-1])
-
-                    cond_1h = self._hl_lh_confirm_1h(df_1h, trend_dir)
-                    cond_4h_bull = bool(body_floor > max(ema20_4h, ema50_4h))
-                    cond_4h_bear = bool(body_top < min(ema20_4h, ema50_4h))
-                    cond_4h = cond_4h_bull if trend_dir == "bull" else cond_4h_bear
-
-                    if not (cond_1h or cond_4h):
-                        self.logger.info("[%s] flip_early but no confirmation (1h/4h) => HOLD", symbol)
-                        return
-                except Exception:
-                    self.logger.info("[%s] flip_early unable to confirm => HOLD", symbol)
-                    return
 
         # ADX + DI op 1h
         adx_1h, di_pos_1h, di_neg_1h = self._compute_adx_di(df_1h)
@@ -425,112 +186,54 @@ class TrendStrategy4H:
                     df_1h["supertrend"] = st["supertrend"]
                 except Exception as e:
                     self.logger.warning("[supertrend] kon niet berekenen (%s) => gate overslaan", e)
+
             else:
                 self.logger.warning("[supertrend] niet beschikbaar in IndicatorAnalysis => gate overslaan")
                 # je kunt hier desgewenst self.use_supertrend=False zetten
 
-        # >>> ADD THIS RIGHT BELOW THE BLOCK ABOVE <<<
-        # Only act as a gate if ST is enabled AND was computed
+        # --- Supertrend as a hard gate (only if computed) ---
         if self.use_supertrend and "supertrend" in df_1h.columns:
             st_val = float(df_1h["supertrend"].iloc[-1])
             close_1h = float(df_1h["close"].iloc[-1])
 
             if trend_dir == "bull" and close_1h <= st_val:
-                self.logger.info("[%s] Supertrend gate: long blocked (close %.4f <= ST %.4f)", symbol, close_1h,
-                                         st_val)
+                self.logger.info("[%s] Supertrend gate: long blocked (close %.4f <= ST %.4f)",
+                                 symbol, close_1h, st_val)
                 return
 
             if trend_dir == "bear" and close_1h >= st_val:
-                self.logger.info("[%s] Supertrend gate: short blocked (close %.4f >= ST %.4f)", symbol,
-                                    close_1h, st_val)
+                self.logger.info("[%s] Supertrend gate: short blocked (close %.4f >= ST %.4f)",
+                                 symbol, close_1h, st_val)
                 return
+        # --- end Supertrend gate ---
 
         # Logging van setup
-        win = getattr(self, "adx_window", 14)
         self.logger.info(
-            "[SETUP][%s] trend=%s | 4h(ADX(%d)=%.2f, ema%d=%.2f, ema%d=%.2f) | 1h(ADX(%d)=%.2f, +DI=%.2f, -DI=%.2f, rsi=%.1f, macd=%.3f)",
+            "[SETUP][%s] trend=%s | 4h(adx=%.2f, ema%d=%.2f, ema%d=%.2f) | 1h(adx=%.2f, +DI=%.2f, -DI=%.2f, rsi=%.1f, macd=%.3f)",
             symbol, trend_dir,
-            win, adx_4h if adx_4h is not None else -1.0,
+            adx_4h if adx_4h is not None else -1.0,
             self.ema_fast, last_ema_fast_4h,
             self.ema_slow, last_ema_slow_4h,
-            win, adx_1h if adx_1h is not None else -1.0,
+            adx_1h if adx_1h is not None else -1.0,
             di_pos_1h if di_pos_1h is not None else -1.0,
             di_neg_1h if di_neg_1h is not None else -1.0,
             df_1h["rsi"].iloc[-1] if "rsi" in df_1h.columns else -1.0,
             df_1h["macd"].iloc[-1] if "macd" in df_1h.columns else 0.0
         )
 
-        # --- Unified ADX check across TFs (either/both) + DI alignment on the passing TF(s) ---
+        # 3) Entry filters (lean)
         if self.use_adx_filter:
-            passes = []
-            for tf in self.adx_check_timeframes:
-                if tf == "1h":
-                    ok = self._adx_tf_pass(df_1h, trend_dir, self.adx_entry_tf_threshold)
-                    passes.append(ok)
-                elif tf == "4h":
-                    ok = self._adx_tf_pass(df_4h, trend_dir, self.adx_high_tf_threshold)
-                    passes.append(ok)
-
-            if self.adx_logic == "both":
-                adx_ok = all(passes) if passes else False
-            else:  # "either"
-                adx_ok = any(passes) if passes else False
-
-            if not adx_ok:
-                self.logger.info("[%s] ADX unified check failed (logic=%s)", symbol, self.adx_logic)
+            if adx_1h is None or adx_1h < self.adx_entry_tf_threshold:
+                self.logger.info("[%s] entry ADX=%.2f<th=%.1f => skip",
+                                 symbol, adx_1h if adx_1h is not None else -1.0, self.adx_entry_tf_threshold)
                 return
 
-        # --- Volume confirm (1h) ---
-        if self.vol_confirm_enabled:
-            try:
-                # use completed bars: average over last 20 COMPLETED bars (exclude current)
-                if len(df_1h) < (self.vol_min_bars + 1):
-                    self.logger.info("[%s] volume confirm skipped (not enough bars)", symbol)
-                else:
-                    vol_now = float(df_1h["volume"].iloc[-1])
-                    avg20 = float(df_1h["volume"].iloc[-(self.vol_min_bars+1):-1].mean())
-                    if not (vol_now >= self.vol_mult * avg20):
-                        self.logger.info("[%s] volume confirm failed (%.2f < %.2f*%.2f)", symbol,
-                                         vol_now, self.vol_mult, avg20)
-                        return
-            except Exception:
-                # be fail-open or fail-safe? we choose fail-open if volume missing
-                self.logger.info("[%s] volume data unavailable => skipping volume confirm", symbol)
-
-        # --- Candle quality confirm (1h) ---
-        if self.cq_enabled:
-            try:
-                o = float(df_1h["open"].iloc[-1])
-                h = float(df_1h["high"].iloc[-1])
-                l = float(df_1h["low"].iloc[-1])
-                c = float(df_1h["close"].iloc[-1])
-                body = abs(c - o)
-                upper_wick = h - max(o, c)
-                lower_wick = min(o, c) - l
-
-                atr_1h_tmp = self._compute_atr(df_1h, self.atr_window)
-                if atr_1h_tmp is None or atr_1h_tmp <= 0:
-                    self.logger.info("[%s] candle quality skipped (no ATR)", symbol)
-                else:
-                    # A) body strength
-                    if not (body >= self.cq_body_atr_min * atr_1h_tmp):
-                        self.logger.info("[%s] candle quality failed: body %.4f < %.2f*ATR(%.4f)",
-                                         symbol, body, self.cq_body_atr_min, atr_1h_tmp)
-                        return
-
-                    # B) wick control (directional)
-                    if trend_dir == "bull":
-                        ratio = (upper_wick / body) if body > 0 else float("inf")
-                    else:
-                        ratio = (lower_wick / body) if body > 0 else float("inf")
-
-                    if not (ratio <= self.cq_wick_body_max):
-                        self.logger.info("[%s] candle quality failed: wick/body %.2f > max %.2f",
-                                         symbol, ratio, self.cq_wick_body_max)
-                        return
-            except Exception:
-                # if values missing, play safe and block (to keep quality high)
-                self.logger.info("[%s] candle quality error => block this entry", symbol)
+        if self.use_adx_directional_filter and di_pos_1h is not None and di_neg_1h is not None:
+            if trend_dir == "bull" and not (di_pos_1h > di_neg_1h):
+                self.logger.info("[%s] bull maar +DI<=-DI (%.2f<=%.2f) => skip", symbol, di_pos_1h, di_neg_1h)
+                return
+            if trend_dir == "bear" and not (di_neg_1h > di_pos_1h):
+                self.logger.info("[%s] bear maar -DI<=+DI (%.2f<=%.2f) => skip", symbol, di_neg_1h, di_pos_1h)
                 return
 
         # 4) ATR (1h) voor risk
@@ -542,29 +245,13 @@ class TrendStrategy4H:
         # 5) Mode-actie
         #    - watch: alleen signals opslaan
         #    - dryrun/auto: positioneren (als geen open positie)
+        current_price = _to_decimal(df_1h["close"].iloc[-1])
 
-        live_px = self._latest_price(symbol)
-        if live_px <= 0:
-            self.logger.info("[%s] live price unavailable => skip open this candle", symbol)
-            return
-        current_price = live_px
-
+        # eventueel signal logging naar DB
         try:
             self._save_signal_snapshot(symbol, trend_dir, adx_4h, adx_1h, di_pos_1h, di_neg_1h, atr_1h)
         except Exception:
             pass
-
-        # Optional LLM veto (after all technical filters; before open)
-        if self.use_llm_guard:
-            rsi_1h_val = float(df_1h["rsi"].iloc[-1]) if "rsi" in df_1h.columns else 50.0
-            ema_fast_slope_val = 0.0
-            try:
-                ema_fast_slope_val = float(df_4h[f"ema_{self.ema_fast}"].diff().iloc[-3:].sum())
-            except Exception:
-                pass
-            if not self._llm_guard(symbol, trend_dir, adx_4h, adx_1h, di_pos_1h, di_neg_1h,
-                                   rsi_1h_val, macd_hist_1h, ema_fast_slope_val):
-                return
 
         has_pos = (symbol in self.open_positions)
 
@@ -572,7 +259,7 @@ class TrendStrategy4H:
             # niets openen, alleen kijken
             return
 
-        if (not has_pos) and (not self._has_open_master_in_db(symbol)) and trend_dir in ("bull", "bear"):
+        if not has_pos and trend_dir in ("bull", "bear"):
             side = "buy" if trend_dir == "bull" else "sell"
             self._open_position(symbol, side=side, entry_price=current_price, atr_value=_to_decimal(atr_1h))
 
@@ -582,42 +269,44 @@ class TrendStrategy4H:
         """Aangeroepen door executor (aparte thread)."""
         if not self.enabled or self.trading_mode == "watch":
             return
-
-        # COLD-START GUARD: skip de eerste seconden na start
-        if hasattr(self, "cold_start_until") and time.time() < self.cold_start_until:
-            return
-
-        # Extra failsafe: als er geen open posities zijn, stop
-        if not self.open_positions:
-            return
-
         for sym, pos in list(self.open_positions.items()):
             px = self._latest_price(sym)
             if px <= 0:
-                if not getattr(self, "_warned_price_zero", False):
-                    self.logger.info("[INTRA][%s] price unavailable (WS down of 1m too old) => skip manage", sym)
-                    self._warned_price_zero = True
                 continue
-
-            # prijs is OK → reset ‘eenmalige waarschuwing’
-            if getattr(self, "_warned_price_zero", False):
-                self._warned_price_zero = False
-
-            # extra vangnet: na herstart geen >30% gap vs entry toestaan
+            # --- TIME-STOP (if enabled) ---
             try:
-                if time.time() < (self.cold_start_until + 120):
-                    entry = pos["entry_price"]
-                    if entry > 0:
-                        dev = abs((px - entry) / entry)
-                        if dev > Decimal("0.30"):
-                            self.logger.warning(
-                                "[INTRA][%s] prijs outlier %.4f vs entry %.4f (dev=%.1f%%) => skip tick",
-                                sym, float(px), float(entry), float(dev * 100))
+                if self.max_hold_hours and self.max_hold_hours > 0:
+                    opened_ts = pos.get("opened_ts", int(time.time()))
+                    hours_open = (time.time() - opened_ts) / 3600.0
+                    if hours_open >= float(self.max_hold_hours):
+                        side = pos["side"]
+                        entry = pos["entry_price"]
+                        cur = _to_decimal(px)
+
+                        if self.time_stop_action == "close":
+                            self.logger.info("[TIME-STOP][%s] max_hold_hours=%s reached => CLOSE NOW",
+                                             sym, self.max_hold_hours)
+                            self._close_all(sym, reason="TimeStop", exec_price=cur)
                             continue
-            except Exception:
-                pass
+                        else:
+                            # breakeven action: close only if we can do so at or better than entry
+                            closeable = ((side == "buy" and cur >= entry) or
+                                         (side == "sell" and cur <= entry))
+                            if closeable:
+                                self.logger.info("[TIME-STOP][%s] breakeven close allowed at %.4f (entry %.4f)",
+                                                 sym, float(cur), float(entry))
+                                self._close_all(sym, reason="TimeStopBreakeven", exec_price=cur)
+                                continue
+                            else:
+                                self.logger.info(
+                                    "[TIME-STOP][%s] breakeven not possible yet (px=%.4f, entry=%.4f) => hold",
+                                    sym, float(cur), float(entry))
+            except Exception as e:
+                self.logger.debug("[TIME-STOP][%s] error: %s", sym, e)
+            # --- END TIME-STOP ---
 
             if self.intra_log_verbose:
+                pos = self.open_positions[sym]
                 side = pos["side"]
                 entry = pos["entry_price"]
                 one_r = pos["atr"]
@@ -654,37 +343,6 @@ class TrendStrategy4H:
     # ---------------------------------------------------------
     # Helpers
     # ---------------------------------------------------------
-    def set_llm_client(self, client):
-        """Inject an LLM client with .judge(symbol, payload, model, timeout) -> 'allow'/'block'."""
-        self.llm_client = client
-
-    def _llm_guard(self, symbol: str, trend_dir: str,
-                   adx_4h, adx_1h, di_pos_1h, di_neg_1h,
-                   rsi_1h, macd_hist_1h, ema_fast_slope_4h) -> bool:
-        """Return True to allow, False to block. Fail-open (allow) on any error."""
-        if not self.llm_client:
-            return True
-        try:
-            payload = {
-                "symbol": symbol,
-                "trend_dir": trend_dir,
-                "adx_4h": adx_4h, "adx_1h": adx_1h,
-                "di_pos_1h": di_pos_1h, "di_neg_1h": di_neg_1h,
-                "rsi_1h": rsi_1h, "macd_hist_1h": macd_hist_1h,
-                "ema_fast_slope_4h": ema_fast_slope_4h,
-            }
-            verdict = self.llm_client.judge(
-                symbol, payload, model=self.llm_model, timeout=self.llm_timeout_sec
-            )
-            allow = str(verdict).strip().lower().startswith("allow")
-            if not allow:
-                self.logger.info("[LLM GUARD][%s] blocked by LLM verdict=%s payload=%s",
-                                 symbol, verdict, payload)
-            return allow
-        except Exception as e:
-            self.logger.warning("[LLM GUARD][%s] error: %s -> default ALLOW", symbol, e)
-            return True
-
     def _fetch_df(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
         df = self.db_manager.fetch_data(
             table_name="candles_kraken",
@@ -741,8 +399,9 @@ class TrendStrategy4H:
 
     def _compute_adx_di(self, df: pd.DataFrame):
         try:
-            win = getattr(self, "adx_window", 14)
-            adx_obj = ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=win)
+            adx_obj = ADXIndicator(
+                high=df["high"], low=df["low"], close=df["close"], window=self.adx_window
+            )
             adx = float(adx_obj.adx().iloc[-1])
             di_pos = float(adx_obj.adx_pos().iloc[-1])
             di_neg = float(adx_obj.adx_neg().iloc[-1])
@@ -758,225 +417,23 @@ class TrendStrategy4H:
         except Exception:
             return None
 
-    def _notify_close_summary(self, symbol: str, pos: dict, master_id: Optional[int], reason: str, exit_px: Decimal):
-        """
-        Send a Telegram summary when a position is fully closed.
-        Pulls net PnL/fees/trade_cost/side/open time from the master trade row.
-        """
-        if not master_id:
-            return
-        try:
-            row = self.db_manager.execute_query(
-                """
-                SELECT price, trade_cost, pnl_eur, fees, side, timestamp
-                FROM trades
-                WHERE id=? LIMIT 1
-                """,
-                (master_id,)
-            )
-            if not row:
-                return
-
-            entry_price = _to_decimal(row[0][0])
-            trade_cost = _to_decimal(row[0][1])
-            pnl_eur = _to_decimal(row[0][2])
-            fees_eur = _to_decimal(row[0][3])
-            side_db = str(row[0][4] or pos.get("side", "buy"))
-            opened_ms = int(row[0][5] or 0)
-
-            # Holding time (hours)
-            now_ms = int(time.time() * 1000)
-            hold_hrs = (now_ms - opened_ms) / 3_600_000.0 if opened_ms > 0 else 0.0
-
-            # #partials for this position_id
-            c_row = self.db_manager.execute_query(
-                """
-                SELECT COUNT(*)
-                FROM trades
-                WHERE is_master=0 AND position_id=? AND strategy_name=?
-                """,
-                (pos.get("position_id"), self.STRATEGY_NAME)
-            )
-            partial_count = int(c_row[0][0]) if c_row and c_row[0] and c_row[0][0] is not None else 0
-
-            # ROI % vs initial notional (trade_cost on open)
-            roi_pct = float(pnl_eur) / float(trade_cost) * 100.0 if trade_cost > 0 else 0.0
-
-            # Last-bar R at exit (quick feel metric)
-            last_r = None
-            try:
-                one_r = pos.get("atr", Decimal("0"))
-                if one_r > 0:
-                    move = (exit_px - entry_price) if side_db == "buy" else (entry_price - exit_px)
-                    last_r = float(move / one_r)
-            except Exception:
-                pass
-
-            side_label = "LONG" if side_db == "buy" else "SHORT"
-            msg = (
-                f"[CLOSE] {symbol} {side_label} via {reason} @ {float(exit_px):.4f}\n"
-                f"PNL(net): €{float(pnl_eur):.2f}  |  Fees: €{float(fees_eur):.2f}\n"
-                f"ROI: {roi_pct:.2f}% on €{float(trade_cost):.2f}\n"
-                f"Held: {hold_hrs:.2f}h  |  Partials: {partial_count}"
-            )
-            if last_r is not None:
-                msg += f"  |  Last-bar R: {last_r:.2f}"
-
-            notify(msg)
-        except Exception as e:
-            self.logger.debug("[notify_close_summary][%s] error: %s", symbol, e)
-
-    def _ema(self, series: pd.Series, span: int) -> pd.Series:
-        return series.ewm(span=span).mean()
-
-    def _is_flip_early_h4(self, df_4h: pd.DataFrame) -> bool:
-        """
-        Define flip_early if a fast/slow EMA cross happened in the last N (recent_cross_h4) closed 4h bars.
-        """
-        try:
-            if df_4h is None or len(df_4h) < max(self.flip_ema_fast, self.flip_ema_slow) + 3:
-                return False
-
-            ema_f = self._ema(df_4h["close"], self.flip_ema_fast)
-            ema_s = self._ema(df_4h["close"], self.flip_ema_slow)
-
-            # Use Series methods so static analyzers know this is vectorized
-            sig = ema_f.gt(ema_s).astype("int8")  # 1 if fast>slow else 0 (Series)
-            cross = sig.diff().fillna(0)  # +1/-1 when state changes
-
-            lookback = min(self.flip_recent_cross_h4, int(len(cross)))
-            if lookback <= 0:
-                return False
-
-            recent = cross.iloc[-lookback:]
-            return bool((recent != 0).any())
-        except Exception:
-            return False
-
-    def _hl_lh_confirm_1h(self, df_1h: pd.DataFrame, direction: str) -> bool:
-        """
-        For longs: confirmed HL + close>EMA20(1h)
-        For shorts: confirmed LH + close<EMA20(1h)
-        Uses pivot window self.flip_hl_window.
-        """
-        try:
-            ema20_1h = self._ema(df_1h["close"], self.flip_ema_fast).iloc[-1]
-            # need at least 2 pivots (prev & now)
-            w = self.flip_hl_window
-            if len(df_1h) < 2 * w + 1:
-                return False
-
-            # current pivot center
-            low_now = df_1h["low"].iloc[-w:]; high_now = df_1h["high"].iloc[-w:]
-            pivot_low_now = df_1h["low"].iloc[-(w//2+1)]
-            pivot_high_now = df_1h["high"].iloc[-(w//2+1)]
-            is_pl_now = (pivot_low_now == low_now.min())
-            is_ph_now = (pivot_high_now == high_now.max())
-
-            # previous window
-            low_prev = df_1h["low"].iloc[-(2*w):-w]; high_prev = df_1h["high"].iloc[-(2*w):-w]
-            pivot_low_prev = df_1h["low"].iloc[-(w + (w//2+1))]
-            pivot_high_prev = df_1h["high"].iloc[-(w + (w//2+1))]
-            is_pl_prev = (pivot_low_prev == low_prev.min())
-            is_ph_prev = (pivot_high_prev == high_prev.max())
-
-            close_1h = float(df_1h["close"].iloc[-1])
-
-            if direction == "bull":
-                hl_ok = bool(is_pl_now and is_pl_prev and (pivot_low_now > pivot_low_prev))
-                return bool(hl_ok and (close_1h > float(ema20_1h)))
-            elif direction == "bear":
-                lh_ok = bool(is_ph_now and is_ph_prev and (pivot_high_now < pivot_high_prev))
-                return bool(lh_ok and (close_1h < float(ema20_1h)))
-            return False
-        except Exception:
-            return False
-
-    def _adx_tf_pass(self, df: pd.DataFrame, direction: str, threshold: float) -> bool:
-        adx, dip, din = self._compute_adx_di(df)
-        win = getattr(self, "adx_window", 14)
-
-        if adx is None:
-            self.logger.info("[ADX(%d)] result=None => fail", win)
-            return False
-
-        if adx < threshold:
-            self.logger.info("[ADX(%d)] %.2f < th=%.1f => fail", win, adx, threshold)
-            return False
-
-        if self.require_di_alignment and dip is not None and din is not None:
-            if direction == "bull" and not (dip > din):
-                self.logger.info("[ADX(%d)] %.2f passed but +DI<=-DI (%.2f<=%.2f) => fail",
-                                 win, adx, dip, din)
-                return False
-            if direction == "bear" and not (din > dip):
-                self.logger.info("[ADX(%d)] %.2f passed but -DI<=+DI (%.2f<=%.2f) => fail",
-                                 win, adx, din, dip)
-                return False
-
-        self.logger.info("[ADX(%d)] %.2f >= th=%.1f => pass (dir=%s)", win, adx, threshold, direction)
-        return True
-
     def _latest_price(self, symbol: str) -> Decimal:
-        # 1) WebSocket prijs eerst
+        # probeeer WS prijs via data_client
         try:
             px = self.data_client.get_latest_ws_price(symbol)
             if px and px > 0:
-                d = _to_decimal(px)
-                self.last_good_px[symbol] = d
-                return d
+                return _to_decimal(px)
         except Exception:
             pass
-
-        # 2) Ticker mid-price fallback (best_bid/best_ask)
-        try:
-            df_ticker = self.db_manager.fetch_data(
-                table_name="ticker_kraken", limit=1, market=symbol
-            )
-            if isinstance(df_ticker, pd.DataFrame) and not df_ticker.empty:
-                bid = float(df_ticker["best_bid"].iloc[0]) if "best_bid" in df_ticker.columns else 0.0
-                ask = float(df_ticker["best_ask"].iloc[0]) if "best_ask" in df_ticker.columns else 0.0
-                if bid > 0 and ask > 0:
-                    d = _to_decimal((bid + ask) / 2)
-                    self.last_good_px[symbol] = d
-                    return d
-        except Exception:
-            pass
-
-        # 3) Candles 1m fallback: sorteer + verouderingscheck
+        # backfill via DB 1m
         df = self.db_manager.fetch_data(
-            table_name="candles_kraken", limit=5, market=symbol, interval="1m"
+            table_name="candles_kraken",
+            limit=1,
+            market=symbol,
+            interval="1m"
         )
-        if isinstance(df, pd.DataFrame) and not df.empty:
-            # bepaal timestamp-kolom
-            ts_col = "timestamp_ms" if "timestamp_ms" in df.columns else (
-                "timestamp" if "timestamp" in df.columns else None)
-            try:
-                if ts_col:
-                    df[ts_col] = pd.to_numeric(df[ts_col], errors="coerce")
-                    df = df.dropna(subset=[ts_col]).sort_values(ts_col)
-                    last_ts = int(df[ts_col].iloc[-1])
-                else:
-                    last_ts = None
-                last_close = df["close"].iloc[-1] if "close" in df.columns else None
-            except Exception:
-                last_ts, last_close = None, None
-
-            if last_close is not None:
-                if last_ts is not None:
-                    now_ms = int(time.time() * 1000)
-                    if now_ms - last_ts > self.max_price_age_ms:
-                        self.logger.debug("[price stale][%s] 1m close too old: age=%dms > %dms",
-                                          symbol, now_ms - last_ts, self.max_price_age_ms)
-                        return Decimal("0")
-                d = _to_decimal(last_close)
-                self.last_good_px[symbol] = d
-                return d
-
-        # 4) Laatste bekende goede prijs als redmiddel
-        if symbol in self.last_good_px:
-            return self.last_good_px[symbol]
-
+        if isinstance(df, pd.DataFrame) and not df.empty and "close" in df.columns:
+            return _to_decimal(df["close"].iloc[0])
         return Decimal("0")
 
     def _min_lot(self, symbol: str) -> Decimal:
@@ -984,6 +441,24 @@ class TrendStrategy4H:
             return _to_decimal(self.data_client.get_min_lot(symbol))
         except Exception:
             return Decimal("0.0001")
+
+    def _equity_estimate(self) -> Decimal:
+        # zelfde aanpak als pullback: som wallet (EUR + assets in EUR)
+        try:
+            bal = self.order_client.get_balance()
+        except Exception:
+            return Decimal("0")
+        total = Decimal("0")
+        for asset, amt in bal.items():
+            amt = _to_decimal(amt)
+            if asset.upper() == "EUR":
+                total += amt
+            else:
+                sym = f"{asset.upper()}-EUR"
+                px = self._latest_price(sym)
+                if px > 0:
+                    total += (amt * px)
+        return total
 
     # ---------------------------------------------------------
     # Trading (dryrun/auto) - in lijn met pullback
@@ -993,9 +468,9 @@ class TrendStrategy4H:
             return
 
         # sizing: 5% equity capped by max_position_eur, minimaal min_lot*multiplier
-        equity = self._get_equity_estimate()
+        equity = self._equity_estimate()
         allowed_eur_pct = equity * self.max_position_pct
-        allowed_eur = min(allowed_eur_pct, self.max_position_eur)
+        allowed_eur = allowed_eur_pct if allowed_eur_pct < self.max_position_eur else self.max_position_eur
 
         min_lot = self._min_lot(symbol)
         needed_eur_for_min = min_lot * self.min_lot_multiplier * entry_price
@@ -1008,70 +483,26 @@ class TrendStrategy4H:
         buy_eur = needed_eur_for_min
         amount = buy_eur / entry_price
 
-        if side == "buy" and self.trading_mode == "auto":
-            try:
-                bal = self.order_client.get_balance()
-                eur = _to_decimal(bal.get("EUR", "0"))
-                if eur < buy_eur:
-                    self.logger.info("[%s] long skipped: EUR %.2f < needed %.2f", symbol, float(eur), float(buy_eur))
-                    return
-            except Exception as e:
-                self.logger.warning("[%s] EUR balance check failed (%s) => skip", symbol, e)
-                return
-
-        # === SPOT SHORT SAFETY (same behavior as pullback) ===
-        if side == "sell":
-            try:
-                bal = self.order_client.get_balance() if self.order_client else {}
-            except Exception:
-                bal = {}
-
-            base = symbol.split("-")[0].upper()
-            have = _to_decimal(bal.get(base, "0"))
-            needed_coins = self._min_lot(symbol) * self.min_lot_multiplier
-
-            # 1) must own the base coin
-            if have <= 0:
-                self.logger.warning("[OPEN][%s] skip SHORT: no %s in wallet.", symbol, base)
-                return
-
-            # 2) must have at least min_lot * multiplier (same rule as pullback)
-            if have < needed_coins:
-                self.logger.warning(
-                    "[OPEN][%s] skip SHORT: have %.8f %s < needed %.8f (min_lot*multiplier).",
-                    symbol, float(have), base, float(needed_coins)
-                )
-                return
-
-            # ensure we never try to sell more than we own
-            max_sell_amt = have
-            if amount > max_sell_amt:
-                amount = max_sell_amt
-
-            # also cap by risk budget (same allowed_eur you computed above)
-            max_by_risk = allowed_eur / entry_price
-            if amount > max_by_risk:
-                amount = max_by_risk
-
-        # === END SPOT SHORT SAFETY ===
-
         # === DB: master trade (in dryrun/auto). In watch doen we niets. ===
         master_id = None
-        pos_id = f"{symbol}-{int(time.time())}"  # ← nieuw, altijd vóór gebruik
-
+        pos_id = f"{symbol}-{int(time.time())}"  # << NEW: one id used for DB and RAM
         if self.trading_mode in ("dryrun", "auto"):
+            # opening exposure and opening fee (like pullback)
+            open_trade_cost = float(entry_price * _to_decimal(amount))  # actual notional at entry
+            open_fee = open_trade_cost * float(self.fee_rate)
+
             trade_data = {
                 "symbol": symbol,
                 "side": side,
                 "amount": float(amount),
                 "price": float(entry_price),
                 "timestamp": int(time.time() * 1000),
-                "position_id": pos_id,  # ← nu geen error
+                "position_id": pos_id,
                 "position_type": "long" if side == "buy" else "short",
                 "status": "open",
                 "pnl_eur": 0.0,
-                "fees": 0.0,
-                "trade_cost": float(entry_price * amount),
+                "fees": float(open_fee),  # << record opening fee
+                "trade_cost": float(open_trade_cost),  # << record exposure at entry
                 "strategy_name": self.STRATEGY_NAME,
                 "is_master": 1
             }
@@ -1088,21 +519,20 @@ class TrendStrategy4H:
         self.open_positions[symbol] = {
             "side": side,
             "entry_price": entry_price,
-            "amount": amount,
+            "amount": _to_decimal(amount),
             "atr": atr_value,
             "tp1_done": False,
             "trail_active": False,
-            "trail_high": entry_price,
-            "position_id": pos_id,  # ← zelfde waarde als in DB
+            "trail_high": entry_price,  # works for both long/short
+            "position_id": pos_id,  # << uses the same id as DB
             "master_id": master_id,
+            "opened_ts": int(time.time()),  # << NEW
+            "breakeven_applied": False  # << NEW
         }
 
         self.logger.info("[OPEN][%s] %s @ %.4f (ATR=%.4f, mode=%s)",
                          symbol, "LONG" if side == "buy" else "SHORT",
                          float(entry_price), float(atr_value), self.trading_mode)
-
-        notify(f"[OPEN] {symbol} {'LONG' if side == 'buy' else 'SHORT'} @ {float(entry_price):.4f} "
-               f"(ATR={float(atr_value):.4f}, mode={self.trading_mode})")
 
         # log signals bij open
         try:
@@ -1133,10 +563,20 @@ class TrendStrategy4H:
                 pos["trail_active"] = True
                 pos["trail_high"] = max(pos["trail_high"], current_price)
 
+            # --- BREAKEVEN AFTER TP1 (LONG) ---
+            if pos.get("tp1_done") and self.breakeven_after_tp1 and not pos.get("breakeven_applied", False):
+                pos["breakeven_applied"] = True  # mark once
+                # No immediate order; we clamp the trailing stop to never go below entry.
+                self.logger.info("[BREAKEVEN][%s] LONG enforced at entry %.4f after TP1", symbol, float(entry))
+            # --- END BREAKEVEN AFTER TP1 ---
+
             if pos["trail_active"]:
                 if current_price > pos["trail_high"]:
                     pos["trail_high"] = current_price
                 trailing_stop = pos["trail_high"] - (one_r * self.trailing_atr_mult)
+                # clamp to breakeven if enabled/applied
+                if pos.get("breakeven_applied", False):
+                    trailing_stop = max(trailing_stop, entry)
                 if current_price <= trailing_stop:
                     self._close_all(symbol, reason="TrailingStop", exec_price=current_price)
                     return
@@ -1154,10 +594,19 @@ class TrendStrategy4H:
                 pos["trail_active"] = True
                 pos["trail_high"] = current_price  # voor short gebruiken we 'low' als 'trail_high' holder
 
+            # --- BREAKEVEN AFTER TP1 (SHORT) ---
+            if pos.get("tp1_done") and self.breakeven_after_tp1 and not pos.get("breakeven_applied", False):
+                pos["breakeven_applied"] = True
+                self.logger.info("[BREAKEVEN][%s] SHORT enforced at entry %.4f after TP1", symbol, float(entry))
+            # --- END BREAKEVEN AFTER TP1 ---
+
             if pos["trail_active"]:
                 if current_price < pos["trail_high"]:
                     pos["trail_high"] = current_price
                 trailing_stop = pos["trail_high"] + (one_r * self.trailing_atr_mult)
+                # clamp to breakeven if enabled/applied
+                if pos.get("breakeven_applied", False):
+                    trailing_stop = min(trailing_stop, entry)
                 if current_price >= trailing_stop:
                     self._close_all(symbol, reason="TrailingStop", exec_price=current_price)
                     return
@@ -1208,7 +657,7 @@ class TrendStrategy4H:
                 "amount": float(amt_to_close),
                 "price": float(px),
                 "timestamp": int(time.time() * 1000),
-                "position_id": pos["position_id"],
+                "position_id": pos.get("position_id"),
                 "position_type": "long" if side == "buy" else "short",
                 "status": "partial" if portion < 1 else "closed",
                 "pnl_eur": realized_pnl,
@@ -1221,7 +670,8 @@ class TrendStrategy4H:
 
             # update leftover
             pos["amount"] = amount - amt_to_close
-
+            # update master pnl/fees (best-effort)
+            # update master pnl/fees (best-effort)
             master_id = pos.get("master_id")
             if master_id:
                 try:
@@ -1231,34 +681,23 @@ class TrendStrategy4H:
                     )
                     if old:
                         old_fees, old_pnl = old[0]
-                        if pos["amount"] > 0:
-                            # PARTIAL: update ook leftover amount
-                            self.db_manager.update_trade(master_id, {
-                                "status": "partial",
-                                "fees": old_fees + fees,
-                                "pnl_eur": old_pnl + realized_pnl,
-                                "amount": float(pos["amount"])
-                            })
-                        else:
-                            # CLOSED: géén 'amount' meer wegschrijven (laat laatste leftover staan)
-                            self.db_manager.update_trade(master_id, {
-                                "status": "closed",
-                                "fees": old_fees + fees,
-                                "pnl_eur": old_pnl + realized_pnl
-                            })
+                        old_fees = float(old_fees or 0.0)
+                        old_pnl = float(old_pnl or 0.0)
+                        self.db_manager.update_trade(master_id, {
+                            "status": "partial" if pos["amount"] > 0 else "closed",
+                            "fees": old_fees + float(fees),
+                            "pnl_eur": old_pnl + float(realized_pnl),
+                            "amount": float(pos["amount"])
+                        })
                 except Exception:
                     pass
 
         self.logger.info("[PARTIAL CLOSE][%s] portion=%.2f, px=%.4f, reason=%s",
                          symbol, float(portion), float(px), reason)
 
-        notify(f"[{reason}] {symbol} portion={float(portion):.2f} px={float(px):.4f}")
-
         # log signals bij partial
-        # log signals with correct event
         try:
-            ev = "close" if portion == Decimal("1.0") else "partial"
-            self._save_trade_signals(pos.get("master_id"), ev, symbol, pos["atr"])
+            self._save_trade_signals(pos.get("master_id"), "partial", symbol, pos["atr"])
         except Exception:
             pass
 
@@ -1270,12 +709,6 @@ class TrendStrategy4H:
                     self.db_manager.update_trade(mid, {"status": "closed"})
                 except Exception:
                     pass
-                # Send close summary (includes net PnL/fees/ROI/hold-time/partials)
-                try:
-                    self._notify_close_summary(symbol, pos, mid, reason, px)
-                except Exception as e:
-                    self.logger.debug("[notify summary][%s] %s", symbol, e)
-
             del self.open_positions[symbol]
 
     def _close_all(self, symbol: str, reason: str, exec_price: Optional[Decimal] = None):
@@ -1336,100 +769,66 @@ class TrendStrategy4H:
         except Exception as e:
             self.logger.debug("[signals] kon niet opslaan: %s", e)
 
-    def _sum_child_trade_amounts(self, position_id: str) -> Optional[Decimal]:
-        """Sommeer amount van alle child-trades (is_master=0) met dezelfde position_id."""
-        try:
-            row = self.db_manager.execute_query(
-                """
-                SELECT COALESCE(SUM(amount), 0)
-                FROM trades
-                WHERE is_master=0
-                  AND position_id=?
-                  AND strategy_name=?
-                """,
-                (position_id, self.STRATEGY_NAME)
-            )
-            if row and row[0] and row[0][0] is not None:
-                return _to_decimal(row[0][0])
-        except Exception as e:
-            self.logger.debug("[reload] child-sum query faalde voor %s: %s", position_id, e)
-        return None
-
-    def reload_open_positions(self):
-        """Lees open/partial master trades (trend_4h) uit DB en herstel self.open_positions."""
+    def _load_open_positions_from_db(self):
+        """
+        Load open/partial MASTER trades (strategy_name='trend_4h') from DB
+        and rebuild self.open_positions with a fresh ATR (1h).
+        """
         try:
             rows = self.db_manager.execute_query(
                 """
-                SELECT id, symbol, side, price, amount, position_id
-                FROM trades
-                WHERE is_master=1
-                  AND status IN ('open','partial')
-                  AND strategy_name=?
+                SELECT id, symbol, side, amount, price, position_id, position_type, status
+                  FROM trades
+                 WHERE is_master=1
+                   AND status IN ('open','partial')
+                   AND strategy_name=?
                 """,
                 (self.STRATEGY_NAME,)
             )
-
         except Exception as e:
-            self.logger.warning("[reload] DB-query faalde: %s", e)
-            rows = []
+            self.logger.warning("[reload] DB read failed: %s", e)
+            return
 
-        restored = 0
-        self.open_positions = {}  # reset
+        if not rows:
+            self.logger.info("[reload] no open/partial trend_4h masters found.")
+            return
 
-        for (trade_id, symbol, side, price, amount, position_id) in rows or []:
-            # 1) ATR proberen te halen uit laatste signals van deze trade
-            atr_val = self._load_atr_from_signals(trade_id)
-            if atr_val is None:
-                # fallback: bereken ATR op 1h
-                df_1h = self._fetch_df(symbol, self.entry_tf, limit=100)
-                atr_val = self._compute_atr(df_1h, self.atr_window) if not df_1h.empty else None
-            if atr_val is None:
-                self.logger.info("[reload] %s trade %s zonder ATR => skip", symbol, trade_id)
-                continue
-
-            entry_price = _to_decimal(price)
-            amt = _to_decimal(amount)
-
-            # Min-lot check (gebruik de bestaande helper)
-            min_lot = self._min_lot(symbol)
-            if amt <= 0:
-                self.logger.info("[reload] %s trade %s amount<=0 => skip", symbol, trade_id)
-                continue
-
-            if (min_lot > 0 and amt < min_lot):
-                if self.trading_mode == "auto":
-                    self.logger.info("[reload] %s trade %s onder min lot => skip (auto)", symbol, trade_id)
-                    continue
-                else:
-                    self.logger.info("[reload] %s trade %s onder min lot => HERSTEL (dryrun)", symbol, trade_id)
-                    # Niet 'continue' in dryrun
-
-            # Child-som check: als children de master al (bijna) leeg hebben, skip
-            total_child_amount = self._sum_child_trade_amounts(position_id)
-            if total_child_amount is not None and amt <= total_child_amount:
-                self.logger.info("[reload] %s trade %s reeds afgebouwd door children => skip", symbol, trade_id)
+        for (db_id, symbol, side, amount, entry_price, position_id, position_type, status) in rows:
+            # Recompute ATR from 1h
+            df_1h = self._fetch_df(symbol, self.entry_tf, limit=200)
+            atr_val = self._compute_atr(df_1h, self.atr_window)
+            if not atr_val:
+                self.logger.info("[reload][%s] no ATR available => skip restore.", symbol)
                 continue
 
             self.open_positions[symbol] = {
-                "side": side,  # "buy" of "sell"
-                "entry_price": entry_price,
-                "amount": amt,
+                "side": side,  # "buy" or "sell"
+                "entry_price": _to_decimal(entry_price),
+                "amount": _to_decimal(amount),
                 "atr": _to_decimal(atr_val),
-                "tp1_done": False,  # kan je later afleiden uit child-trades
+                "tp1_done": False,
                 "trail_active": False,
-                "trail_high": entry_price,  # wordt tijdens runtime bijgewerkt
+                "trail_high": _to_decimal(entry_price),
                 "position_id": position_id,
-                "master_id": trade_id,
+                "position_type": position_type,
+                "master_id": db_id,
+                "opened_ts": int(time.time()),  # default since DB has no open timestamp
+                "breakeven_applied": False
             }
-            restored += 1
-            self.logger.info("[reload] hersteld: %s (%s) entry=%.4f amount=%.8f ATR=%.5f",
-                             symbol, "LONG" if side == "buy" else "SHORT",
-                             float(entry_price), float(amt), float(atr_val))
 
-        if restored == 0:
-            self.logger.info("[reload] geen open/partial trend_4h master trades gevonden.")
-        else:
-            self.logger.info("[reload] %d open positie(s) hersteld voor trend_4h.", restored)
+            self.logger.info(
+                "[reload][%s] restored: side=%s, amt=%s @ %s, ATR=%.4f, master_id=%s",
+                symbol, side, str(amount), str(entry_price), float(atr_val), db_id
+            )
+
+    def reload_open_positions(self):
+        """Manual/periodic refresh from DB into RAM using the unified loader."""
+        try:
+            self.logger.info("[reload] manual reload requested for trend_4h.")
+            self.open_positions = {}  # clear RAM view
+            self._load_open_positions_from_db()  # single source of truth
+        except Exception as e:
+            self.logger.warning("[reload] failed: %s", e)
 
     def _load_atr_from_signals(self, trade_id: int):
         """Pak laatste atr_value uit signals voor deze trade_id."""

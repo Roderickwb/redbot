@@ -254,13 +254,15 @@ trend_strategy_4h:
   trend_timeframe: "4h"         # richting & trend-structuur
   entry_timeframe: "1h"         # timing/trigger
 
-  # Trend & momentum filters
+  # Trend & momentum filters (tighten slightly)
   use_adx_filter: true
-  adx_entry_tf_threshold: 20
-  adx_high_tf_threshold: 20
-  adx_window: 14                 # keep equal to _compute_adx_di
+  adx_entry_tf_threshold: 22        # was 20
+  use_adx_multitimeframe: true
+  adx_high_tf_threshold: 22         # was 20
+  use_adx_directional_filter: true
+  adx_window: 14
   adx_check_timeframes: [ "1h","4h" ]
-  adx_logic: "either"            # "either" | "both"
+  adx_logic: "both"                 # was "either" → demand trend on both TFs
   require_di_alignment: true
 
   # EMA-structuur (klassiek trend-volgen)
@@ -273,17 +275,22 @@ trend_strategy_4h:
   ema_trend_period: 200
 
   # Optional: Supertrend gate (we vullen later in)
-  use_supertrend: false
+  use_supertrend: true
   supertrend_period: 10
   supertrend_multiplier: 3.0
 
   # Risk / positionering (zelfde stijl als pullback)
   atr_window: 14
   atr_timeframe_for_risk: "1h"     # "1h" (entry TF). Later kun je "4h" of "5m" testen.
-  sl_atr_mult: 1.5
-  tp1_atr_mult: 1.5
+  sl_atr_mult: 1.3
+  tp1_atr_mult: 2.0
   tp1_portion_pct: 0.50
-  trailing_atr_mult: 1.0
+  trailing_atr_mult: 0.9
+
+  # NEW – add these (we’ll wire them in code below)
+  breakeven_after_tp1: true         # move stop to BE after TP1
+  max_hold_hours: 18                # time-stop to avoid dead trades
+  time_stop_action: "breakeven"     # "breakeven" or "close"
 
   # Intra-candle exit checks (jij hebt al ~30s in executor)
   exit_check_intra_seconds: 30
@@ -309,13 +316,13 @@ trend_strategy_4h:
   # --- Confirms ---
   volume_confirm:
     enabled: true
-    mult: 1.20                   # Vol >= mult * SMA20(Vol)
+    mult: 1.50                   # Vol >= mult * SMA20(Vol) was 1.2
     min_bars: 20                 # need at least 20 completed bars; else skip this confirm
 
   candle_quality:
     enabled: true
-    body_atr_min: 0.60           # Body >= 0.60 * ATR(1h)
-    wick_body_max: 1.00          # Long: upper_wick/body <= 1.0 ; Short: lower_wick/body <= 1.0
+    body_atr_min: 0.80           # Body >= 0.60 * ATR(1h)
+    wick_body_max: 0.80          # Long: upper_wick/body <= 1.0 ; Short: lower_wick/body <= 1.0
 
 
 telegram:

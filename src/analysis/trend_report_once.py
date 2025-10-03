@@ -10,7 +10,7 @@ One-shot report for the Trend strategy.
 - Prints a console summary and writes:
     - CSV: trend_report_<strategy>_<stamp>.csv
     - TXT: trend_report_<strategy>_<stamp>.txt
-No external deps beyond Python stdlib.
+Only stdlib required.
 """
 
 import argparse
@@ -62,7 +62,6 @@ def load_trades(conn, strategy, start_ms, end_ms=None):
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    # Required columns based on your screenshot
     need = [
         "id","timestamp","datetime_utc","symbol","side","price","amount",
         "position_id","position_type","status","pnl_eur","fees","trade_cost",
@@ -97,7 +96,6 @@ def summarize_positions(groups):
     report_rows = []
     totals = {"gross":0.0, "fees":0.0, "net":0.0, "wins":0, "losses":0, "count":0}
     for pid, gr in groups.items():
-        # master fallback = first row if none flagged
         master = next((rr for rr in gr if rr["is_master"] == 1), gr[0])
         symbol = master["symbol"]
         side0  = master["side"]
@@ -166,7 +164,6 @@ def render_summary(strategy, start, end, rows, totals):
         avg_hold = sum(r["held_hours"] for r in rows) / len(rows)
         lines.append(f"Avg ROI/position: {avg_roi:.2f}% | Avg hold: {avg_hold:.2f}h")
 
-        # Top/bottom by net
         top = sorted(rows, key=lambda x: x["net_pnl_eur"], reverse=True)[:5]
         bot = sorted(rows, key=lambda x: x["net_pnl_eur"])[:5]
 
@@ -199,7 +196,6 @@ def main():
 
     conn = sqlite3.connect(args.db)
     try:
-        # sanity check: strategy exists
         strategies = read_distinct_strategies(conn.cursor())
         if args.strategy not in strategies:
             print(f"⚠️  strategy_name '{args.strategy}' not found in DB.")
@@ -227,7 +223,6 @@ def main():
         summary_txt = render_summary(args.strategy, args.start, args.end, report_rows, totals)
         write_txt(txt_path, summary_txt)
 
-        # Also print to console
         print(summary_txt)
         print(f"\nCSV: {csv_path}")
         print(f"TXT: {txt_path}")

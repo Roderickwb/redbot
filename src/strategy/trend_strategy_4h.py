@@ -443,13 +443,13 @@ class TrendStrategy4H:
             return Decimal("0.0001")
 
     def _equity_estimate(self) -> Decimal:
-        # zelfde aanpak als pullback: som wallet (EUR + assets in EUR)
         try:
             bal = self.order_client.get_balance()
         except Exception:
-            return Decimal("0")
+            bal = {}
+
         total = Decimal("0")
-        for asset, amt in bal.items():
+        for asset, amt in (bal or {}).items():
             amt = _to_decimal(amt)
             if asset.upper() == "EUR":
                 total += amt
@@ -458,6 +458,11 @@ class TrendStrategy4H:
                 px = self._latest_price(sym)
                 if px > 0:
                     total += (amt * px)
+
+        # Fallback so paper sizing works
+        if total <= 0 and self.trading_mode == "dryrun":
+            total = _to_decimal(yaml_config.get("paper_equity_eur", 1000))
+
         return total
 
     # ---------------------------------------------------------
@@ -796,6 +801,17 @@ class TrendStrategy4H:
         for (db_id, symbol, side, amount, entry_price, position_id, position_type, status) in rows:
             # Recompute ATR from 1h
             df_1h = self._fetch_df(symbol, self.entry_tf, limit=200)
+            # NEW: tiny retry for late-writing candles (up to ~10s total)
+            if (df_1h.empty or not self._last_candle_closed(df_1h)):
+                for _ in range(5):  # 5 retries x 2s = ~10s
+                    time.sleep(2)
+                    df_1h = self._fetch_df(symbol, self.entry_tf, limit=200)
+                    if not df_1h.empty and self._last_candle_closed(df_1h):
+                        break
+
+            if df_1h.empty or not self._last_candle_closed(df_1h):
+                return
+
             atr_val = self._compute_atr(df_1h, self.atr_window)
             if not atr_val:
                 self.logger.info("[reload][%s] no ATR available => skip restore.", symbol)

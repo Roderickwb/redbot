@@ -295,6 +295,8 @@ trend_strategy_4h:
   # Intra-candle exit checks (jij hebt al ~30s in executor)
   exit_check_intra_seconds: 30
 
+  paper_equity_eur: 1000
+
   # Limieten
   min_lot_multiplier: 2.1
   max_position_pct: 0.05

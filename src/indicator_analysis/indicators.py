@@ -182,6 +182,91 @@ class IndicatorAnalysis:
         return atr_obj.average_true_range()
 
     @staticmethod
+    def calculate_supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> pd.DataFrame:
+        """
+        Minimal Supertrend implementation returning a DataFrame with:
+        - 'supertrend': the current supertrend line (float)
+        - 'in_uptrend': boolean series for trend state
+
+        Requires columns: high, low, close
+        """
+        if df.empty:
+            return pd.DataFrame(index=df.index, data={"supertrend": [], "in_uptrend": []})
+
+        src = df.copy()
+
+        # ATR
+        atr = AverageTrueRange(
+            high=src["high"], low=src["low"], close=src["close"], window=period
+        ).average_true_range()
+        src["atr"] = atr
+
+        # Basic bands
+        hl2 = (src["high"] + src["low"]) / 2.0
+        src["basic_upper"] = hl2 + (multiplier * src["atr"])
+        src["basic_lower"] = hl2 - (multiplier * src["atr"])
+
+        # Final bands (carry-forward rules)
+        final_upper = []
+        final_lower = []
+        for i in range(len(src)):
+            if i == 0:
+                final_upper.append(src["basic_upper"].iloc[i])
+                final_lower.append(src["basic_lower"].iloc[i])
+                continue
+
+            prev_close = src["close"].iloc[i - 1]
+            prev_final_upper = final_upper[-1]
+            prev_final_lower = final_lower[-1]
+            cu = src["basic_upper"].iloc[i]
+            cl = src["basic_lower"].iloc[i]
+
+            # Upper band can only stay the same or decrease
+            if cu < prev_final_upper or prev_close > prev_final_upper:
+                final_upper.append(cu)
+            else:
+                final_upper.append(prev_final_upper)
+
+            # Lower band can only stay the same or increase
+            if cl > prev_final_lower or prev_close < prev_final_lower:
+                final_lower.append(cl)
+            else:
+                final_lower.append(prev_final_lower)
+
+        src["final_upper"] = pd.Series(final_upper, index=src.index)
+        src["final_lower"] = pd.Series(final_lower, index=src.index)
+
+        # Trend flip logic
+        in_uptrend = [True]
+        supertrend = [src["final_lower"].iloc[0]]
+
+        for i in range(1, len(src)):
+            prev_up = in_uptrend[-1]
+            close_i = src["close"].iloc[i]
+            fu = src["final_upper"].iloc[i]
+            fl = src["final_lower"].iloc[i]
+
+            if prev_up:
+                if close_i < fl:
+                    in_uptrend.append(False)
+                    supertrend.append(fu)
+                else:
+                    in_uptrend.append(True)
+                    supertrend.append(fl)
+            else:
+                if close_i > fu:
+                    in_uptrend.append(True)
+                    supertrend.append(fl)
+                else:
+                    in_uptrend.append(False)
+                    supertrend.append(fu)
+
+        out = pd.DataFrame(index=src.index)
+        out["supertrend"] = pd.Series(supertrend, index=src.index)
+        out["in_uptrend"] = pd.Series(in_uptrend, index=src.index).astype(bool)
+        return out
+
+    @staticmethod
     def calculate_indicators(df, rsi_window=14):
         """
         Voeg RSI, moving average, Bollinger Bands, MACD, EMA(9,21) en ATR(14) toe

@@ -284,6 +284,7 @@ class MeltdownManager:
         )
         return last_rsi_dec > self.rsi_reentry_threshold
 
+    #
     # [CHANGED] => helperfuncties voor peak_state.yaml
     def _load_peak_equity(self):
         """

@@ -1495,6 +1495,7 @@ class PullbackAccumulateStrategy:
                 if price > 0:
                     total_wallet_eur += (amt * price)
 
+        #
         # Als je open_positions gebruikt voor trades,
         # en die assets zitten *ook* fysiek in de wallet,
         # dan is de waarde al meegerekend.

@@ -34,6 +34,8 @@ from ta.trend import ADXIndicator, MACD
 from src.logger.logger import setup_logger
 from src.config.config import yaml_config  # al door main geladen
 from src.indicator_analysis.indicators import IndicatorAnalysis
+from src.notifier.telegram_notifier import TelegramNotifier
+from src.notifier.bus import send as bus_send
 
 
 def _to_decimal(x) -> Decimal:
@@ -46,7 +48,9 @@ def _to_decimal(x) -> Decimal:
 class TrendStrategy4H:
     STRATEGY_NAME = "trend_4h"
 
-    def __init__(self, data_client, order_client, db_manager, config_path=None):
+    def __init__(self, data_client, order_client, db_manager, notifier: Optional[TelegramNotifier] = None,
+                     config_path=None):
+
         """
         :param data_client:    KrakenMixedClient (data)
         :param order_client:   FakeClient (paper) of Kraken client (real)
@@ -60,6 +64,7 @@ class TrendStrategy4H:
         self.data_client = data_client
         self.order_client = order_client
         self.db_manager = db_manager
+        self.notifier = notifier  # <— DIT IS NIEUW
 
         # === YAML settings ===
         self.enabled = bool(cfg.get("enabled", False))
@@ -118,6 +123,14 @@ class TrendStrategy4H:
         self.intra_log_verbose = bool(cfg.get("intra_log_verbose", True))
 
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
+
+    def _notify(self, text: str):
+        """Stuur een Telegram-bericht via de globale notifier-bus (als die er is)."""
+        try:
+            bus_send(text)
+        except Exception:
+            # notificatie mag nooit de strategie slopen
+            pass
 
     # ---------------------------------------------------------
     # Public API
@@ -532,7 +545,11 @@ class TrendStrategy4H:
             "position_id": pos_id,  # << uses the same id as DB
             "master_id": master_id,
             "opened_ts": int(time.time()),  # << NEW
-            "breakeven_applied": False  # << NEW
+            "breakeven_applied": False,  # << NEW
+            # --- NIEUW: voor Telegram / PnL bij full close ---
+            "initial_amount": _to_decimal(amount),
+            "realized_pnl": Decimal("0"),
+            "total_fees": Decimal("0")
         }
 
         self.logger.info("[OPEN][%s] %s @ %.4f (ATR=%.4f, mode=%s)",
@@ -544,6 +561,24 @@ class TrendStrategy4H:
             self._save_trade_signals(master_id, "open", symbol, atr_value)
         except Exception:
             pass
+
+        # Telegram notificatie bij open
+        # AFTER logger.info("[OPEN]...") and _save_trade_signals
+
+        sl = float(entry_price - (atr_value * self.sl_atr_mult)) if side == "buy" else float(
+            entry_price + (atr_value * self.sl_atr_mult))
+        tp1 = float(entry_price + (atr_value * self.tp1_atr_mult)) if side == "buy" else float(
+            entry_price - (atr_value * self.tp1_atr_mult))
+
+        eur_size = float(amount * entry_price)
+
+        self._notify(
+            f"[TREND-OPEN][{symbol}] {'LONG' if side == 'buy' else 'SHORT'} @ {float(entry_price):.4f}\n"
+            f"size: €{eur_size:.2f} ({float(amount):.6f})\n"
+            f"SL={sl:.4f} | TP1={tp1:.4f} | ATR={float(atr_value):.4f}\n"
+            f"GPT: pending\n"  # wordt straks live ingevuld
+            f"reason: pending"
+        )
 
     def _manage_position(self, symbol: str, current_price: Decimal, atr_value: Decimal):
         if symbol not in self.open_positions:
@@ -655,6 +690,10 @@ class TrendStrategy4H:
             trade_cost = px * amt_to_close
             fees = float(trade_cost * self.fee_rate)
             realized_pnl = float(pnl_raw) - fees
+            # --- NIEUW: totals in RAM bijhouden voor CLOSE-bericht ---
+            pos["realized_pnl"] = pos.get("realized_pnl", Decimal("0")) + _to_decimal(realized_pnl)
+            pos["total_fees"] = pos.get("total_fees", Decimal("0")) + _to_decimal(fees)
+
 
             child = {
                 "symbol": symbol,
@@ -700,6 +739,26 @@ class TrendStrategy4H:
         self.logger.info("[PARTIAL CLOSE][%s] portion=%.2f, px=%.4f, reason=%s",
                          symbol, float(portion), float(px), reason)
 
+        # Telegram partial
+        side_label = "LONG" if side == "buy" else "SHORT"
+        entry = pos["entry_price"]
+
+        exposure = float(entry * amt_to_close)
+        pnl_raw = (float(px) - float(entry)) * float(amt_to_close) if side == "buy" else (float(entry) - float(
+            px)) * float(amt_to_close)
+        pnl = pnl_raw - float(fees)
+        roi = (pnl_raw / exposure) * 100 if exposure > 0 else 0.0
+        r_value = pnl_raw / (
+                    float(pos["atr"]) * float(self.sl_atr_mult) * float(amt_to_close)) if amt_to_close > 0 else 0.0
+
+        self._notify(
+            f"[TREND-PARTIAL][{symbol}] {side_label}\n"
+            f"{float(portion):.2f} closed @ {float(px):.4f} ({reason})\n"
+            f"realized PnL: {pnl:+.2f} EUR | {r_value:+.2f}R | ROI: {roi:+.1f}%\n"
+            f"fees: {fees:.4f}\n"
+            f"remaining: €{float((amount - amt_to_close) * entry):.2f} ({float(amount - amt_to_close):.6f})"
+        )
+
         # log signals bij partial
         try:
             self._save_trade_signals(pos.get("master_id"), "partial", symbol, pos["atr"])
@@ -707,13 +766,40 @@ class TrendStrategy4H:
             pass
 
         if pos["amount"] <= 0:
-            # volledig dicht
+            # volledig dicht -> master op closed
             mid = pos.get("master_id")
             if mid:
                 try:
                     self.db_manager.update_trade(mid, {"status": "closed"})
                 except Exception:
                     pass
+
+            # --- NIEUW: totaal PnL / ROI / R / fees / hold time ---
+            total_pnl = float(pos.get("realized_pnl", Decimal("0")))
+            total_fees = float(pos.get("total_fees", Decimal("0")))
+            entry = pos["entry_price"]
+            initial_amount = pos.get("initial_amount", amount)
+
+            exposure = float(entry * initial_amount)
+            roi_total = (total_pnl / exposure) * 100 if exposure > 0 else 0.0
+            r_total = (
+                total_pnl /
+                (float(pos["atr"]) * float(self.sl_atr_mult) * float(initial_amount))
+                if initial_amount > 0 else 0.0
+            )
+            hold_hours = (time.time() - pos.get("opened_ts", int(time.time()))) / 3600.0
+
+            side_label = "LONG" if side == "buy" else "SHORT"
+
+            self._notify(
+                f"[TREND-CLOSE][{symbol}] {side_label} ({reason})\n"
+                f"exit @ {float(px):.4f}\n"
+                f"total PnL: {total_pnl:+.2f} EUR | {r_total:+.2f}R | ROI: {roi_total:+.1f}%\n"
+                f"fees total: {total_fees:.4f}\n"
+                f"hold time: {hold_hours:.1f} uur"
+            )
+
+            # tenslotte uit RAM halen
             del self.open_positions[symbol]
 
     def _close_all(self, symbol: str, reason: str, exec_price: Optional[Decimal] = None):

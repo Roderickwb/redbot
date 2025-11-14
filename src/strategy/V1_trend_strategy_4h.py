@@ -36,7 +36,6 @@ from src.config.config import yaml_config  # al door main geladen
 from src.indicator_analysis.indicators import IndicatorAnalysis
 from src.notifier.telegram_notifier import TelegramNotifier
 from src.notifier.bus import send as bus_send
-from src.ai.gpt_trend_decider import get_gpt_action
 
 
 def _to_decimal(x) -> Decimal:
@@ -157,9 +156,6 @@ class TrendStrategy4H:
         df_4h[f"ema_{self.ema_slow}"] = ema_slow_4h
 
         adx_4h, _, _ = self._compute_adx_di(df_4h)
-        # Voeg ook RSI/MACD toe op 4h zodat GPT die kan gebruiken
-        df_4h = self._add_rsi_macd(df_4h)
-
 
         # Trendrichting
         last_close_4h = df_4h["close"].iloc[-1]
@@ -272,145 +268,15 @@ class TrendStrategy4H:
 
         has_pos = (symbol in self.open_positions)
 
-        # In watch-mode nog geen GPT-calls / entries forceren
         if self.trading_mode == "watch":
+            # niets openen, alleen kijken
             return
 
-        # Alleen een nieuwe setup als er nog geen positie open is
         if not has_pos and trend_dir in ("bull", "bear"):
-            # 1) Algo-signal bepalen
-            algo_signal = "long_candidate" if trend_dir == "bull" else "short_candidate"
-
-            # 2) Extra trend-info 1h op basis van EMA
-            df_1h[f"ema_{self.ema_fast}"] = df_1h["close"].ewm(span=self.ema_fast).mean()
-            df_1h[f"ema_{self.ema_slow}"] = df_1h["close"].ewm(span=self.ema_slow).mean()
-            last_close_1h = float(df_1h["close"].iloc[-1])
-            last_ema_fast_1h = float(df_1h[f"ema_{self.ema_fast}"].iloc[-1])
-            last_ema_slow_1h = float(df_1h[f"ema_{self.ema_slow}"].iloc[-1])
-
-            trend_1h = "range"
-            if last_ema_fast_1h > last_ema_slow_1h and last_close_1h > last_ema_fast_1h:
-                trend_1h = "bull"
-            elif last_ema_fast_1h < last_ema_slow_1h and last_close_1h < last_ema_fast_1h:
-                trend_1h = "bear"
-
-            trend_4h = trend_dir  # hergebruik je bestaande 4h-trend
-
-            # 3) EMA-dicts
-            ema_1h = {
-                "20": last_ema_fast_1h,
-                "50": last_ema_slow_1h,
-                "relation": "20>50" if last_ema_fast_1h > last_ema_slow_1h else "20<50",
-                "slope_20": "up" if df_1h[f"ema_{self.ema_fast}"].iloc[-1] > df_1h[f"ema_{self.ema_fast}"].iloc[-2] else "down"
-            }
-
-            ema_4h = {
-                "20": float(last_ema_fast_4h),
-                "50": float(last_ema_slow_4h),
-                "relation": "20>50" if last_ema_fast_4h > last_ema_slow_4h else "20<50",
-                "slope_20": "up" if df_4h[f"ema_{self.ema_fast}"].iloc[-1] > df_4h[f"ema_{self.ema_fast}"].iloc[-2] else "down"
-            }
-
-            # 4) RSI / MACD voor GPT
-            rsi_1h = float(df_1h["rsi"].iloc[-1]) if "rsi" in df_1h.columns else 50.0
-            rsi_slope_1h = rsi_1h - (float(df_1h["rsi"].iloc[-2]) if "rsi" in df_1h.columns else rsi_1h)
-            macd_1h = float(df_1h["macd"].iloc[-1]) if "macd" in df_1h.columns else 0.0
-
-            rsi_4h = float(df_4h["rsi"].iloc[-1]) if "rsi" in df_4h.columns else 50.0
-            rsi_slope_4h = rsi_4h - (float(df_4h["rsi"].iloc[-2]) if "rsi" in df_4h.columns else rsi_4h)
-            macd_4h = float(df_4h["macd"].iloc[-1]) if "macd" in df_4h.columns else 0.0
-
-            # 5) Support/resistance
-            levels_1h = self._compute_sr_levels(df_1h, window=20)
-            levels_4h = self._compute_sr_levels(df_4h, window=20)
-
-            # 6) Compacte candles bouwen
-            candles_1h = self._build_compact_candles(
-                df_1h,
-                ema_fast_col=f"ema_{self.ema_fast}",
-                ema_slow_col=f"ema_{self.ema_slow}",
-                limit=20
-            )
-            candles_4h = self._build_compact_candles(
-                df_4h,
-                ema_fast_col=f"ema_{self.ema_fast}",
-                ema_slow_col=f"ema_{self.ema_slow}",
-                limit=20
-            )
-
-            # 7) GPT om een besluit vragen
-            try:
-                action, decision = get_gpt_action(
-                    symbol=symbol,
-                    algo_signal=algo_signal,
-                    trend_1h=trend_1h,
-                    trend_4h=trend_4h,
-                    structure_1h="unknown",   # later kun je HL/LH logica toevoegen
-                    structure_4h="unknown",
-                    ema_1h=ema_1h,
-                    ema_4h=ema_4h,
-                    rsi_1h=rsi_1h,
-                    rsi_slope_1h=rsi_slope_1h,
-                    macd_1h=macd_1h,
-                    rsi_4h=rsi_4h,
-                    rsi_slope_4h=rsi_slope_4h,
-                    macd_4h=macd_4h,
-                    levels_1h=levels_1h,
-                    levels_4h=levels_4h,
-                    candles_1h=candles_1h,
-                    candles_4h=candles_4h,
-                )
-            except Exception as e:
-                self.logger.warning("[%s] GPT decision failed (%s) => fallback HOLD", symbol, e)
-                action = "HOLD"
-                decision = {
-                    "action": "HOLD",
-                    "confidence": 0,
-                    "rationale": "GPT error",
-                    "journal_tags": []
-                }
-
-            self.logger.info(
-                "[GPT][%s] algo_signal=%s => action=%s, conf=%s, rationale=%s, tags=%s",
-                symbol,
-                algo_signal,
-                action,
-                decision.get("confidence"),
-                decision.get("rationale"),
-                decision.get("journal_tags"),
-            )
-
-            # 8) Actie van GPT vertalen naar side/open
-            if action == "OPEN_LONG":
-                side = "buy"
-            elif action == "OPEN_SHORT":
-                side = "sell"
-            else:
-                # HOLD => geen positie openen
-                self.logger.info("[%s] GPT -> HOLD => geen trade geopend.", symbol)
-                # Eventueel Telegram bij HOLD (optioneel)
-                self._notify(
-                    f"[GPT-HOLD][{symbol}] "
-                    f"signal={algo_signal} | conf={decision.get('confidence', 0)}\n"
-                    f"reason: {decision.get('rationale', '')}"
-                )
-                return
-
-            # 9) Als GPT een trade wil en mode is dryrun/auto => openen
+            side = "buy" if trend_dir == "bull" else "sell"
             self._open_position(symbol, side=side, entry_price=current_price, atr_value=_to_decimal(atr_1h))
 
-            # Extra Telegram met GPT-beslissing
-            try:
-                tags = decision.get("journal_tags", [])
-                tags_str = ", ".join(tags) if isinstance(tags, list) else str(tags)
-                self._notify(
-                    f"[GPT-OPEN][{symbol}] action={action} | signal={algo_signal}\n"
-                    f"conf={decision.get('confidence', 0)} | tags=[{tags_str}]\n"
-                    f"reason: {decision.get('rationale', '')}"
-                )
-            except Exception:
-                pass
-
+        # als al positie, wordt trailing/sl/tp in manage_intra_candle_exits() gedaan
 
     def manage_intra_candle_exits(self):
         """Aangeroepen door executor (aparte thread)."""
@@ -563,71 +429,6 @@ class TrendStrategy4H:
             return float(val) if pd.notna(val) else None
         except Exception:
             return None
-
-    def _compute_sr_levels(self, df: pd.DataFrame, window: int = 20) -> dict:
-        """
-        Simpele support/resistance op basis van laatste N candles.
-        """
-        if df.empty or "high" not in df.columns or "low" not in df.columns:
-            return {"support": None, "resistance": None}
-
-        recent = df.tail(window)
-        support = float(recent["low"].min())
-        resistance = float(recent["high"].max())
-        return {"support": support, "resistance": resistance}
-
-    def _build_compact_candles(self, df: pd.DataFrame, ema_fast_col: str, ema_slow_col: str, limit: int = 20) -> list:
-        """
-        Bouw compacte candle-structuur (B) met OHLC, EMA, RSI, MACD, volume, wicks.
-        """
-        if df.empty:
-            return []
-
-        subset = df.tail(limit).copy()
-        candles = []
-
-        for _, row in subset.iterrows():
-            try:
-                o = float(row["open"])
-                h = float(row["high"])
-                l = float(row["low"])
-                c = float(row["close"])
-                vol = float(row["volume"]) if "volume" in row else 0.0
-
-                ema_fast = float(row[ema_fast_col]) if ema_fast_col in row else c
-                ema_slow = float(row[ema_slow_col]) if ema_slow_col in row else c
-
-                rsi = float(row["rsi"]) if "rsi" in row and pd.notna(row["rsi"]) else 50.0
-
-                if "macd" in row and "macd_signal" in row and pd.notna(row["macd"]) and pd.notna(row["macd_signal"]):
-                    macd_hist = float(row["macd"] - row["macd_signal"])
-                else:
-                    macd_hist = 0.0
-
-                total_range = max(h - l, 1e-9)
-                top_wick = max(h - c, h - o)
-                bot_wick = max(c - l, o - l)
-                top_wick_pct = float((top_wick / total_range) * 100.0)
-                bot_wick_pct = float((bot_wick / total_range) * 100.0)
-
-                candles.append({
-                    "o": o,
-                    "h": h,
-                    "l": l,
-                    "c": c,
-                    "ema20": ema_fast,
-                    "ema50": ema_slow,
-                    "rsi": rsi,
-                    "macd_hist": macd_hist,
-                    "vol": vol,
-                    "top_wick_pct": top_wick_pct,
-                    "bot_wick_pct": bot_wick_pct,
-                })
-            except Exception:
-                # één kapotte candle mag de boel niet slopen
-                continue
-
-        return candles
 
     def _latest_price(self, symbol: str) -> Decimal:
         # probeeer WS prijs via data_client

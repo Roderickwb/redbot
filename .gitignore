@@ -34,3 +34,5 @@ dist/
 data.zip
 
 "src/config/peak_state.yaml" 
+
+src/ai/local_gpt_config.py

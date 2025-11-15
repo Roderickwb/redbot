@@ -345,7 +345,7 @@ class TrendStrategy4H:
                     algo_signal=algo_signal,
                     trend_1h=trend_1h,
                     trend_4h=trend_4h,
-                    structure_1h="unknown",   # later kun je HL/LH logica toevoegen
+                    structure_1h="unknown",
                     structure_4h="unknown",
                     ema_1h=ema_1h,
                     ema_4h=ema_4h,
@@ -370,14 +370,35 @@ class TrendStrategy4H:
                     "journal_tags": []
                 }
 
+            # Logging + compacte GPT-notificatie
+            conf = decision.get("confidence", 0) or 0
+            rationale = decision.get("rationale", "") or ""
+            journal_tags = decision.get("journal_tags", [])
+            tags_str = ", ".join(journal_tags) if isinstance(journal_tags, list) else str(journal_tags)
+
             self.logger.info(
                 "[GPT][%s] algo_signal=%s => action=%s, conf=%s, rationale=%s, tags=%s",
                 symbol,
                 algo_signal,
                 action,
-                decision.get("confidence"),
-                decision.get("rationale"),
-                decision.get("journal_tags"),
+                conf,
+                rationale,
+                tags_str,
+            )
+
+            # Telegram: één helder GPT-beslissingsbericht
+            if action == "OPEN_LONG":
+                decision_label = "OPEN LONG"
+            elif action == "OPEN_SHORT":
+                decision_label = "OPEN SHORT"
+            else:
+                decision_label = "HOLD"
+
+            self._notify(
+                f"🤖 GPT | {symbol} | {decision_label}\n"
+                f"Trend: {trend_4h.upper()} | Algo: {algo_signal}\n"
+                f"Conf: {conf:.0f}%\n"
+                f"Reason: {rationale}"
             )
 
             # 8) Actie van GPT vertalen naar side/open
@@ -388,28 +409,10 @@ class TrendStrategy4H:
             else:
                 # HOLD => geen positie openen
                 self.logger.info("[%s] GPT -> HOLD => geen trade geopend.", symbol)
-                # Eventueel Telegram bij HOLD (optioneel)
-                self._notify(
-                    f"[GPT-HOLD][{symbol}] "
-                    f"signal={algo_signal} | conf={decision.get('confidence', 0)}\n"
-                    f"reason: {decision.get('rationale', '')}"
-                )
                 return
 
             # 9) Als GPT een trade wil en mode is dryrun/auto => openen
             self._open_position(symbol, side=side, entry_price=current_price, atr_value=_to_decimal(atr_1h))
-
-            # Extra Telegram met GPT-beslissing
-            try:
-                tags = decision.get("journal_tags", [])
-                tags_str = ", ".join(tags) if isinstance(tags, list) else str(tags)
-                self._notify(
-                    f"[GPT-OPEN][{symbol}] action={action} | signal={algo_signal}\n"
-                    f"conf={decision.get('confidence', 0)} | tags=[{tags_str}]\n"
-                    f"reason: {decision.get('rationale', '')}"
-                )
-            except Exception:
-                pass
 
 
     def manage_intra_candle_exits(self):
@@ -771,12 +774,12 @@ class TrendStrategy4H:
 
         eur_size = float(amount * entry_price)
 
+        direction = "LONG" if side == "buy" else "SHORT"
+
         self._notify(
-            f"[TREND-OPEN][{symbol}] {'LONG' if side == 'buy' else 'SHORT'} @ {float(entry_price):.4f}\n"
-            f"size: €{eur_size:.2f} ({float(amount):.6f})\n"
-            f"SL={sl:.4f} | TP1={tp1:.4f} | ATR={float(atr_value):.4f}\n"
-            f"GPT: pending\n"  # wordt straks live ingevuld
-            f"reason: pending"
+            f"📈 OPENED | {symbol} | {direction} @ {float(entry_price):.4f}\n"
+            f"Size €{eur_size:.2f} ({float(amount):.6f})\n"
+            f"SL: {sl:.4f} | TP1: {tp1:.4f} | ATR: {float(atr_value):.4f}"
         )
 
     def _manage_position(self, symbol: str, current_price: Decimal, atr_value: Decimal):
@@ -950,12 +953,12 @@ class TrendStrategy4H:
         r_value = pnl_raw / (
                     float(pos["atr"]) * float(self.sl_atr_mult) * float(amt_to_close)) if amt_to_close > 0 else 0.0
 
+        label = "TP1 HIT" if reason == "TP1" else f"PARTIAL {reason}"
+
         self._notify(
-            f"[TREND-PARTIAL][{symbol}] {side_label}\n"
-            f"{float(portion):.2f} closed @ {float(px):.4f} ({reason})\n"
-            f"realized PnL: {pnl:+.2f} EUR | {r_value:+.2f}R | ROI: {roi:+.1f}%\n"
-            f"fees: {fees:.4f}\n"
-            f"remaining: €{float((amount - amt_to_close) * entry):.2f} ({float(amount - amt_to_close):.6f})"
+            f"🎯 {label} | {symbol} | {side_label} @ {float(px):.4f}\n"
+            f"PnL {pnl:+.2f} EUR | R {r_value:+.2f} | ROI {roi:+.1f}%\n"
+            f"Remaining: €{float((amount - amt_to_close) * entry):.2f}"
         )
 
         # log signals bij partial
@@ -990,12 +993,13 @@ class TrendStrategy4H:
 
             side_label = "LONG" if side == "buy" else "SHORT"
 
+            emoji = "💰" if total_pnl >= 0 else "🛑"
+
             self._notify(
-                f"[TREND-CLOSE][{symbol}] {side_label} ({reason})\n"
-                f"exit @ {float(px):.4f}\n"
-                f"total PnL: {total_pnl:+.2f} EUR | {r_total:+.2f}R | ROI: {roi_total:+.1f}%\n"
-                f"fees total: {total_fees:.4f}\n"
-                f"hold time: {hold_hours:.1f} uur"
+                f"{emoji} CLOSED | {symbol} | {side_label} | {reason}\n"
+                f"Exit @ {float(px):.4f}\n"
+                f"Total PnL {total_pnl:+.2f} EUR | R {r_total:+.2f} | ROI {roi_total:+.1f}%\n"
+                f"Hold: {hold_hours:.1f}h | Fees {total_fees:.4f}"
             )
 
             # tenslotte uit RAM halen

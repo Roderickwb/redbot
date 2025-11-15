@@ -141,6 +141,8 @@ class TrendStrategy4H:
         if not self.enabled:
             return
 
+        self.logger.info("[CHECK][%s] execute_strategy tick (mode=%s)", symbol, self.trading_mode)
+
         # 1) Trend op 4h
         df_4h = self._fetch_df(symbol, self.trend_tf, limit=200)
         if df_4h.empty:
@@ -1088,6 +1090,10 @@ class TrendStrategy4H:
             return
 
         for (db_id, symbol, side, amount, entry_price, position_id, position_type, status) in rows:
+            self.logger.info(
+                "[reload][DB] candidate master: id=%s symbol=%s status=%s amount=%s",
+                db_id, symbol, status, amount
+            )
             # Recompute ATR from 1h
             df_1h = self._fetch_df(symbol, self.entry_tf, limit=200)
             # NEW: tiny retry for late-writing candles (up to ~10s total)
@@ -1099,7 +1105,11 @@ class TrendStrategy4H:
                         break
 
             if df_1h.empty or not self._last_candle_closed(df_1h):
-                return
+                self.logger.info(
+                    "[reload][%s] no valid 1h candle after retries => skip restore for master_id=%s",
+                    symbol, db_id
+                )
+                continue
 
             atr_val = self._compute_atr(df_1h, self.atr_window)
             if not atr_val:

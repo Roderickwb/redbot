@@ -1,6 +1,10 @@
 import json
 import os
-from openai import OpenAI  # <- zo
+from openai import OpenAI
+from dotenv import load_dotenv
+
+# Lees de .env in de projectroot
+load_dotenv()  # zoekt automatisch naar .env in de current working dir
 
 GPT_TREND_DECIDER_VERSION = "2025-11-15"
 
@@ -9,6 +13,7 @@ if not OPENAI_API_KEY:
     raise RuntimeError("Geen OPENAI_API_KEY gevonden in environment variables.")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+
 
 def ask_gpt_trend_decider(test_message: str) -> str:
     response = client.chat.completions.create(

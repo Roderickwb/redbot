@@ -2,7 +2,9 @@ import json
 import os
 import openai
 
+GPT_TREND_DECIDER_VERSION = "2025-11-15"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 
 if not OPENAI_API_KEY:
     raise RuntimeError("Geen OPENAI_API_KEY gevonden in environment variables.")

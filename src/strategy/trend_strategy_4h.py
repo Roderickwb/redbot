@@ -38,7 +38,6 @@ from src.notifier.telegram_notifier import TelegramNotifier
 from src.notifier.bus import send as bus_send
 from src.ai.gpt_trend_decider import get_gpt_action
 
-
 def _to_decimal(x) -> Decimal:
     try:
         return Decimal(str(x))
@@ -48,6 +47,7 @@ def _to_decimal(x) -> Decimal:
 
 class TrendStrategy4H:
     STRATEGY_NAME = "trend_4h"
+    STRATEGY_VERSION = "2025-11-15-gpt-v1"  # <<< nieuw
 
     def __init__(self, data_client, order_client, db_manager, notifier: Optional[TelegramNotifier] = None,
                      config_path=None):

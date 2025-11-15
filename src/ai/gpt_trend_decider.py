@@ -1,16 +1,14 @@
-import openai
 import json
+import os
+import openai
 
-try:
-    # lokaal bestand in dezelfde map (src/ai/local_gpt_config.py)
-    from local_gpt_config import OPENAI_API_KEY
-except ImportError:
-    raise RuntimeError(
-        "Maak 'src/ai/local_gpt_config.py' met daarin: "
-        "OPENAI_API_KEY = 'sk-...' (dit bestand niet committen naar Git)."
-    )
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if not OPENAI_API_KEY:
+    raise RuntimeError("Geen OPENAI_API_KEY gevonden in environment variables.")
 
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
+
 
 def ask_gpt_trend_decider(test_message: str) -> str:
     response = client.chat.completions.create(

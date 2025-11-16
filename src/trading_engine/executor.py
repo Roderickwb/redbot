@@ -145,9 +145,14 @@ class Executor:
             "core_ratio": 0.50,
             "fallback_allocation_ratio": 0.25,
             "first_profit_threshold": 1.02,
-            "second_profit_threshold": 1.05
+            "second_profit_threshold": 1.05,
+            "enable_pullback": True,  # default = aan
         }
         self.config = self.yaml_config.get("executor_config", default_executor_cfg)
+
+        # Handige attribuut:
+        self.enable_pullback = bool(self.config.get("enable_pullback", True))
+        self.logger.info(f"[Executor] enable_pullback={self.enable_pullback}")
 
         # ML-engine
         self.ml_engine = MLEngine(
@@ -201,9 +206,10 @@ class Executor:
                 logger=None
             )
 
-        # PULLBACK (Kraken) (15m by default)
+        # PULLBACK (Kraken)
         self.pullback_strategy_kraken = None
-        if self.kraken_order_client:
+        if self.enable_pullback and self.kraken_order_client:
+            self.logger.info("[Executor] Pullback-Kraken ENABLED via config.")
             self.pullback_strategy_kraken = PullbackAccumulateStrategy(
                 data_client=self.kraken_data_client,
                 order_client=self.kraken_order_client,
@@ -211,6 +217,8 @@ class Executor:
                 config_path="src/config/config.yaml"
             )
             self.pullback_strategy_kraken.set_ml_engine(self.ml_engine)
+        else:
+            self.logger.info("[Executor] Pullback-Kraken DISABLED via config.")
 
         # TREND (Kraken) — watch-only skeleton
         self.trend_strategy_kraken = None

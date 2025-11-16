@@ -340,53 +340,55 @@ class TrendStrategy4H:
                 limit=20
             )
 
-            # 7) GPT om een besluit vragen
-            try:
-                action, decision = get_gpt_action(
-                    symbol=symbol,
-                    algo_signal=algo_signal,
-                    trend_1h=trend_1h,
-                    trend_4h=trend_4h,
-                    structure_1h="unknown",
-                    structure_4h="unknown",
-                    ema_1h=ema_1h,
-                    ema_4h=ema_4h,
-                    rsi_1h=rsi_1h,
-                    rsi_slope_1h=rsi_slope_1h,
-                    macd_1h=macd_1h,
-                    rsi_4h=rsi_4h,
-                    rsi_slope_4h=rsi_slope_4h,
-                    macd_4h=macd_4h,
-                    levels_1h=levels_1h,
-                    levels_4h=levels_4h,
-                    candles_1h=candles_1h,
-                    candles_4h=candles_4h,
-                )
-            except Exception as e:
-                self.logger.warning("[%s] GPT decision failed (%s) => fallback HOLD", symbol, e)
+            # 7) GPT om een besluit vragen – met max 1 retry
+            last_error = None
+            for attempt in range(2):  # 0 = eerste poging, 1 = retry
+                try:
+                    action, decision = get_gpt_action(
+                        symbol=symbol,
+                        algo_signal=algo_signal,
+                        trend_1h=trend_1h,
+                        trend_4h=trend_4h,
+                        structure_1h="unknown",
+                        structure_4h="unknown",
+                        ema_1h=ema_1h,
+                        ema_4h=ema_4h,
+                        rsi_1h=rsi_1h,
+                        rsi_slope_1h=rsi_slope_1h,
+                        macd_1h=macd_1h,
+                        rsi_4h=rsi_4h,
+                        rsi_slope_4h=rsi_slope_4h,
+                        macd_4h=macd_4h,
+                        levels_1h=levels_1h,
+                        levels_4h=levels_4h,
+                        candles_1h=candles_1h,
+                        candles_4h=candles_4h,
+                    )
+                    # als we hier komen: succes → break uit de loop
+                    break
+                except Exception as e:
+                    last_error = e
+                    self.logger.warning(
+                        "[%s] GPT decision failed on attempt %d (%s)",
+                        symbol, attempt + 1, e
+                    )
+                    # korte pauze voor retry (optioneel)
+                    if attempt == 0:
+                        time.sleep(0.5)
+            else:
+                # alleen als beide pogingen faalden:
                 action = "HOLD"
                 decision = {
                     "action": "HOLD",
                     "confidence": 0,
-                    "rationale": "GPT error",
+                    "rationale": f"GPT error after retry: {last_error}",
                     "journal_tags": []
                 }
 
-            # Logging + compacte GPT-notificatie
-            conf = decision.get("confidence", 0) or 0
-            rationale = decision.get("rationale", "") or ""
-            journal_tags = decision.get("journal_tags", [])
-            tags_str = ", ".join(journal_tags) if isinstance(journal_tags, list) else str(journal_tags)
-
-            self.logger.info(
-                "[GPT][%s] algo_signal=%s => action=%s, conf=%s, rationale=%s, tags=%s",
-                symbol,
-                algo_signal,
-                action,
-                conf,
-                rationale,
-                tags_str,
-            )
+            # ⬇️ HIER TOEVOEGEN
+            conf = float(decision.get("confidence", 0))
+            rationale = decision.get("rationale", "")
+            # ⬆️
 
             # Telegram: één helder GPT-beslissingsbericht
             if action == "OPEN_LONG":

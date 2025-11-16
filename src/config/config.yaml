@@ -164,6 +164,7 @@ kraken:
     - SAND-EUR
     - AVAX-EUR
     - BCH-EUR
+  enable_pullback: false
 
   # intervals
   intervals_realtime:

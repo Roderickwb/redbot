@@ -525,27 +525,29 @@ class TrendStrategy4H:
             conf = float(decision.get("confidence", 0))
             rationale = decision.get("rationale", "")
 
-            # GPT-beslissing loggen in gpt_decisions (ook HOLD!)
-            try:
-                self.db_manager.save_gpt_decision({
-                    "timestamp": int(time.time() * 1000),
-                    "symbol": symbol,
-                    "strategy_name": self.STRATEGY_NAME,
-                    "trade_id": None,  # er is nog geen echte trade op dit moment
-                    "algo_signal": algo_signal,          # wat jouw algoritme zegt
-                    "gpt_action": action,                # OPEN_LONG / OPEN_SHORT / HOLD
-                    "gpt_confidence": conf,
-                    "gpt_rationale": rationale,
-                    "journal_tags": decision.get("journal_tags", []),
-                    "raw_json": decision,                # volledige normalized dict
-                    "decider_version": GPT_TREND_DECIDER_VERSION,
-                })
-            except Exception as e:
-                self.logger.warning(
-                    "[%s] kon GPT-decision niet loggen in gpt_decisions: %s",
-                    symbol, e
-                )
-            # ⬆️
+            # Alleen HOLD-cases hier loggen (zonder echte trade).
+            # Voor OPEN_LONG / OPEN_SHORT wordt de beslissing
+            # elders gelogd met een echte trade_id.
+            if action == "HOLD":
+                try:
+                    self.db_manager.save_gpt_decision({
+                        "timestamp": int(time.time() * 1000),
+                        "symbol": symbol,
+                        "strategy_name": self.STRATEGY_NAME,
+                        "trade_id": None,  # geen trade, puur context
+                        "algo_signal": algo_signal,
+                        "gpt_action": action,
+                        "gpt_confidence": conf,
+                        "gpt_rationale": rationale,
+                        "journal_tags": decision.get("journal_tags", []),
+                        "raw_json": decision,
+                        "decider_version": GPT_TREND_DECIDER_VERSION,
+                    })
+                except Exception as e:
+                    self.logger.warning(
+                        "[%s] kon GPT-decision (HOLD) niet loggen in gpt_decisions: %s",
+                        symbol, e
+                    )
 
             # Telegram: één helder GPT-beslissingsbericht
             if action == "OPEN_LONG":

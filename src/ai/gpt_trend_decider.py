@@ -305,6 +305,27 @@ def get_gpt_decision(
 
     return normalize_decision(raw)
 
+def _normalize_confidence(raw: dict) -> int:
+    """
+    Haalt 'confidence' uit de GPT-output en maakt er een nette 0–100 int van.
+    Ondersteunt ook alternatieve keys zoals 'conf' of 'score'.
+    """
+    # 1) Mogelijke velden waar GPT iets kan neerzetten
+    val = raw.get("confidence", raw.get("conf", raw.get("score", 0)))
+
+    # 2) Naar float -> int proberen te casten
+    try:
+        c = int(round(float(val)))
+    except (ValueError, TypeError):
+        return 0
+
+    # 3) Clamp naar 0–100
+    if c < 0:
+        c = 0
+    elif c > 100:
+        c = 100
+
+    return c
 
 ALLOWED_ACTIONS = {"OPEN_LONG", "OPEN_SHORT", "HOLD"}
 
@@ -328,13 +349,8 @@ def normalize_decision(raw: dict) -> dict:
     if action not in ALLOWED_ACTIONS:
         action = "HOLD"
 
-    # Confidence
-    conf = raw.get("confidence", 0)
-    try:
-        conf = int(conf)
-    except (ValueError, TypeError):
-        conf = 0
-    conf = max(0, min(100, conf))
+    # Confidence (steeds nette 0–100 int, met fallback)
+    conf = _normalize_confidence(raw)
 
     # Rationale
     rationale = str(raw.get("rationale", "")).strip()

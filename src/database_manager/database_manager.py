@@ -275,10 +275,12 @@ class DatabaseManager:
             self.create_indicators_bitvavo_table()
             self.create_indicators_kraken_table()
 
-            # [NEW] => Ook onze nieuwe table 'trade_signals' aanmaken
+            # [NEW] => Ook onze nieuwe tabellen voor analyse
             self.create_trade_signals_table()
+            self.create_gpt_decisions_table()   # <--- NIEUW
 
             self.create_trades_table()  # <--- Hier wordt dus óók je trades-tabel geüpdatet!
+
 
             logger.info("[create_tables] Alle (oude en nieuwe) tabellen klaar of bijgewerkt.")
         except Exception as e:
@@ -2233,3 +2235,126 @@ class DatabaseManager:
             logger.info(f"[save_trade_signals] new row id={inserted_id}, trade_id={signals_data['trade_id']}")
         except Exception as e:
             logger.error(f"[save_trade_signals] Fout: {e}")
+
+    # --------------------------------------------------------------------------
+    # [NEW] => GPT-decisions table (losse verhaallijn)
+    # --------------------------------------------------------------------------
+
+    def create_gpt_decisions_table(self):
+        """
+        Tabel voor alles wat met GPT-beslissingen te maken heeft, los van trades.
+        - 1 rij per GPT-call (dus ook als actie = HOLD en er geen trade is)
+        - trade_id is optioneel (NULL) als er geen echte trade volgde.
+        """
+        try:
+            sql = """
+            CREATE TABLE IF NOT EXISTS gpt_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER,
+                symbol TEXT,
+                strategy_name TEXT,
+                algo_signal TEXT,        -- wat je eigen algoritme riep: LONG/SHORT/NONE
+                gpt_action TEXT,         -- OPEN_LONG / OPEN_SHORT / HOLD
+                confidence INTEGER,      -- 0-100
+                rationale TEXT,          -- korte uitleg van GPT
+                journal_tags TEXT,       -- JSON-string met tags
+                request_json TEXT,       -- volledige payload die je naar GPT stuurde
+                response_json TEXT,      -- volledige response van GPT
+                gpt_version TEXT,        -- bv. GPT_TREND_DECIDER_VERSION
+                trade_id INTEGER         -- optioneel: gekoppelde trade (of NULL)
+            );
+            """
+            self.cursor.execute(sql)
+            self.connection.commit()
+            logger.info("[create_gpt_decisions_table] Tabel 'gpt_decisions' aangemaakt/bestond al.")
+        except Exception as e:
+            logger.error(f"[create_gpt_decisions_table] Fout: {e}")
+
+    def save_gpt_decision(self, decision_data: dict):
+        """
+        Slaat één GPT-beslissing op in 'gpt_decisions'.
+
+        Verwachte keys in decision_data (alles optioneel behalve timestamp/symbol/strategy_name
+        is in de praktijk):
+
+          {
+            "timestamp": int_ms,
+            "symbol": "BTC-EUR",
+            "strategy_name": "trend_4h",
+
+            "algo_signal": "LONG",
+            "gpt_action": "OPEN_LONG",
+            "confidence": 87,
+            "rationale": "Sterke uptrend 1h/4h, pullback gekocht",
+            "journal_tags": ["trend_follow", "strong_adx"],
+
+            "request_json": "<volledige JSON die je naar GPT stuurde>",
+            "response_json": "<volledige JSON die GPT terugstuurde>",
+            "gpt_version": "2025-11-15",
+
+            "trade_id": 123   # of None
+          }
+        """
+        try:
+            import json
+
+            ts = decision_data.get("timestamp", get_current_utc_timestamp_ms())
+            symbol = decision_data.get("symbol", "UNKNOWN")
+            strategy_name = decision_data.get("strategy_name", None)
+
+            algo_signal = decision_data.get("algo_signal", None)
+            gpt_action = decision_data.get("gpt_action", None)
+            confidence = decision_data.get("confidence", 0)
+            rationale = decision_data.get("rationale", None)
+
+            # journal_tags komt vaak als list; we slaan het op als JSON-string
+            tags = decision_data.get("journal_tags", None)
+            if isinstance(tags, (list, dict)):
+                journal_tags = json.dumps(tags)
+            else:
+                journal_tags = tags  # mag ook al een string zijn
+
+            request_json = decision_data.get("request_json", None)
+            response_json = decision_data.get("response_json", None)
+            gpt_version = decision_data.get("gpt_version", None)
+            trade_id = decision_data.get("trade_id", None)
+
+            sql = """
+            INSERT INTO gpt_decisions (
+              timestamp,
+              symbol,
+              strategy_name,
+              algo_signal,
+              gpt_action,
+              confidence,
+              rationale,
+              journal_tags,
+              request_json,
+              response_json,
+              gpt_version,
+              trade_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+
+            vals = (
+                ts,
+                symbol,
+                strategy_name,
+                algo_signal,
+                gpt_action,
+                int(confidence) if confidence is not None else 0,
+                rationale,
+                journal_tags,
+                request_json,
+                response_json,
+                gpt_version,
+                trade_id
+            )
+
+            self.execute_query(sql, vals)
+            inserted_id = self.cursor.lastrowid
+            logger.info(f"[save_gpt_decision] new row id={inserted_id}, symbol={symbol}, action={gpt_action}")
+        except Exception as e:
+            logger.error(f"[save_gpt_decision] Fout: {e}")
+

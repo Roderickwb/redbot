@@ -36,7 +36,8 @@ from src.config.config import yaml_config  # al door main geladen
 from src.indicator_analysis.indicators import IndicatorAnalysis
 from src.notifier.telegram_notifier import TelegramNotifier
 from src.notifier.bus import send as bus_send
-from src.ai.gpt_trend_decider import get_gpt_action
+from src.ai.gpt_trend_decider import get_gpt_action, GPT_TREND_DECIDER_VERSION
+
 
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -523,6 +524,27 @@ class TrendStrategy4H:
             # ⬇️ HIER TOEVOEGEN
             conf = float(decision.get("confidence", 0))
             rationale = decision.get("rationale", "")
+
+            # GPT-beslissing loggen in gpt_decisions (ook HOLD!)
+            try:
+                self.db_manager.save_gpt_decision({
+                    "timestamp": int(time.time() * 1000),
+                    "symbol": symbol,
+                    "strategy_name": self.STRATEGY_NAME,
+                    "trade_id": None,  # er is nog geen echte trade op dit moment
+                    "algo_signal": algo_signal,          # wat jouw algoritme zegt
+                    "gpt_action": action,                # OPEN_LONG / OPEN_SHORT / HOLD
+                    "gpt_confidence": conf,
+                    "gpt_rationale": rationale,
+                    "journal_tags": decision.get("journal_tags", []),
+                    "raw_json": decision,                # volledige normalized dict
+                    "decider_version": GPT_TREND_DECIDER_VERSION,
+                })
+            except Exception as e:
+                self.logger.warning(
+                    "[%s] kon GPT-decision niet loggen in gpt_decisions: %s",
+                    symbol, e
+                )
             # ⬆️
 
             # Telegram: één helder GPT-beslissingsbericht
@@ -551,8 +573,34 @@ class TrendStrategy4H:
                 return
 
             # 9) Als GPT een trade wil en mode is dryrun/auto => openen
-            self._open_position(symbol, side=side, entry_price=current_price, atr_value=_to_decimal(atr_1h))
+            master_id = self._open_position(
+                symbol,
+                side=side,
+                entry_price=current_price,
+                atr_value=_to_decimal(atr_1h)
+            )
 
+            # 9b) Als er écht een master trade is geopend → nog een GPT-log met trade_id
+            if master_id:
+                try:
+                    self.db_manager.save_gpt_decision({
+                        "timestamp": int(time.time() * 1000),
+                        "symbol": symbol,
+                        "strategy_name": self.STRATEGY_NAME,
+                        "trade_id": master_id,                 # << nu GEKOPPELD
+                        "algo_signal": algo_signal,
+                        "gpt_action": action,
+                        "gpt_confidence": conf,
+                        "gpt_rationale": rationale,
+                        "journal_tags": decision.get("journal_tags", []),
+                        "raw_json": decision,
+                        "decider_version": GPT_TREND_DECIDER_VERSION,
+                    })
+                except Exception as e:
+                    self.logger.warning(
+                        "[%s] kon GPT-decision (met trade_id=%s) niet loggen in gpt_decisions: %s",
+                        symbol, master_id, e
+                    )
 
     def manage_intra_candle_exits(self):
         """Aangeroepen door executor (aparte thread)."""
@@ -920,6 +968,7 @@ class TrendStrategy4H:
             f"Size €{eur_size:.2f} ({float(amount):.6f})\n"
             f"SL: {sl:.4f} | TP1: {tp1:.4f} | ATR: {float(atr_value):.4f}"
         )
+        return master_id
 
     def _manage_position(self, symbol: str, current_price: Decimal, atr_value: Decimal):
         if symbol not in self.open_positions:

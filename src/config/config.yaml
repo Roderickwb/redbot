@@ -2,6 +2,7 @@ database:
   user: some_user
   host: localhost
 
+paper_equity_eur: 1000
 
 bitvavo:
   websocket_url: "wss://ws.bitvavo.com/v2/"
@@ -296,8 +297,6 @@ trend_strategy_4h:
   # Intra-candle exit checks (jij hebt al ~30s in executor)
   exit_check_intra_seconds: 30
 
-  paper_equity_eur: 1000
-
   # Limieten
   min_lot_multiplier: 2.1
   max_position_pct: 0.05
@@ -315,6 +314,29 @@ trend_strategy_4h:
     ema_fast: 20
     ema_slow: 50
     recent_cross_lookback_h4: 3   # bars to call it "flip_early"
+
+  sideways_filter:
+    enabled: true
+
+    # 1) ADX drempels
+    adx_1h_threshold: 20      # hieronder = zwak
+    adx_4h_threshold: 20
+
+    # 2) EMA20–EMA50 compressie (percentage t.o.v. prijs)
+    use_ema_compression: true
+    ema_compress_max_pct: 0.004   # 0.4% van de prijs
+
+    # 3) ATR%-filter (True Range)
+    use_atr_filter: true
+    atr_min_tr_pct: 0.006         # ATR/price < 0.6% = te stil
+
+    # Extra: minimaal aantal bars om dit serieus te nemen
+    min_history_bars: 50          # bijvoorbeeld op 1h en 4h
+
+  # Cooldown na verlies
+  cooldown_enabled: true
+  cooldown_losing_trades: 1   # na 1 verliestrade → cooldown
+  cooldown_hours: 4           # 4 uur geen nieuwe entries voor die coin
 
   # --- Confirms ---
   volume_confirm:

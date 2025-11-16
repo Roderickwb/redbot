@@ -38,12 +38,77 @@ from src.notifier.telegram_notifier import TelegramNotifier
 from src.notifier.bus import send as bus_send
 from src.ai.gpt_trend_decider import get_gpt_action
 
+from datetime import datetime, timedelta
+from collections import defaultdict
+
 def _to_decimal(x) -> Decimal:
     try:
         return Decimal(str(x))
     except Exception:
         return Decimal("0")
 
+class SidewaysFilter:
+    """
+    Bepaalt of de markt voor een symbol 'sideways' is op basis van:
+    - ADX (1h en 4h)
+    - EMA20/EMA50-compressie
+    - ATR% (ATR/price)
+    """
+    def __init__(self, strategy_cfg: dict):
+        sf = strategy_cfg.get("sideways_filter", {})
+        self.enabled = sf.get("enabled", False)
+
+        self.adx_1h_threshold = sf.get("adx_1h_threshold", 20)
+        self.adx_4h_threshold = sf.get("adx_4h_threshold", 20)
+
+        self.use_ema_compression = sf.get("use_ema_compression", True)
+        self.ema_compress_max_pct = sf.get("ema_compress_max_pct", 0.004)
+
+        self.use_atr_filter = sf.get("use_atr_filter", True)
+        self.atr_min_tr_pct = sf.get("atr_min_tr_pct", 0.006)
+
+        self.min_history_bars = sf.get("min_history_bars", 50)
+
+    def is_sideways(
+        self,
+        symbol: str,
+        adx_1h: float,
+        adx_4h: float,
+        ema20_1h: float,
+        ema50_1h: float,
+        price_1h: float,
+        atr_1h: float,
+    ) -> bool:
+        """
+        Bepaalt of de markt 'sideways' is op basis van losse waarden
+        (we werken hier NIET met een market_state object).
+        """
+        if not self.enabled:
+            return False
+
+        # Safety: als iets essentieels None/0 is, doen we geen uitspraak
+        if adx_1h is None or adx_4h is None or atr_1h is None or price_1h <= 0:
+            return False
+
+        # 1) ADX te zwak op beide TFs
+        adx_weak = (adx_1h < self.adx_1h_threshold and
+                    adx_4h < self.adx_4h_threshold)
+
+        # 2) EMA-compressie (20 & 50 dicht op elkaar, prijs ertussen)
+        ema_compress = False
+        if self.use_ema_compression:
+            ema_dist_pct = abs(ema20_1h - ema50_1h) / price_1h
+            price_between = min(ema20_1h, ema50_1h) <= price_1h <= max(ema20_1h, ema50_1h)
+            ema_compress = (ema_dist_pct < self.ema_compress_max_pct and price_between)
+
+        # 3) ATR% extreem laag
+        atr_too_low = False
+        if self.use_atr_filter:
+            tr_pct = atr_1h / price_1h
+            atr_too_low = (tr_pct < self.atr_min_tr_pct)
+
+        # Echte sideways als ALLE drie tegelijk waar zijn
+        return adx_weak and ema_compress and atr_too_low
 
 class TrendStrategy4H:
     STRATEGY_NAME = "trend_4h"
@@ -86,6 +151,9 @@ class TrendStrategy4H:
         self.adx_high_tf_threshold = float(cfg.get("adx_high_tf_threshold", 20.0))
         self.use_adx_directional_filter = bool(cfg.get("use_adx_directional_filter", True))
         self.adx_window = int(cfg.get("adx_window", 14))  # NEW
+        # Sideways-filter (ADX + EMA-compressie + ATR%)
+        self.sideways_filter = SidewaysFilter(cfg)
+
 
         # EMA-structuur
         self.ema_fast = int(cfg.get("ema_fast", 20))
@@ -115,6 +183,14 @@ class TrendStrategy4H:
         self.max_position_eur = _to_decimal(cfg.get("max_position_eur", "15"))
         self.fee_rate = _to_decimal(cfg.get("fee_rate", "0.0035"))  # NEW
 
+        # Cooldown na verlies (tegen chop / tilt)
+        self.cooldown_enabled = bool(cfg.get("cooldown_enabled", False))
+        self.cooldown_losing_trades = int(cfg.get("cooldown_losing_trades", 1))
+        self.cooldown_hours = float(cfg.get("cooldown_hours", 4.0))
+
+        self.losing_streak = defaultdict(int)
+        self.cooldown_until = defaultdict(lambda: 0.0)  # timestamp (time.time()) per symbol
+
         # Interne state
         self.open_positions: Dict[str, dict] = {}   # per symbol
         self.last_processed_candle_ts: Dict[str, int] = {}
@@ -134,11 +210,49 @@ class TrendStrategy4H:
             pass
 
     # ---------------------------------------------------------
+    # Cooldown helpers
+    # ---------------------------------------------------------
+    def _in_cooldown(self, symbol: str) -> bool:
+        if not self.cooldown_enabled:
+            return False
+        return time.time() < self.cooldown_until[symbol]
+
+    def _start_cooldown(self, symbol: str):
+        if not self.cooldown_enabled:
+            return
+        until_ts = time.time() + self.cooldown_hours * 3600.0
+        self.cooldown_until[symbol] = until_ts
+        self.logger.info(
+            "[%s] Cooldown gestart voor %.1f uur (losing_streak=%s)",
+            symbol, self.cooldown_hours, self.losing_streak[symbol]
+        )
+
+    def _register_trade_result_R(self, symbol: str, result_R: float):
+        """
+        Negatieve R = verlies, positieve R = winst/breakeven.
+        Bij >= cooldown_losing_trades verliezen → cooldown.
+        """
+        if result_R < 0:
+            self.losing_streak[symbol] += 1
+        else:
+            self.losing_streak[symbol] = 0
+
+        if (
+            self.cooldown_enabled and
+            self.losing_streak[symbol] >= self.cooldown_losing_trades
+        ):
+            self._start_cooldown(symbol)
+
+    # ---------------------------------------------------------
     # Public API
     # ---------------------------------------------------------
     def execute_strategy(self, symbol: str):
         """Wordt aangeroepen bij nieuwe 1h of 4h candle (via executor)."""
         if not self.enabled:
+            return
+
+        if self._in_cooldown(symbol):
+            self.logger.info("[%s] In cooldown-window → skip execute_strategy.", symbol)
             return
 
         self.logger.info("[CHECK][%s] execute_strategy tick (mode=%s)", symbol, self.trading_mode)
@@ -189,6 +303,10 @@ class TrendStrategy4H:
 
         # RSI + MACD op 1h
         df_1h = self._add_rsi_macd(df_1h)
+
+        # EMA's op 1h (voor trendstructuur + sideways-filter)
+        df_1h[f"ema_{self.ema_fast}"] = df_1h["close"].ewm(span=self.ema_fast).mean()
+        df_1h[f"ema_{self.ema_slow}"] = df_1h["close"].ewm(span=self.ema_slow).mean()
 
         # ADX + DI op 1h
         adx_1h, di_pos_1h, di_neg_1h = self._compute_adx_di(df_1h)
@@ -259,6 +377,23 @@ class TrendStrategy4H:
         atr_1h = self._compute_atr(df_1h, self.atr_window)
         if atr_1h is None or atr_1h <= 0:
             self.logger.info("[%s] geen ATR => skip", symbol)
+            return
+
+        # 4b) SIDEWAYS-regime check (ADX + EMA-compressie + ATR%)
+        last_close_1h = float(df_1h["close"].iloc[-1])
+        last_ema_fast_1h = float(df_1h[f"ema_{self.ema_fast}"].iloc[-1])
+        last_ema_slow_1h = float(df_1h[f"ema_{self.ema_slow}"].iloc[-1])
+
+        if self.sideways_filter.is_sideways(
+            symbol=symbol,
+            adx_1h=adx_1h,
+            adx_4h=adx_4h,
+            ema20_1h=last_ema_fast_1h,
+            ema50_1h=last_ema_slow_1h,
+            price_1h=last_close_1h,
+            atr_1h=atr_1h,
+        ):
+            self.logger.info("[%s] SIDEWAYS regime (ADX+EMA+ATR) → geen trendtrade.", symbol)
             return
 
         # 5) Mode-actie
@@ -1005,6 +1140,12 @@ class TrendStrategy4H:
                 f"Total PnL {total_pnl:+.2f} EUR | R {r_total:+.2f} | ROI {roi_total:+.1f}%\n"
                 f"Hold: {hold_hours:.1f}h | Fees {total_fees:.4f}"
             )
+
+            # cooldown op basis van totale R van de trade
+            try:
+                self._register_trade_result_R(symbol, r_total)
+            except Exception as e:
+                self.logger.debug("[cooldown] kon R niet registreren voor %s: %s", symbol, e)
 
             # tenslotte uit RAM halen
             del self.open_positions[symbol]

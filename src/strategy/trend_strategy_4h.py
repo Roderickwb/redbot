@@ -521,27 +521,29 @@ class TrendStrategy4H:
                     "journal_tags": []
                 }
 
-            # ⬇️ HIER TOEVOEGEN
+            # === GPT-beslissing normaliseren ===
             conf = float(decision.get("confidence", 0))
             rationale = decision.get("rationale", "")
 
-            # Alleen HOLD-cases hier loggen (zonder echte trade).
-            # Voor OPEN_LONG / OPEN_SHORT wordt de beslissing
-            # elders gelogd met een echte trade_id.
+            # -------------------------------------------------
+            # 1) HOLD-cases loggen (zonder echte trade_id)
+            # -------------------------------------------------
             if action == "HOLD":
                 try:
                     self.db_manager.save_gpt_decision({
                         "timestamp": int(time.time() * 1000),
                         "symbol": symbol,
                         "strategy_name": self.STRATEGY_NAME,
-                        "trade_id": None,  # geen trade, puur context
+                        "trade_id": None,                 # geen echte trade
                         "algo_signal": algo_signal,
                         "gpt_action": action,
-                        "gpt_confidence": conf,
-                        "gpt_rationale": rationale,
+                        # LET OP: kolomnamen in DB
+                        "confidence": conf,
+                        "rationale": rationale,
                         "journal_tags": decision.get("journal_tags", []),
-                        "raw_json": decision,
-                        "decider_version": GPT_TREND_DECIDER_VERSION,
+                        "request_json": None,             # optioneel: kan ook dataset zijn
+                        "response_json": decision,
+                        "gpt_version": GPT_TREND_DECIDER_VERSION,
                     })
                 except Exception as e:
                     self.logger.warning(
@@ -549,7 +551,9 @@ class TrendStrategy4H:
                         symbol, e
                     )
 
-            # Telegram: één helder GPT-beslissingsbericht
+            # -------------------------------------------------
+            # 2) Telegram-melding van de beslissing
+            # -------------------------------------------------
             if action == "OPEN_LONG":
                 decision_label = "OPEN LONG"
             elif action == "OPEN_SHORT":
@@ -564,7 +568,9 @@ class TrendStrategy4H:
                 f"Reason: {rationale}"
             )
 
-            # 8) Actie van GPT vertalen naar side/open
+            # -------------------------------------------------
+            # 3) GPT-actie vertalen naar side/open
+            # -------------------------------------------------
             if action == "OPEN_LONG":
                 side = "buy"
             elif action == "OPEN_SHORT":
@@ -574,29 +580,35 @@ class TrendStrategy4H:
                 self.logger.info("[%s] GPT -> HOLD => geen trade geopend.", symbol)
                 return
 
-            # 9) Als GPT een trade wil en mode is dryrun/auto => openen
+            # -------------------------------------------------
+            # 4) Trade openen (dryrun/auto) + master_id ophalen
+            # -------------------------------------------------
             master_id = self._open_position(
-                symbol,
+                symbol=symbol,
                 side=side,
                 entry_price=current_price,
                 atr_value=_to_decimal(atr_1h)
             )
 
-            # 9b) Als er écht een master trade is geopend → nog een GPT-log met trade_id
+            # -------------------------------------------------
+            # 5) GPT-beslissing nogmaals loggen, nu mét trade_id
+            #    (zodat je later GPT vs. trade-resultaten kunt koppelen)
+            # -------------------------------------------------
             if master_id:
                 try:
                     self.db_manager.save_gpt_decision({
                         "timestamp": int(time.time() * 1000),
                         "symbol": symbol,
                         "strategy_name": self.STRATEGY_NAME,
-                        "trade_id": master_id,                 # << nu GEKOPPELD
+                        "trade_id": master_id,            # << koppeling met trades.id
                         "algo_signal": algo_signal,
                         "gpt_action": action,
-                        "gpt_confidence": conf,
-                        "gpt_rationale": rationale,
+                        "confidence": conf,
+                        "rationale": rationale,
                         "journal_tags": decision.get("journal_tags", []),
-                        "raw_json": decision,
-                        "decider_version": GPT_TREND_DECIDER_VERSION,
+                        "request_json": None,
+                        "response_json": decision,
+                        "gpt_version": GPT_TREND_DECIDER_VERSION,
                     })
                 except Exception as e:
                     self.logger.warning(
@@ -1236,23 +1248,32 @@ class TrendStrategy4H:
         if not trade_id:
             return
         try:
+            # 1h context
             df_1h = self._fetch_df(symbol, self.entry_tf, limit=40)
             df_1h = self._add_rsi_macd(df_1h)
             macd_signal_1h = float(df_1h["macd_signal"].iloc[-1]) if "macd_signal" in df_1h.columns else 0.0
             rsi_1h = float(df_1h["rsi"].iloc[-1]) if "rsi" in df_1h.columns else 50.0
+
+            # 4h context (voor rsi_h4)
+            df_4h = self._fetch_df(symbol, self.trend_tf, limit=40)
+            df_4h = self._add_rsi_macd(df_4h)
+            if not df_4h.empty and "rsi" in df_4h.columns:
+                rsi_4h = float(df_4h["rsi"].iloc[-1])
+            else:
+                rsi_4h = 50.0
 
             data = {
                 "trade_id": trade_id,
                 "event_type": event_type,
                 "symbol": symbol,
                 "strategy_name": self.STRATEGY_NAME,
-                "rsi_15m": rsi_1h,              # we gebruiken hier 1h rsi
+                "rsi_15m": rsi_1h,  # hier gebruiken we 1h-RSI
                 "macd_val": float(df_1h["macd"].iloc[-1]) if "macd" in df_1h.columns else 0.0,
                 "macd_signal": macd_signal_1h,
                 "atr_value": float(atr_value),
                 "depth_score": 0.0,
                 "ml_signal": 0.0,
-                "rsi_h4": 0.0,
+                "rsi_h4": rsi_4h,  # << NU ECHTE 4h-RSI
                 "timestamp": int(time.time() * 1000)
             }
             self.db_manager.save_trade_signals(data)

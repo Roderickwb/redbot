@@ -1230,7 +1230,7 @@ class TrendStrategy4H:
             "event_type": "setup",
             "symbol": symbol,
             "strategy_name": self.STRATEGY_NAME,
-            "rsi_15m": 0.0,           # niet gebruikt hier
+            "rsi_1h": 0.0,  # placeholder; hier loggen we nog geen echte RSI
             "macd_val": 0.0,
             "macd_signal": 0.0,
             "atr_value": float(atr_1h),
@@ -1267,7 +1267,7 @@ class TrendStrategy4H:
                 "event_type": event_type,
                 "symbol": symbol,
                 "strategy_name": self.STRATEGY_NAME,
-                "rsi_15m": rsi_1h,  # hier gebruiken we 1h-RSI
+                "rsi_1h": rsi_1h,  # hier gebruiken we 1h-RSI, naam klopt nu met inhoud
                 "macd_val": float(df_1h["macd"].iloc[-1]) if "macd" in df_1h.columns else 0.0,
                 "macd_signal": macd_signal_1h,
                 "atr_value": float(atr_value),

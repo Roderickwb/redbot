@@ -338,6 +338,14 @@ trend_strategy_4h:
   cooldown_losing_trades: 1   # na 1 verliestrade → cooldown
   cooldown_hours: 4           # 4 uur geen nieuwe entries voor die coin
 
+  # ============ ANALYZER SETTINGS ============
+analysis:
+  enabled: true
+  run_interval_hours: 24        # later misschien 4 of 6
+  hold_eval_interval: "5m"      # dit gebruiken we al
+  hold_lookahead_hours: 8
+  hold_missed_move_pct: 2.0
+
   # --- Confirms ---
   volume_confirm:
     enabled: true

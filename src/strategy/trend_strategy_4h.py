@@ -195,12 +195,17 @@ class TrendStrategy4H:
         # Interne state
         self.open_positions: Dict[str, dict] = {}   # per symbol
         self.last_processed_candle_ts: Dict[str, int] = {}
+        self.last_processed_1h_ts: Dict[str, int] = {}   # <-- NIEUW, ANTI-DUBBEL GUARD
+
         # << NIEUW >>
         self._load_open_positions_from_db()
 
         self.intra_log_verbose = bool(cfg.get("intra_log_verbose", True))
 
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
+
+
+
 
     def _notify(self, text: str):
         """Stuur een Telegram-bericht via de globale notifier-bus (als die er is)."""
@@ -261,11 +266,18 @@ class TrendStrategy4H:
         # 1) Trend op 4h
         df_4h = self._fetch_df(symbol, self.trend_tf, limit=200)
         if df_4h.empty:
-            self.logger.debug("[%s] geen %s data.", symbol, self.trend_tf)
+            self.logger.info(
+                "[%s] geen %s data beschikbaar in candles_kraken → skip execute_strategy.",
+                symbol, self.trend_tf
+            )
             return
 
         # Skip als laatste candle nog open (failsafe)
         if not self._last_candle_closed(df_4h):
+            self.logger.info(
+                "[%s] laatste %s candle nog niet volledig gesloten → skip execute_strategy.",
+                symbol, self.trend_tf
+            )
             return
 
         ema_fast_4h = df_4h["close"].ewm(span=self.ema_fast).mean()
@@ -299,8 +311,41 @@ class TrendStrategy4H:
 
         # 2) Entry-context op 1h
         df_1h = self._fetch_df(symbol, self.entry_tf, limit=200)
-        if df_1h.empty or not self._last_candle_closed(df_1h):
+        if df_1h.empty:
+            self.logger.info(
+                "[%s] geen %s data beschikbaar in candles_kraken → skip entry-check.",
+                symbol, self.entry_tf
+            )
             return
+
+        if not self._last_candle_closed(df_1h):
+            self.logger.info(
+                "[%s] laatste %s candle nog niet volledig gesloten → skip entry-check.",
+                symbol, self.entry_tf
+            )
+            return
+
+        # === NIEUW: max 1x per 1h-candle een GPT/entry-check per symbol ===
+        last_1h_ts = None
+        try:
+            if "timestamp_ms" in df_1h.columns:
+                last_1h_ts = int(df_1h["timestamp_ms"].iloc[-1])
+        except Exception:
+            last_1h_ts = None
+
+        if last_1h_ts is not None:
+            prev_ts = self.last_processed_1h_ts.get(symbol)
+            if prev_ts is not None and last_1h_ts <= prev_ts:
+                # Deze 1h-bar (of een oudere) hebben we al beoordeeld → skip
+                self.logger.info(
+                    "[%s] 1h-bar %s al verwerkt (prev=%s) => skip duplicate.",
+                    symbol, last_1h_ts, prev_ts
+                )
+                return
+
+            # Nieuwe 1h-bar → markeren als verwerkt
+            self.last_processed_1h_ts[symbol] = last_1h_ts
+        # === EINDE NIEUW ===
 
         # RSI + MACD op 1h
         df_1h = self._add_rsi_macd(df_1h)

@@ -427,18 +427,34 @@ class Executor:
                 self.logger.info("[Executor] run_once_pullback_15m()")
                 self.run_once_pullback_15m()
 
-                self.logger.info("[Executor][TREND] check 1h/4h for %d pairs", len(self.kraken_data_client.pairs))
-
-                # 4h-trendstrategie (watch-only): draai bij nieuwe 1h of 4h candle
+                # 4h-trendstrategie (watch/dryrun/auto): draai bij nieuwe 1h of 4h candle
                 if self.trend_strategy_kraken and self.kraken_data_client:
+                    total_pairs = len(self.kraken_data_client.pairs)
+                    trend_triggered = 0
+
                     for symbol in self.kraken_data_client.pairs:
-                        if (self._has_new_closed_candle("candles_kraken", symbol, "1h")
-                                or self._has_new_closed_candle("candles_kraken", symbol, "4h")):
+                        has_new_1h = self._has_new_closed_candle("candles_kraken", symbol, "1h")
+                        has_new_4h = self._has_new_closed_candle("candles_kraken", symbol, "4h")
+
+                        if has_new_1h or has_new_4h:
+                            trend_triggered += 1
                             try:
-                                self.logger.debug("[Executor] Trend trigger for %s (new 60/240 candle)", symbol)
+                                self.logger.debug(
+                                    "[Executor] Trend trigger for %s (new %s%s candle)",
+                                    symbol,
+                                    "1h" if has_new_1h else "",
+                                    "/4h" if has_new_4h else ""
+                                )
                                 self.trend_strategy_kraken.execute_strategy(symbol)
                             except Exception as e:
                                 self.logger.warning("[Executor] TrendStrategy4H error for %s: %s", symbol, e)
+
+                    # INFO-regel: hoeveel coins zijn echt door de strategy gegaan
+                    self.logger.info(
+                        "[Executor][TREND] execute_strategy aangeroepen voor %d/%d pairs in deze uur-check.",
+                        trend_triggered,
+                        total_pairs
+                    )
 
                 # 4) Breakout => ...
                 if self.breakout_strategy_kraken and self.kraken_data_client:

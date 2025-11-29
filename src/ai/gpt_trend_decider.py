@@ -101,6 +101,20 @@ Interpretation hints:
 
 --- DECISION LOGIC ---
 
+Before applying the rules below, you MUST briefly consider sentiment:
+
+- Macro crypto sentiment (for the overall crypto market): bullish / neutral / bearish.
+- Coin-specific sentiment for the given symbol: bullish / neutral / bearish.
+- Use your internal knowledge and, if available, up-to-date information.
+- Do NOT ignore strong negative idiosyncratic risks (hacks, lawsuits, delisting rumours).
+
+Use sentiment as a filter:
+- If both macro and coin sentiment are clearly bearish and the technical setup is not extremely strong,
+  prefer action = "HOLD" (especially for new LONGs).
+- If both macro and coin sentiment are clearly bullish and the technical setup is clean,
+  you may slightly increase your confidence in taking the trade.
+- If sentiment is mixed, reduce confidence and, in case of doubt, choose "HOLD".
+
 1) Respect the algo_signal direction if the multi-timeframe structure is clean:
    - For LONG:
        • algo_signal == "long_candidate"
@@ -153,7 +167,9 @@ Interpretation hints:
 Return STRICT JSON with keys:
 - "action": "OPEN_LONG" | "OPEN_SHORT" | "HOLD"
 - "confidence": integer 0–100
-- "rationale": short plain-text explanation (1–4 sentences)
+- "rationale": short plain-text explanation (1–4 sentences).
+  The FIRST sentence MUST start in this exact pattern:
+  "Sentiment: macro=<bullish|neutral|bearish>, coin=<bullish|neutral|bearish>. ..."
 - "journal_tags": list of short tags to classify the decision, e.g.:
     [
       "trend_aligned",
@@ -162,12 +178,13 @@ Return STRICT JSON with keys:
       "strong_rejection_candle",
       "healthy_pullback",
       "rsi_extreme",
-      "macd_divergence"
+      "macd_divergence",
+      "macro_bearish",
+      "coin_news_risk"
     ]
 
 Never include any other top-level keys. No markdown.
 """
-
 
 def _build_dataset(
     symbol: str,

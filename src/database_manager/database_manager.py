@@ -2143,7 +2143,7 @@ class DatabaseManager:
 
         Kolommen (voorbeeld):
           id, trade_id, event_type, symbol, strategy_name,
-          rsi_daily, rsi_h4, rsi_15m, macd_val, macd_signal,
+          rsi_daily, rsi_4h, rsi_1h, macd_val, macd_signal,
           atr_value, depth_score, ml_signal,
           timestamp (ms)
         FOREIGN KEY(trade_id) REFERENCES trades(id)
@@ -2186,8 +2186,8 @@ class DatabaseManager:
            "symbol": "BTC-EUR",
            "strategy_name": "pullback",
            "rsi_daily": ...,
-           "rsi_h4": ...,
-           "rsi_15m": ...,
+           "rsi_4h": ...,
+           "rsi_1h": ...,
            "macd_val": ...,
            "macd_signal": ...,
            "atr_value": ...,

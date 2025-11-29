@@ -1289,6 +1289,28 @@ class TrendStrategy4H:
         except Exception:
             pass
 
+    def _compute_daily_rsi(self, symbol: str) -> Optional[float]:
+        """
+        Bereken RSI op basis van echte 1D-candles uit candles_kraken.
+        Verwacht dat interval in de DB '1d' heet (pas anders aan).
+        """
+        try:
+            # Haal 1D-candles op uit de DB
+            df_1d = self._fetch_df(symbol, "1d", limit=120)  # ~4 maanden, ruim genoeg
+            if df_1d.empty:
+                return None
+
+            df_1d = self._add_rsi_macd(df_1d)
+            if "rsi" not in df_1d.columns:
+                return None
+
+            val = df_1d["rsi"].iloc[-1]
+            return float(val) if pd.notna(val) else None
+
+        except Exception as e:
+            self.logger.debug("[daily_rsi][%s] kon daily RSI niet berekenen: %s", symbol, e)
+            return None
+
     def _save_trade_signals(self, trade_id: Optional[int], event_type: str, symbol: str, atr_value: Decimal):
         if not trade_id:
             return
@@ -1307,18 +1329,22 @@ class TrendStrategy4H:
             else:
                 rsi_4h = 50.0
 
+            # NEW: daily RSI direct uit 1D-candles
+            rsi_daily = self._compute_daily_rsi(symbol)
+
             data = {
                 "trade_id": trade_id,
                 "event_type": event_type,
                 "symbol": symbol,
                 "strategy_name": self.STRATEGY_NAME,
-                "rsi_1h": rsi_1h,  # hier gebruiken we 1h-RSI, naam klopt nu met inhoud
+                "rsi_daily": rsi_daily,   # <-- nu echt gevuld
+                "rsi_1h": rsi_1h,
                 "macd_val": float(df_1h["macd"].iloc[-1]) if "macd" in df_1h.columns else 0.0,
                 "macd_signal": macd_signal_1h,
                 "atr_value": float(atr_value),
                 "depth_score": 0.0,
                 "ml_signal": 0.0,
-                "rsi_h4": rsi_4h,  # << NU ECHTE 4h-RSI
+                "rsi_4h": rsi_4h,
                 "timestamp": int(time.time() * 1000)
             }
             self.db_manager.save_trade_signals(data)

@@ -2317,6 +2317,13 @@ class DatabaseManager:
 
             request_json = decision_data.get("request_json", None)
             response_json = decision_data.get("response_json", None)
+
+            # <<< NIEUW: altijd safe naar string maken als het dict/list is
+            if isinstance(request_json, (dict, list)):
+                request_json = json.dumps(request_json)
+            if isinstance(response_json, (dict, list)):
+                response_json = json.dumps(response_json)
+
             gpt_version = decision_data.get("gpt_version", None)
             trade_id = decision_data.get("trade_id", None)
 

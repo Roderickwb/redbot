@@ -1,21 +1,40 @@
-# analysis_job.py
-import time
+import logging
+
 from src.analysis.coin_analyzer import CoinAnalyzer
-from src.database_manager.database_manager import DatabaseManager
+from src.database_manager.database_manager import DatabaseManager, get_current_utc_timestamp_ms
 from src.config.config import DB_FILE
 
+logger = logging.getLogger("analysis_job")
+
+
 def run_analysis_job():
-    db = DatabaseManager(DB_FILE)
+    """
+    Draait de coin-analyse over alle coins en schrijft per coin
+    één regel naar de tabel 'coin_analysis_summary'.
+    """
+    logger.info("[run_analysis_job] Start analysis job...")
+
+    # 1) DB-manager + tabellen (incl. coin_analysis_summary) zekerstellen
+    db = DatabaseManager(db_path=DB_FILE)
+    db.init_db()
+
+    # 2) Analyzer gebruiken voor trend_4h (default in CoinAnalyzer)
     analyzer = CoinAnalyzer()
 
-    # alle reports ophalen
+    # 3) Alle reports ophalen
     reports = analyzer.analyze_all_coins(
         min_trades=1,
         last_n_trades=50,
         last_n_hold_decisions=100,
     )
 
-    now_ms = int(time.time() * 1000)
+    if not reports:
+        logger.info("[run_analysis_job] Geen coins met trades, niets om op te slaan.")
+        db.close_connection()
+        return
+
+    # Eén timestamp voor deze hele run
+    now_ms = get_current_utc_timestamp_ms()
 
     insert_sql = """
     INSERT INTO coin_analysis_summary (
@@ -26,6 +45,8 @@ def run_analysis_job():
         flags_text
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
+
+    inserted = 0
 
     for rep in reports:
         tm = rep.trade_metrics
@@ -49,8 +70,11 @@ def run_analysis_job():
             flags_text,
         )
         db.execute_query(insert_sql, params)
+        inserted += 1
 
-    db.close()
+    logger.info(f"[run_analysis_job] Klaar. {inserted} rows in coin_analysis_summary geschreven.")
+    db.close_connection()
+
 
 if __name__ == "__main__":
     run_analysis_job()

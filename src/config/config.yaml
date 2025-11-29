@@ -72,10 +72,18 @@ pullback_accumulate_strategy:
 
   poll_intervals: ["1h", "4h"]
 
-  # (Nieuw)
-  min_lot_multiplier: 2.1  # min. 2.1× minLot
-  max_position_pct: 0.05   # max 5% van je capital
-  max_position_eur: 15  # of direct een vast bedrag
+  # --- Position sizing (nieuwe stijl) ---
+  base_min_eur: 10.0
+  base_max_eur: 25.0
+  use_risk_multiplier: true
+  default_risk_multiplier: 1.0
+
+  min_lot_multiplier: 2.1   # min. 2.1× minLot
+
+  # legacy / extra limieten – mogen blijven totdat code is opgeschoond
+  max_position_pct: 0.05
+  max_position_eur: 15
+
 
   sl_atr_mult: 1.2        # SL => full close
   tp1_atr_mult: 1.5       # 50% close
@@ -288,6 +296,11 @@ trend_strategy_4h:
   tp1_atr_mult: 2.0
   tp1_portion_pct: 0.50
   trailing_atr_mult: 0.9
+
+  # 👉 NIEUW: basis-inzet in EUR
+  base_min_eur: 10.0          # minimaal €10 per trade
+  base_max_eur: 25.0          # maximaal €25 per trade
+  use_risk_multiplier: true   # straks via coin_profile.risk_multiplier
 
   # NEW – add these (we’ll wire them in code below)
   breakeven_after_tp1: true         # move stop to BE after TP1

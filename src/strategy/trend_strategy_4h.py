@@ -178,6 +178,15 @@ class TrendStrategy4H:
         self.max_hold_hours = int(cfg.get("max_hold_hours", 0))  # 0 = disabled
         self.time_stop_action = str(cfg.get("time_stop_action", "breakeven")).lower()
 
+        # ==== NIEUW: position sizing (vaste bedragen + per-coin multiplier) ====
+        # Basis-range in EUR per trade (jij: min 10, max 25)
+        self.base_min_eur = _to_decimal(cfg.get("base_min_eur", "10"))
+        self.base_max_eur = _to_decimal(cfg.get("base_max_eur", "25"))
+
+        # Gebruik per-coin multiplier uit coin_profile (later); nu gewoon 1.0
+        self.use_risk_multiplier = bool(cfg.get("use_risk_multiplier", True))
+        self.default_risk_multiplier = _to_decimal(cfg.get("default_risk_multiplier", "1.0"))
+
         # Limieten
         self.min_lot_multiplier = _to_decimal(cfg.get("min_lot_multiplier", "2.1"))
         self.max_position_pct = _to_decimal(cfg.get("max_position_pct", "0.05"))
@@ -926,62 +935,166 @@ class TrendStrategy4H:
 
         return total
 
+    # ==========================================
+    # Position sizing helper (EUR -> amount)
+    # ==========================================
+    def _compute_position_size(
+        self,
+        symbol: str,
+        entry_price: Decimal,
+        min_lot: Decimal,
+    ) -> Decimal:
+        """
+        Berekent de COIN-amount op basis van:
+          - base_min_eur / base_max_eur (vaste range)
+          - per-coin risk_multiplier (0.25 / 0.5 / 1.0 – later)
+          - min_lot * min_lot_multiplier (exchange-eis)
+
+        Geeft 0 terug als we bewust GEEN trade willen openen
+        (bijv. als min order > base_max_eur).
+        """
+        if entry_price <= 0:
+            self.logger.warning(f"[trend_4h][_compute_position_size] Ongeldige prijs voor {symbol}: {entry_price}")
+            return Decimal("0")
+
+        # 1) per-coin risk factor
+        risk_mult = self._get_coin_risk_multiplier(symbol)
+
+        # 2) ruwe target: base_max_eur * multiplier
+        raw_eur = self.base_max_eur * risk_mult
+
+        # 3) clamp naar [base_min_eur, base_max_eur]
+        target_eur = raw_eur
+        if target_eur < self.base_min_eur:
+            target_eur = self.base_min_eur
+        if target_eur > self.base_max_eur:
+            target_eur = self.base_max_eur
+
+        # 4) min-lot check
+        min_lot_eur = min_lot * entry_price
+        required_min_eur = min_lot_eur * self.min_lot_multiplier
+
+        # Als de minimale trade van de exchange al > base_max_eur is → skip trade
+        if required_min_eur > self.base_max_eur:
+            self.logger.info(
+                "[trend_4h][_compute_position_size] %s: required_min_eur=%.2f > base_max_eur=%.2f → skip trade.",
+                symbol, float(required_min_eur), float(self.base_max_eur)
+            )
+            return Decimal("0")
+
+        # Zorg dat we in elk geval aan de min-lot-eis voldoen
+        if target_eur < required_min_eur:
+            self.logger.info(
+                "[trend_4h][_compute_position_size] %s: target_eur %.2f < required_min_eur %.2f → verhogen naar min.",
+                symbol, float(target_eur), float(required_min_eur)
+            )
+            target_eur = required_min_eur
+
+        # 5) EUR → amount
+        amount = target_eur / entry_price
+
+        self.logger.info(
+            "[trend_4h][_compute_position_size] %s: price=%.4f, min_lot=%.8f, "
+            "target_eur=%.2f, amount=%.6f (risk_mult=%.2f)",
+            symbol,
+            float(entry_price),
+            float(min_lot),
+            float(target_eur),
+            float(amount),
+            float(risk_mult),
+        )
+        return amount
+
+    def _get_coin_risk_multiplier(self, symbol: str) -> Decimal:
+        """
+        Haal de risk multiplier [0..1] op voor deze coin.
+        Later koppelen we dit aan coin_profile.
+        Voor nu: altijd 1.0 (full size).
+        """
+        # TODO: straks uit coin_profile tabel lezen
+        return Decimal("1.0")
+
     # ---------------------------------------------------------
-    # Trading (dryrun/auto) - in lijn met pullback
+    # Trading (dryrun/auto) - sizing op basis van max EUR × risk_mult
     # ---------------------------------------------------------
     def _open_position(self, symbol: str, side: str, entry_price: Decimal, atr_value: Decimal):
         if symbol in self.open_positions:
             return
 
-        # sizing: 5% equity capped by max_position_eur, minimaal min_lot*multiplier
-        equity = self._equity_estimate()
-        allowed_eur_pct = equity * self.max_position_pct
-        allowed_eur = allowed_eur_pct if allowed_eur_pct < self.max_position_eur else self.max_position_eur
+        cfg = yaml_config.get("trend_strategy_4h", {})
 
+        # 1) Basis EUR-range uit config
+        base_min_eur = _to_decimal(cfg.get("base_min_eur", "10"))   # minimum per trade
+        base_max_eur = _to_decimal(cfg.get("base_max_eur", "25"))   # absolute maximum per trade
+
+        # 2) Risk multiplier [0..1] per coin
+        risk_mult = self._get_coin_risk_multiplier(symbol)
+        if risk_mult < 0:
+            risk_mult = Decimal("0")
+        if risk_mult > 1:
+            risk_mult = Decimal("1")
+
+        # → target EUR = percentage van max
+        target_eur = base_max_eur * risk_mult
+
+        # 3) Min-lot check (exchange + multiplier)
         min_lot = self._min_lot(symbol)
-        needed_eur_for_min = min_lot * self.min_lot_multiplier * entry_price
+        min_lot_eur = min_lot * self.min_lot_multiplier * entry_price
 
-        if needed_eur_for_min > allowed_eur:
-            self.logger.info("[%s] allowed %.2f < minTrade %.2f => skip open",
-                             symbol, float(allowed_eur), float(needed_eur_for_min))
+        # effectieve minimum = max(van base_min_eur, min_lot-eis)
+        effective_min_eur = base_min_eur if base_min_eur > min_lot_eur else min_lot_eur
+
+        # Als risk_mult zo klein is dat target_eur < minimum → optrekken naar minimum
+        if target_eur < effective_min_eur:
+            self.logger.info(
+                "[OPEN][%s] target %.2f < effective_min %.2f → verhogen naar minimum.",
+                symbol, float(target_eur), float(effective_min_eur)
+            )
+            target_eur = effective_min_eur
+
+        # 4) Amount bepalen op basis van EUR-size
+        amount = target_eur / entry_price
+        if amount <= 0:
+            self.logger.info("[OPEN][%s] Amount <= 0 → positie niet geopend.", symbol)
             return
 
-        buy_eur = needed_eur_for_min
-        amount = buy_eur / entry_price
+        eur_size = float(target_eur)
+        amount_float = float(amount)
 
-        # === DB: master trade (in dryrun/auto). In watch doen we niets. ===
+        # 5) DB: master trade opslaan (dryrun/auto)
         master_id = None
-        pos_id = f"{symbol}-{int(time.time())}"  # << NEW: one id used for DB and RAM
+        pos_id = f"{symbol}-{int(time.time())}"
+
         if self.trading_mode in ("dryrun", "auto"):
-            # opening exposure and opening fee (like pullback)
-            open_trade_cost = float(entry_price * _to_decimal(amount))  # actual notional at entry
+            open_trade_cost = eur_size
             open_fee = open_trade_cost * float(self.fee_rate)
 
             trade_data = {
                 "symbol": symbol,
                 "side": side,
-                "amount": float(amount),
+                "amount": amount_float,
                 "price": float(entry_price),
                 "timestamp": int(time.time() * 1000),
                 "position_id": pos_id,
                 "position_type": "long" if side == "buy" else "short",
                 "status": "open",
                 "pnl_eur": 0.0,
-                "fees": float(open_fee),  # << record opening fee
-                "trade_cost": float(open_trade_cost),  # << record exposure at entry
+                "fees": float(open_fee),
+                "trade_cost": float(open_trade_cost),
                 "strategy_name": self.STRATEGY_NAME,
                 "is_master": 1
             }
             self.db_manager.save_trade(trade_data)
             master_id = self.db_manager.cursor.lastrowid
 
-        # echte order alleen in auto
+        # 6) Echte order alleen in auto
         if self.trading_mode == "auto":
             try:
-                self.order_client.place_order(side, symbol, float(amount), ordertype="market")
+                self.order_client.place_order(side, symbol, amount_float, ordertype="market")
             except Exception as e:
-                self.logger.warning("[order] kon niet plaatsen: %s", e)
+                self.logger.warning("[order] %s", e)
 
+        # 7) State in RAM
         self.open_positions[symbol] = {
             "side": side,
             "entry_price": entry_price,
@@ -989,44 +1102,52 @@ class TrendStrategy4H:
             "atr": atr_value,
             "tp1_done": False,
             "trail_active": False,
-            "trail_high": entry_price,  # works for both long/short
-            "position_id": pos_id,  # << uses the same id as DB
+            "trail_high": entry_price,
+            "position_id": pos_id,
             "master_id": master_id,
-            "opened_ts": int(time.time()),  # << NEW
-            "breakeven_applied": False,  # << NEW
-            # --- NIEUW: voor Telegram / PnL bij full close ---
+            "opened_ts": int(time.time()),
+            "breakeven_applied": False,
             "initial_amount": _to_decimal(amount),
             "realized_pnl": Decimal("0"),
-            "total_fees": Decimal("0")
+            "total_fees": Decimal("0"),
         }
 
-        self.logger.info("[OPEN][%s] %s @ %.4f (ATR=%.4f, mode=%s)",
-                         symbol, "LONG" if side == "buy" else "SHORT",
-                         float(entry_price), float(atr_value), self.trading_mode)
+        # 8) Logging
+        self.logger.info(
+            "[OPEN][%s] %s @ %.4f | risk_mult=%.2f | size=€%.2f (%.6f) | ATR=%.4f | mode=%s",
+            symbol,
+            "LONG" if side == "buy" else "SHORT",
+            float(entry_price),
+            float(risk_mult),
+            eur_size,
+            amount_float,
+            float(atr_value),
+            self.trading_mode,
+        )
 
-        # log signals bij open
+        # 9) SL/TP1 voor notificatie
+        sl = float(entry_price - (atr_value * self.sl_atr_mult)) if side == "buy" else float(
+            entry_price + (atr_value * self.sl_atr_mult)
+        )
+        tp1 = float(entry_price + (atr_value * self.tp1_atr_mult)) if side == "buy" else float(
+            entry_price - (atr_value * self.tp1_atr_mult)
+        )
+        direction = "LONG" if side == "buy" else "SHORT"
+
+        # 10) Telegram-bericht
+        self._notify(
+            f"📈 OPENED | {symbol} | {direction} @ {float(entry_price):.4f}\n"
+            f"Size €{eur_size:.2f} ({amount_float:.6f})\n"
+            f"Risk_mult: {float(risk_mult):.2f}\n"
+            f"SL: {sl:.4f} | TP1: {tp1:.4f} | ATR: {float(atr_value):.4f}"
+        )
+
+        # 11) Signals-log bij open
         try:
             self._save_trade_signals(master_id, "open", symbol, atr_value)
         except Exception:
             pass
 
-        # Telegram notificatie bij open
-        # AFTER logger.info("[OPEN]...") and _save_trade_signals
-
-        sl = float(entry_price - (atr_value * self.sl_atr_mult)) if side == "buy" else float(
-            entry_price + (atr_value * self.sl_atr_mult))
-        tp1 = float(entry_price + (atr_value * self.tp1_atr_mult)) if side == "buy" else float(
-            entry_price - (atr_value * self.tp1_atr_mult))
-
-        eur_size = float(amount * entry_price)
-
-        direction = "LONG" if side == "buy" else "SHORT"
-
-        self._notify(
-            f"📈 OPENED | {symbol} | {direction} @ {float(entry_price):.4f}\n"
-            f"Size €{eur_size:.2f} ({float(amount):.6f})\n"
-            f"SL: {sl:.4f} | TP1: {tp1:.4f} | ATR: {float(atr_value):.4f}"
-        )
         return master_id
 
     def _manage_position(self, symbol: str, current_price: Decimal, atr_value: Decimal):

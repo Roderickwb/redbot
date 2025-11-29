@@ -278,6 +278,7 @@ class DatabaseManager:
             # [NEW] => Ook onze nieuwe tabellen voor analyse
             self.create_trade_signals_table()
             self.create_gpt_decisions_table()   # <--- NIEUW
+            self.create_coin_analysis_summary_table()  # <--- NIEUW
 
             self.create_trades_table()  # <--- Hier wordt dus óók je trades-tabel geüpdatet!
 
@@ -2271,6 +2272,48 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"[create_gpt_decisions_table] Fout: {e}")
 
+    def create_coin_analysis_summary_table(self):
+        """
+        Tabel met 1 rij per coin per analyse-run.
+        V1: alleen de velden die je nu al vanuit analysis_job wegschrijft.
+        """
+        try:
+            sql = """
+                CREATE TABLE IF NOT EXISTS coin_analysis_summary (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    -- Wanneer is deze analyse-run gedraaid (ms sinds epoch)
+                    created_ts INTEGER,
+
+                    -- Versie van je analyse-logica (handig als je later iets wijzigt)
+                    analysis_version TEXT,
+
+                    -- Welke strategie en welke coin
+                    strategy_name TEXT,
+                    symbol TEXT,
+
+                    -- Basis-metrics per coin
+                    n_trades INTEGER,
+                    winrate REAL,
+                    expectancy_R REAL,
+                    max_drawdown_R REAL,
+                    long_winrate REAL,
+                    short_winrate REAL,
+                    gpt_winrate REAL,
+                    gpt_expectancy_R REAL,
+                    hold_missed_rate REAL,
+
+                    -- Alle flags samengevoegd in één tekstveld (pipe-separated)
+                    flags_text TEXT
+                );
+            """
+            self.cursor.execute(sql)
+            self.connection.commit()
+            logger.info("[create_coin_analysis_summary_table] Tabel 'coin_analysis_summary' aangemaakt/bestond al.")
+        except Exception as e:
+            logger.error(f"[create_coin_analysis_summary_table] Fout: {e}")
+
+
     def save_gpt_decision(self, decision_data: dict):
         """
         Slaat één GPT-beslissing op in 'gpt_decisions'.
@@ -2366,3 +2409,73 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"[save_gpt_decision] Fout: {e}")
 
+    def save_coin_analysis_summary(self, record: dict):
+        """
+        Slaat 1 rij op in 'coin_analysis_summary'.
+
+        record verwacht minimaal:
+          {
+            "created_ts": int_ms,
+            "analysis_version": "v1",
+            "strategy_name": "trend_4h",
+            "symbol": "BTC/EUR",
+            "n_trades": 12,
+            "winrate": 0.58,
+            "expectancy_R": 0.35,
+            "max_drawdown_R": -4.2,
+            "long_winrate": 0.60,
+            "short_winrate": 0.55,
+            "gpt_winrate": 0.62,
+            "gpt_expectancy_R": 0.40,
+            "hold_missed_rate": 0.15,
+            "flags_text": "A_GRADE|GPT_STRONG"
+          }
+
+        Ontbrekende velden krijgen een veilige default.
+        """
+        try:
+            # Als created_ts niet is meegegeven => nu in ms
+            created_ts = record.get("created_ts", get_current_utc_timestamp_ms())
+
+            sql = """
+                INSERT INTO coin_analysis_summary (
+                    created_ts,
+                    analysis_version,
+                    strategy_name,
+                    symbol,
+                    n_trades,
+                    winrate,
+                    expectancy_R,
+                    max_drawdown_R,
+                    long_winrate,
+                    short_winrate,
+                    gpt_winrate,
+                    gpt_expectancy_R,
+                    hold_missed_rate,
+                    flags_text
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+
+            vals = (
+                created_ts,
+                record.get("analysis_version", "v1"),
+                record.get("strategy_name", None),
+                record.get("symbol", None),
+                record.get("n_trades", 0),
+                record.get("winrate", 0.0),
+                record.get("expectancy_R", 0.0),
+                record.get("max_drawdown_R", 0.0),
+                record.get("long_winrate", 0.0),
+                record.get("short_winrate", 0.0),
+                record.get("gpt_winrate", 0.0),
+                record.get("gpt_expectancy_R", 0.0),
+                record.get("hold_missed_rate", 0.0),
+                record.get("flags_text", None),
+            )
+
+            self.execute_query(sql, vals)
+            inserted_id = self.cursor.lastrowid
+            logger.info(f"[save_coin_analysis_summary] new row id={inserted_id}, symbol={record.get('symbol')}")
+        except Exception as e:
+            logger.error(f"[save_coin_analysis_summary] Fout: {e}")

@@ -2150,29 +2150,30 @@ class DatabaseManager:
         """
         try:
             sql = """
-            CREATE TABLE IF NOT EXISTS trade_signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                trade_id INTEGER NOT NULL,
-                event_type TEXT,
-                symbol TEXT,
-                strategy_name TEXT,
-                rsi_daily REAL,
-                rsi_h4 REAL,
-                rsi_15m REAL,
-                macd_val REAL,
-                macd_signal REAL,
-                atr_value REAL,
-                depth_score REAL,
-                ml_signal REAL,
-                timestamp INTEGER,
-                FOREIGN KEY(trade_id) REFERENCES trades(id)
-            );
-            """
+                CREATE TABLE IF NOT EXISTS trade_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id INTEGER NOT NULL,
+                    event_type TEXT,
+                    symbol TEXT,
+                    strategy_name TEXT,
+                    rsi_daily REAL,
+                    rsi_4h REAL,
+                    rsi_1h REAL,
+                    macd_val REAL,
+                    macd_signal REAL,
+                    atr_value REAL,
+                    depth_score REAL,
+                    ml_signal REAL,
+                    timestamp INTEGER,
+                    FOREIGN KEY(trade_id) REFERENCES trades(id)
+                );
+                """
             self.cursor.execute(sql)
             self.connection.commit()
             logger.info("[create_trade_signals_table] Tabel 'trade_signals' aangemaakt/bestond al.")
         except Exception as e:
             logger.error(f"[create_trade_signals_table] Fout: {e}")
+
 
     def save_trade_signals(self, signals_data: dict):
         """
@@ -2197,30 +2198,30 @@ class DatabaseManager:
         """
         try:
             sql = """
-            INSERT INTO trade_signals (
-              trade_id,
-              event_type,
-              symbol,
-              strategy_name,
-              rsi_daily,
-              rsi_h4,
-              rsi_1h,
-              macd_val,
-              macd_signal,
-              atr_value,
-              depth_score,
-              ml_signal,
-              timestamp
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
+                INSERT INTO trade_signals (
+                  trade_id,
+                  event_type,
+                  symbol,
+                  strategy_name,
+                  rsi_daily,
+                  rsi_4h,
+                  rsi_1h,
+                  macd_val,
+                  macd_signal,
+                  atr_value,
+                  depth_score,
+                  ml_signal,
+                  timestamp
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
             vals = (
                 signals_data["trade_id"],
                 signals_data.get("event_type", None),
                 signals_data.get("symbol", None),
                 signals_data.get("strategy_name", None),
                 signals_data.get("rsi_daily", None),
-                signals_data.get("rsi_h4", None),
+                signals_data.get("rsi_4h", None),
                 signals_data.get("rsi_1h", None),
                 signals_data.get("macd_val", None),
                 signals_data.get("macd_signal", None),
@@ -2229,8 +2230,8 @@ class DatabaseManager:
                 signals_data.get("ml_signal", None),
                 signals_data.get("timestamp", None)
             )
-
             self.execute_query(sql, vals)
+
             inserted_id = self.cursor.lastrowid
             logger.info(f"[save_trade_signals] new row id={inserted_id}, trade_id={signals_data['trade_id']}")
         except Exception as e:

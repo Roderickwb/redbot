@@ -1015,31 +1015,31 @@ class TrendStrategy4H:
 
     def _get_coin_risk_multiplier(self, symbol: str) -> Decimal:
         """
-        Haal risk_multiplier uit coin_profile.
-        Valt terug op default_risk_multiplier als er nog geen profiel is.
+        Haalt risk_multiplier uit coin_profile (analysis/coin_profiles/<SYMBOL>.json).
+        Fallback = 1.0 als er nog geen profiel is of iets misgaat.
         """
-        # default uit config
-        base = self.default_risk_multiplier
-
         try:
-            profile = load_coin_profile(self.db_manager, symbol, strategy_name=self.STRATEGY_NAME)
+            profile = load_coin_profile(symbol)
+            raw = profile.get("risk_multiplier", 1.0)
+
+            # Naar Decimal + simpele clamp
+            mult = Decimal(str(raw))
+            if mult <= 0:
+                mult = Decimal("0.25")
+            if mult > 1:
+                mult = Decimal("1.0")
+
+            self.logger.debug(
+                "[risk] %s risk_multiplier from coin_profile = %s",
+                symbol, mult
+            )
+            return mult
         except Exception as e:
-            self.logger.debug("[coin_profile] kon profiel niet laden voor %s: %s", symbol, e)
-            profile = {}
-
-        raw = profile.get("risk_multiplier", float(base))
-        try:
-            val = Decimal(str(raw))
-        except Exception:
-            val = base
-
-        # clamp naar [0, 1]
-        if val < Decimal("0"):
-            val = Decimal("0")
-        if val > Decimal("1"):
-            val = Decimal("1")
-
-        return val
+            self.logger.debug(
+                "[risk] kon coin_profile niet laden voor %s: %s",
+                symbol, e
+            )
+            return Decimal("1.0")
 
     # ---------------------------------------------------------
     # Trading (dryrun/auto) - sizing op basis van max EUR × risk_mult

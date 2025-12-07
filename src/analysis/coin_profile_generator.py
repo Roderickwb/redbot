@@ -152,24 +152,16 @@ def write_profiles(profiles: Dict[str, Dict[str, Any]]):
 
     logger.info("[coin_profile] %d profiles geschreven naar %s", len(profiles), OUTPUT_DIR)
 
-
 def generate_coin_profiles():
-    """
-    Main entry:
-    - leest alle analyses uit analysis/coins/
-    - derive_profile(..) per coin
-    - schrijft alles weg naar analysis/coin_profiles/
-    """
     print("[coin_profile] Start genereren coin profiles...")
     analyses = load_analysis_files()
-    profiles: Dict[str, Dict[str, Any]] = {}
+    profiles = {}
 
     for symbol, analysis in analyses.items():
         profiles[symbol] = derive_profile(analysis)
 
     write_profiles(profiles)
     print("[coin_profile] Klaar.")
-
 
 if __name__ == "__main__":
     generate_coin_profiles()

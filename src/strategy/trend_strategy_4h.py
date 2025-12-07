@@ -37,6 +37,7 @@ from src.indicator_analysis.indicators import IndicatorAnalysis
 from src.notifier.telegram_notifier import TelegramNotifier
 from src.notifier.bus import send as bus_send
 from src.ai.gpt_trend_decider import get_gpt_action, GPT_TREND_DECIDER_VERSION
+from src.analysis.coin_profile_loader import load_coin_profile
 
 
 from datetime import datetime, timedelta
@@ -530,6 +531,13 @@ class TrendStrategy4H:
                 limit=20
             )
 
+            # 6b) Coin profile inladen (uit JSON)
+            try:
+                coin_profile = load_coin_profile(symbol)
+            except Exception as e:
+                self.logger.warning("[%s] coin_profile load failed: %s", symbol, e)
+                coin_profile = {}  # veilige fallback: lege dict
+
             # 7) GPT om een besluit vragen – met max 1 retry
             last_error = None
             for attempt in range(2):  # 0 = eerste poging, 1 = retry
@@ -553,6 +561,7 @@ class TrendStrategy4H:
                         levels_4h=levels_4h,
                         candles_1h=candles_1h,
                         candles_4h=candles_4h,
+                        coin_profile=coin_profile,   # 👈 hier gaat hij mee
                     )
                     # als we hier komen: succes → break uit de loop
                     break
@@ -562,7 +571,6 @@ class TrendStrategy4H:
                         "[%s] GPT decision failed on attempt %d (%s)",
                         symbol, attempt + 1, e
                     )
-                    # korte pauze voor retry (optioneel)
                     if attempt == 0:
                         time.sleep(0.5)
             else:
@@ -1007,12 +1015,31 @@ class TrendStrategy4H:
 
     def _get_coin_risk_multiplier(self, symbol: str) -> Decimal:
         """
-        Haal de risk multiplier [0..1] op voor deze coin.
-        Later koppelen we dit aan coin_profile.
-        Voor nu: altijd 1.0 (full size).
+        Haal risk_multiplier uit coin_profile.
+        Valt terug op default_risk_multiplier als er nog geen profiel is.
         """
-        # TODO: straks uit coin_profile tabel lezen
-        return Decimal("1.0")
+        # default uit config
+        base = self.default_risk_multiplier
+
+        try:
+            profile = load_coin_profile(self.db_manager, symbol, strategy_name=self.STRATEGY_NAME)
+        except Exception as e:
+            self.logger.debug("[coin_profile] kon profiel niet laden voor %s: %s", symbol, e)
+            profile = {}
+
+        raw = profile.get("risk_multiplier", float(base))
+        try:
+            val = Decimal(str(raw))
+        except Exception:
+            val = base
+
+        # clamp naar [0, 1]
+        if val < Decimal("0"):
+            val = Decimal("0")
+        if val > Decimal("1"):
+            val = Decimal("1")
+
+        return val
 
     # ---------------------------------------------------------
     # Trading (dryrun/auto) - sizing op basis van max EUR × risk_mult

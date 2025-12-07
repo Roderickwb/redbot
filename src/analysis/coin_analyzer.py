@@ -313,6 +313,11 @@ class CoinAnalyzer:
         """
         Laad trade_signals voor een lijst trade_ids.
         In V1.5 pakken we vooral de 'open' events (of anders de laatste per trade).
+
+        Let op:
+        - In de DB heet de kolom 'rsi_4h'
+        - Intern gebruiken we 'rsi_h4' als naam in de DataFrame
+          → daarom SELECT ... rsi_4h AS rsi_h4
         """
         if not trade_ids:
             return pd.DataFrame()
@@ -326,7 +331,7 @@ class CoinAnalyzer:
             symbol,
             strategy_name,
             rsi_daily,
-            rsi_h4,
+            rsi_4h AS rsi_h4,
             rsi_1h,
             macd_val,
             macd_signal,

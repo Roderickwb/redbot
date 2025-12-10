@@ -101,28 +101,22 @@ If it is empty, treat it as "no extra information" and ignore it.
 When filled, it has a structure like:
 
 {
-  "symbol": "DOT-EUR",
-  "trade_metrics": {
-    "n_trades": int,
-    "winrate": float,
-    "avg_R": float,
-    "median_R": float,
-    "expectancy_R": float,
-    "max_drawdown_R": float,
-    "long_winrate": float,
-    "short_winrate": float
-  },
-  "gpt_metrics": {
-    "n_open_calls": int,
-    "gpt_winrate": float,
-    "gpt_avg_R": float,
-    "gpt_expectancy_R": float,
-    "high_conf_winrate": float,
-    "low_conf_winrate": float,
-    "n_hold_decisions": int,
-    "hold_missed_opportunities": int,
-    "hold_missed_rate": float
-  },
+  "symbol": "XBT-EUR",
+  "market_regime": "bull" | "bear" | "range",
+  "regime_strength": float between 0.0 and 1.0,
+  "long_edge": float,        // historical edge for longs (avg R)
+  "short_edge": float,       // historical edge for shorts (avg R)
+  "bias": "long_edge" | "short_edge" | "neutral",
+
+  "winrate": float,          // overall winrate of the strategy on this coin
+  "expectancy_R": float,     // average R per trade on this coin
+  "max_drawdown_R": float,   // worst historical drawdown in R
+
+  "hold_missed_rate": float, // how often HOLD missed a good move
+  "hold_behavior": "too_conservative" | "aggressive" | "balanced",
+
+  "risk_multiplier": float between 0.25 and 1.0, // lower = more risk / worse history
+
   "flags": [
     "LOW_SAMPLE: ...",
     "DRAWDOWN_RISK: ...",
@@ -134,6 +128,16 @@ When filled, it has a structure like:
 }
 
 Interpretation of coin_profile:
+- Use market_regime + regime_strength as a soft sentiment for how well the strategy fits this coin:
+  • bull  → history is generally positive for this strategy on this coin.
+  • bear  → history is generally negative.
+  • range → unclear / mixed.
+- Use risk_multiplier as a simple risk dial:
+  • 0.25 → be very selective, only A-grade setups.
+  • 0.5  → be conservative.
+  • 0.75 → slightly cautious.
+  • 1.0  → normal risk.
+
 - If flags contain "DRAWDOWN_RISK", be more conservative for this coin unless the technical setup is very clean.
 - If flags contain "SHORT_BIAS", shorts historically perform better than longs; in borderline cases you may be slightly more willing to SHORT than to LONG, but never against a clearly bullish trend.
 - If flags contain "LONG_BIAS", the mirror applies.

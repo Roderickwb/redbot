@@ -172,14 +172,19 @@ Local chops / micro-sideways (even after the hard filter):
 
 --- SENTIMENT LAYER (ABSTRACT, NO LIVE NEWS) ---
 
-Before applying the rules below, you MUST briefly map sentiment into:
-- Macro crypto sentiment (overall market): bullish / neutral / bearish.
-- Coin-specific sentiment: bullish / neutral / bearish.
+You also receive a field "sentiment" in the JSON with this structure:
 
-You may use:
-- General background knowledge about crypto cycles (no concrete dates).
-- The coin_profile.flags and metrics as a proxy for "risk" and "how well the strategy fits this coin".
-- The current technical picture (strong, clean trend vs messy and dangerous).
+- sentiment.macro: overall crypto market sentiment from external data
+  (e.g. Fear & Greed index), with a "label" field: "bullish" / "neutral" / "bearish".
+- sentiment.coin: coin-specific performance sentiment, also with a "label".
+- sentiment.chain: chain-level sentiment (e.g. BTC, ETH), also with a "label".
+
+When you write the first sentence of the rationale, you MUST derive:
+- macro=<...> from sentiment.macro.label (fallback: "neutral" if missing).
+- coin=<...> from sentiment.coin.label (fallback: "neutral" if missing).
+
+You may combine these external labels with coin_profile (risk and bias)
+and the current technical picture, but never invent news or events.
 
 Rules:
 - If both macro and coin sentiment are effectively "bearish" (e.g. heavy drawdowns, many DRAWDOWN_RISK flags, weak winrate) and the technical setup is not extremely strong, prefer action = "HOLD" (especially for new LONGs).
@@ -286,6 +291,8 @@ def _build_dataset(
     levels_4h: Dict[str, Any],
     candles_1h: list,
     candles_4h: list,
+    coin_profile: Dict[str, Any] | None = None,
+    sentiment: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     Bouw het JSON-pakket dat naar GPT gaat.
@@ -310,8 +317,9 @@ def _build_dataset(
         "levels_4h": levels_4h,
         "candles_1h": candles_1h,
         "candles_4h": candles_4h,
+        "coin_profile": coin_profile or {},
+        "sentiment": sentiment or {},
     }
-
 
 def ask_gpt_trend_decider(test_message: str) -> str:
     """
@@ -326,7 +334,6 @@ def ask_gpt_trend_decider(test_message: str) -> str:
         timeout=_TIMEOUT_SEC,
     )
     return response.choices[0].message.content
-
 
 def get_gpt_decision(
     symbol: str,
@@ -347,9 +354,9 @@ def get_gpt_decision(
     levels_4h: dict,
     candles_1h: list,
     candles_4h: list,
-    coin_profile: dict | None = None,      # 👈 ENIGE toevoeging
+    coin_profile: dict | None = None,
+    sentiment: dict | None = None,
 ) -> dict:
-
     """
     Stuurt de volledige chart-data naar GPT en krijgt een beslissings-object terug.
     """
@@ -373,9 +380,9 @@ def get_gpt_decision(
         levels_4h=levels_4h,
         candles_1h=candles_1h,
         candles_4h=candles_4h,
+        coin_profile=coin_profile,
+        sentiment=sentiment,
     )
-
-    dataset["coin_profile"] = coin_profile or {}  # 👈 DIT IS DE ENIGE NIEUWE REGEL
 
     logger.info(
         "[GPT][%s] request: algo_signal=%s, trend_4h=%s, trend_1h=%s",

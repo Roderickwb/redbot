@@ -328,6 +328,10 @@ trend_strategy_4h:
     ema_slow: 50
     recent_cross_lookback_h4: 3   # bars to call it "flip_early"
 
+  sentiment:
+    macro_provider: "fear_greed"   # of "dummy"
+    http_timeout_sec: 4
+
   sideways_filter:
     enabled: true
 

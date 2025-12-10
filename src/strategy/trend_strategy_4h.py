@@ -38,10 +38,10 @@ from src.notifier.telegram_notifier import TelegramNotifier
 from src.notifier.bus import send as bus_send
 from src.ai.gpt_trend_decider import get_gpt_action, GPT_TREND_DECIDER_VERSION
 from src.analysis.coin_profile_loader import load_coin_profile
-
-
 from datetime import datetime, timedelta
 from collections import defaultdict
+from src.sentiment.external_sentiment import get_external_sentiment
+
 
 def _to_decimal(x) -> Decimal:
     try:
@@ -536,11 +536,22 @@ class TrendStrategy4H:
                 coin_profile = load_coin_profile(symbol)
             except Exception as e:
                 self.logger.warning("[%s] coin_profile load failed: %s", symbol, e)
-                coin_profile = {}  # veilige fallback: lege dict
+                coin_profile = None
 
-            # 7) GPT om een besluit vragen – met max 1 retry
+
+            # === NIEUW: extern sentiment (macro/coin/chain) ===
+            try:
+                sentiment = get_external_sentiment(symbol)
+            except Exception as e:
+                self.logger.warning("[%s] get_external_sentiment failed: %s", symbol, e)
+                sentiment = {
+                    "macro": {"label": "neutral", "score": None, "source": "sentiment_error"},
+                    "coin":  {"label": "neutral", "score": None, "source": "sentiment_error"},
+                    "chain": {"label": "neutral", "score": None, "source": "sentiment_error"},
+                }
+
             last_error = None
-            for attempt in range(2):  # 0 = eerste poging, 1 = retry
+            for attempt in range(2):
                 try:
                     action, decision = get_gpt_action(
                         symbol=symbol,
@@ -561,10 +572,11 @@ class TrendStrategy4H:
                         levels_4h=levels_4h,
                         candles_1h=candles_1h,
                         candles_4h=candles_4h,
-                        coin_profile=coin_profile,   # 👈 hier gaat hij mee
+                        coin_profile=coin_profile,
+                        external_sentiment=external_sentiment,  # ✅ juiste naam
                     )
-                    # als we hier komen: succes → break uit de loop
                     break
+
                 except Exception as e:
                     last_error = e
                     self.logger.warning(

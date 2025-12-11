@@ -573,7 +573,7 @@ class TrendStrategy4H:
                         candles_1h=candles_1h,
                         candles_4h=candles_4h,
                         coin_profile=coin_profile,
-                        external_sentiment=external_sentiment,  # ✅ juiste naam
+                        external_sentiment=sentiment,  # ✅ juiste naam
                     )
                     break
 

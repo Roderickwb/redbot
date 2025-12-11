@@ -279,6 +279,7 @@ class DatabaseManager:
             self.create_trade_signals_table()
             self.create_gpt_decisions_table()   # <--- NIEUW
             self.create_coin_analysis_summary_table()  # <--- NIEUW
+            self.create_gpt_review_cases_table()  # <--- HIER TOEVOEGEN
 
             self.create_trades_table()  # <--- Hier wordt dus óók je trades-tabel geüpdatet!
 
@@ -2312,6 +2313,137 @@ class DatabaseManager:
             logger.info("[create_coin_analysis_summary_table] Tabel 'coin_analysis_summary' aangemaakt/bestond al.")
         except Exception as e:
             logger.error(f"[create_coin_analysis_summary_table] Fout: {e}")
+
+
+    def create_gpt_review_cases_table(self):
+        """
+        Tabel voor review-cases:
+        - 1 rij per interessante case (win/verlies/momentum/flip_early/etc.)
+        - Wordt gebruikt om later makkelijk te filteren/leren per patroon.
+        """
+        try:
+            sql = """
+            CREATE TABLE IF NOT EXISTS gpt_review_cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                strategy_name TEXT NOT NULL,
+
+                -- Koppeling naar trades / beslissingen
+                trade_id INTEGER,
+                algo_signal TEXT,
+                gpt_action TEXT,
+                confidence REAL,
+
+                -- Korte samenvatting + sentiment
+                rationale_short TEXT,
+                sentiment_macro TEXT,
+                sentiment_coin TEXT,
+                sentiment_chain TEXT,
+
+                -- Info uit coin-profiel
+                coin_profile_bias TEXT,
+                coin_profile_risk REAL,
+
+                -- Resultaat & review
+                result_label TEXT,     -- bv. WIN_STRONG / LOSS_MELTDOWN / BE / SKIPPED
+                review_label TEXT,     -- bv. A_GRADE / MOMENTUM_BREAKDOWN / FLIP_EARLY
+                notes TEXT,            -- vrije tekst
+
+                -- Veiligheidsnet: volledige JSON van de case
+                raw_json TEXT
+            );
+            """
+            self.cursor.execute(sql)
+            self.connection.commit()
+            logger.info("[create_gpt_review_cases_table] Tabel 'gpt_review_cases' aangemaakt/bestond al.")
+        except Exception as e:
+            logger.error(f"[create_gpt_review_cases_table] Fout: {e}")
+
+    def save_gpt_review_case(self, case: dict):
+        """
+        Slaat één review case op in gpt_review_cases.
+
+        Verwacht dictionary:
+        {
+            "timestamp": int,
+            "symbol": "BTC-EUR",
+            "strategy_name": "trend_4h",
+
+            "trade_id": 123 or None,
+            "algo_signal": "long_candidate",
+            "gpt_action": "OPEN_LONG",
+            "confidence": 78,
+
+            "rationale_short": "Strong 4h trend, clean pullback setup.",
+            "sentiment_macro": "bullish",
+            "sentiment_coin": "neutral",
+            "sentiment_chain": "bullish",
+
+            "coin_profile_bias": "long_bias",
+            "coin_profile_risk": 0.75,
+
+            "result_label": "WIN_STRONG",
+            "review_label": "A_GRADE",
+            "notes": "Very clean alignment across TFs.",
+
+            "raw_json": "{ ... }"
+        }
+        """
+        try:
+            import json
+
+            sql = """
+            INSERT INTO gpt_review_cases (
+                timestamp,
+                symbol,
+                strategy_name,
+                trade_id,
+                algo_signal,
+                gpt_action,
+                confidence,
+                rationale_short,
+                sentiment_macro,
+                sentiment_coin,
+                sentiment_chain,
+                coin_profile_bias,
+                coin_profile_risk,
+                result_label,
+                review_label,
+                notes,
+                raw_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+
+            vals = (
+                case.get("timestamp"),
+                case.get("symbol"),
+                case.get("strategy_name"),
+                case.get("trade_id"),
+                case.get("algo_signal"),
+                case.get("gpt_action"),
+                case.get("confidence"),
+
+                case.get("rationale_short"),
+                case.get("sentiment_macro"),
+                case.get("sentiment_coin"),
+                case.get("sentiment_chain"),
+
+                case.get("coin_profile_bias"),
+                case.get("coin_profile_risk"),
+
+                case.get("result_label"),
+                case.get("review_label"),
+                case.get("notes"),
+
+                json.dumps(case.get("raw_json")) if isinstance(case.get("raw_json"), (list, dict)) else case.get("raw_json")
+            )
+
+            self.execute_query(sql, vals)
+            logger.info(f"[save_gpt_review_case] Review case opgeslagen voor {case.get('symbol')}")
+        except Exception as e:
+            logger.error(f"[save_gpt_review_case] Fout: {e}")
 
 
     def save_gpt_decision(self, decision_data: dict):

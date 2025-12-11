@@ -8,6 +8,12 @@ from dotenv import load_dotenv
 
 from src.config.config import yaml_config
 
+from src.database_manager.database_manager import (
+    DatabaseManager,
+    get_current_utc_timestamp_ms,
+)
+
+
 # --------------------------------------------------
 # Setup
 # --------------------------------------------------
@@ -356,6 +362,9 @@ def get_gpt_decision(
     candles_4h: list,
     coin_profile: dict | None = None,
     sentiment: dict | None = None,
+    *,
+    strategy_name: str = "trend_4h",
+    db: DatabaseManager | None = None,
 ) -> dict:
     """
     Stuurt de volledige chart-data naar GPT en krijgt een beslissings-object terug.
@@ -389,6 +398,7 @@ def get_gpt_decision(
         symbol, algo_signal, trend_4h, trend_1h
     )
 
+    # 1) GPT-call
     response = client.chat.completions.create(
         model=_MODEL_NAME,
         messages=[
@@ -412,7 +422,78 @@ def get_gpt_decision(
             "journal_tags": ["parse_error"],
         }
 
-    return normalize_decision(raw)
+    # 2) Normaliseren
+    decision = normalize_decision(raw)
+
+    # 3) Optioneel: in DB loggen
+    if db is not None:
+        ts_now = get_current_utc_timestamp_ms()
+
+        # --- gpt_decisions ---
+        try:
+            db.save_gpt_decision({
+                "timestamp": ts_now,
+                "symbol": symbol,
+                "strategy_name": strategy_name,
+
+                "algo_signal": algo_signal,
+                "gpt_action": decision.get("action"),
+                "confidence": decision.get("confidence"),
+                "rationale": decision.get("rationale"),
+                "journal_tags": decision.get("journal_tags"),
+
+                "request_json": dataset,         # volledige input
+                "response_json": decision,       # genormaliseerde output
+                "gpt_version": GPT_TREND_DECIDER_VERSION,
+                "trade_id": None,                # trade bestaat hier nog niet
+            })
+        except Exception as e:
+            logger.error("[GPT][%s] save_gpt_decision failed: %s", symbol, e)
+
+        # --- gpt_review_cases ---
+        try:
+            sent_obj = sentiment or {}
+            macro_sent = (sent_obj.get("macro") or {}).get("label")
+            coin_sent = (sent_obj.get("coin") or {}).get("label")
+            chain_sent = (sent_obj.get("chain") or {}).get("label")
+
+            cp = coin_profile or {}
+            bias = cp.get("bias")
+            risk_mult = cp.get("risk_multiplier")
+
+            db.save_gpt_review_case({
+                "timestamp": ts_now,
+                "symbol": symbol,
+                "strategy_name": strategy_name,
+
+                "trade_id": None,
+                "algo_signal": algo_signal,
+                "gpt_action": decision.get("action"),
+                "confidence": decision.get("confidence"),
+
+                "rationale_short": decision.get("rationale", "")[:160],
+                "sentiment_macro": macro_sent,
+                "sentiment_coin": coin_sent,
+                "sentiment_chain": chain_sent,
+
+                "coin_profile_bias": bias,
+                "coin_profile_risk": risk_mult,
+
+                # Deze drie worden later (in je analyse-laag) ingevuld
+                "result_label": None,
+                "review_label": None,
+                "notes": None,
+
+                "raw_json": {
+                    "request": dataset,
+                    "decision": decision,
+                },
+            })
+        except Exception as e:
+            logger.error("[GPT][%s] save_gpt_review_case failed: %s", symbol, e)
+
+    return decision
+
 
 def _normalize_confidence(raw: dict) -> int:
     """
@@ -482,12 +563,21 @@ def normalize_decision(raw: dict) -> dict:
     )
     return decision
 
-
-def get_gpt_action(*args, **kwargs) -> Tuple[str, dict]:
+def get_gpt_action(
+    *args,
+    strategy_name: str = "trend_4h",
+    db: DatabaseManager | None = None,
+    **kwargs,
+) -> Tuple[str, dict]:
     """
     Convenience helper:
     - retourneert direct (action, full_decision_dict)
-    Compatible met jouw trend_strategy_4h.
+    - kan optioneel een DatabaseManager gebruiken om te loggen
     """
-    decision = get_gpt_decision(*args, **kwargs)
+    decision = get_gpt_decision(
+        *args,
+        strategy_name=strategy_name,
+        db=db,
+        **kwargs,
+    )
     return decision["action"], decision

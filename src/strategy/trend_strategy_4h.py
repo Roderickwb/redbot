@@ -38,7 +38,7 @@ from src.notifier.telegram_notifier import TelegramNotifier
 from src.notifier.bus import send as bus_send
 from src.ai.gpt_trend_decider import get_gpt_action, GPT_TREND_DECIDER_VERSION
 from src.analysis.coin_profile_loader import load_coin_profile
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict
 from src.sentiment.external_sentiment import get_external_sentiment
 
@@ -212,9 +212,16 @@ class TrendStrategy4H:
 
         self.intra_log_verbose = bool(cfg.get("intra_log_verbose", True))
 
+        self._last_coin_profile: Dict[str, dict] = {}
+
+        # cache van laatst geladen coin_profile per symbol (voor risk_mult + telegram bewijs)
+        self._last_coin_profile = {}
+
+        # daily snapshot stats + guard (12:00)
+        self._daily_stats = self._new_daily_stats()
+        self._daily_snapshot_sent_date = None
+
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
-
-
 
 
     def _notify(self, text: str):
@@ -273,6 +280,9 @@ class TrendStrategy4H:
 
         self.logger.info("[CHECK][%s] execute_strategy tick (mode=%s)", symbol, self.trading_mode)
 
+        self._daily_stats["checked"] += 1
+        self._daily_snapshot_if_due()
+
         # 1) Trend op 4h
         df_4h = self._fetch_df(symbol, self.trend_tf, limit=200)
         if df_4h.empty:
@@ -312,6 +322,7 @@ class TrendStrategy4H:
             trend_dir = "bear"
 
         if self.use_adx_multitimeframe and adx_4h is not None and adx_4h < self.adx_high_tf_threshold:
+            self._daily_stats["skip_context"] += 1
             self.logger.info("[%s] 4h adx=%.2f<th=%.1f => skip context", symbol, adx_4h, self.adx_high_tf_threshold)
             return
 
@@ -449,6 +460,7 @@ class TrendStrategy4H:
             price_1h=last_close_1h,
             atr_1h=atr_1h,
         ):
+            self._daily_stats["sideways_block"] += 1
             self.logger.info("[%s] SIDEWAYS regime (ADX+EMA+ATR) → geen trendtrade.", symbol)
             return
 
@@ -533,10 +545,12 @@ class TrendStrategy4H:
 
             # 6b) Coin profile inladen (uit JSON)
             try:
-                coin_profile = load_coin_profile(symbol)
+                coin_profile = load_coin_profile(self.db_manager, symbol, strategy_name=self.STRATEGY_NAME)
+                self._last_coin_profile[symbol] = coin_profile
             except Exception as e:
                 self.logger.warning("[%s] coin_profile load failed: %s", symbol, e)
-                coin_profile = None
+                coin_profile = {}
+                self._last_coin_profile[symbol] = {}
 
 
             # === NIEUW: extern sentiment (macro/coin/chain) ===
@@ -551,6 +565,7 @@ class TrendStrategy4H:
                 }
 
             last_error = None
+            self._daily_stats["gpt_calls"] += 1
             for attempt in range(2):
                 try:
                     action, decision = get_gpt_action(
@@ -628,19 +643,38 @@ class TrendStrategy4H:
             # -------------------------------------------------
             # 2) Telegram-melding van de beslissing
             # -------------------------------------------------
-            if action == "OPEN_LONG":
-                decision_label = "OPEN LONG"
-            elif action == "OPEN_SHORT":
-                decision_label = "OPEN SHORT"
+            # --- stats + korte telegram (OPEN/HOLD) ---
+            if action == "HOLD":
+                self._daily_stats["hold"] += 1
+                self._daily_stats["top"].append((conf, symbol, "HOLD"))
+                self._notify_gpt_hold(
+                    symbol=symbol,
+                    conf=conf,
+                    trend_4h=trend_4h,
+                    trend_1h=trend_1h,
+                    sentiment=sentiment,
+                    coin_profile=coin_profile,
+                    decision=decision,
+                )
             else:
-                decision_label = "HOLD"
+                if action == "OPEN_LONG":
+                    self._daily_stats["open_long"] += 1
+                    label = "OPEN LONG"
+                else:
+                    self._daily_stats["open_short"] += 1
+                    label = "OPEN SHORT"
 
-            self._notify(
-                f"🤖 GPT | {symbol} | {decision_label}\n"
-                f"Trend: {trend_4h.upper()} | Algo: {algo_signal}\n"
-                f"Conf: {conf:.0f}%\n"
-                f"Reason: {rationale}"
-            )
+                self._daily_stats["top"].append((conf, symbol, action))
+                self._notify_gpt_open(
+                    symbol=symbol,
+                    decision_label=label,
+                    conf=conf,
+                    trend_4h=trend_4h,
+                    trend_1h=trend_1h,
+                    sentiment=sentiment,
+                    coin_profile=coin_profile,
+                    decision=decision,
+                )
 
             # -------------------------------------------------
             # 3) GPT-actie vertalen naar side/open
@@ -764,6 +798,90 @@ class TrendStrategy4H:
                     )
 
             self._manage_position(sym, current_price=_to_decimal(px), atr_value=pos["atr"])
+
+    def _new_daily_stats(self) -> dict:
+        return {
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "checked": 0,
+            "skip_context": 0,
+            "sideways_block": 0,
+            "gpt_calls": 0,
+            "open_long": 0,
+            "open_short": 0,
+            "hold": 0,
+            "top": [],  # list of (conf, symbol, action)
+        }
+
+    def _daily_snapshot_if_due(self):
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+
+        # reset op nieuwe dag
+        if self._daily_stats.get("date") != today:
+            self._daily_stats = self._new_daily_stats()
+            self._daily_snapshot_sent_date = None
+
+        # alleen 17:30 (17:30–17:34 window)
+        if now.hour == 17 and 30 <= now.minute <= 34:
+            if self._daily_snapshot_sent_date == today:
+                return
+
+            s = self._daily_stats
+            top = sorted(s["top"], key=lambda x: x[0], reverse=True)[:3]
+            top_lines = "\n".join(
+                [f"{i + 1}) {sym} {act} {conf:.0f}%" for i, (conf, sym, act) in enumerate(top)]) or "-"
+
+            self._notify(
+                f"📊 Daily Snapshot 12:00\n"
+                f"Checked: {s['checked']} | SkipContext: {s['skip_context']} | Sideways: {s['sideways_block']}\n"
+                f"GPT calls: {s['gpt_calls']} | Opens L{s['open_long']}/S{s['open_short']} | Holds {s['hold']}\n"
+                f"Top:\n{top_lines}"
+            )
+            self._daily_snapshot_sent_date = today
+
+    def _notify_gpt_hold(self, symbol: str, conf: float, trend_4h: str, trend_1h: str, sentiment: dict,
+                         coin_profile: dict, decision: dict):
+        sent_macro = (sentiment or {}).get("macro", {}).get("label", "neutral")
+        sent_coin = (sentiment or {}).get("coin", {}).get("label", "neutral")
+        sent_chain = (sentiment or {}).get("chain", {}).get("label", "neutral")
+
+        risk_mult = float((coin_profile or {}).get("risk_multiplier", 1.0))
+        bias = (coin_profile or {}).get("bias", "neutral")
+        n_trades = int((coin_profile or {}).get("n_trades", 0))
+        expR = float((coin_profile or {}).get("expectancy_R", 0.0))
+
+        tags = decision.get("journal_tags") or []
+        tag_str = ",".join([str(t) for t in tags[:4]])
+
+        self._notify(
+            f"🤖 GPT | {symbol} | HOLD\n"
+            f"Conf: {conf:.0f}% | Tags: {tag_str}\n"
+            f"Trend: 4h {trend_4h.upper()} | 1h {trend_1h.upper()}\n"
+            f"Sent: M={sent_macro.upper()} C={sent_coin.upper()} Ch={sent_chain.upper()}\n"
+            f"Profile: risk={risk_mult:.2f} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
+        )
+
+    def _notify_gpt_open(self, symbol: str, decision_label: str, conf: float, trend_4h: str, trend_1h: str,
+                         sentiment: dict, coin_profile: dict, decision: dict):
+        sent_macro = (sentiment or {}).get("macro", {}).get("label", "neutral")
+        sent_coin = (sentiment or {}).get("coin", {}).get("label", "neutral")
+        sent_chain = (sentiment or {}).get("chain", {}).get("label", "neutral")
+
+        risk_mult = float((coin_profile or {}).get("risk_multiplier", 1.0))
+        bias = (coin_profile or {}).get("bias", "neutral")
+        n_trades = int((coin_profile or {}).get("n_trades", 0))
+        expR = float((coin_profile or {}).get("expectancy_R", 0.0))
+
+        tags = decision.get("journal_tags") or []
+        tag_str = ",".join([str(t) for t in tags[:4]])
+
+        self._notify(
+            f"🤖 GPT | {symbol} | {decision_label}\n"
+            f"Conf: {conf:.0f}% | Tags: {tag_str}\n"
+            f"Trend: 4h {trend_4h.upper()} | 1h {trend_1h.upper()}\n"
+            f"Sent: M={sent_macro.upper()} C={sent_coin.upper()} Ch={sent_chain.upper()}\n"
+            f"Profile: risk={risk_mult:.2f} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
+        )
 
     # ---------------------------------------------------------
     # Helpers
@@ -1026,29 +1144,37 @@ class TrendStrategy4H:
         return amount
 
     def _get_coin_risk_multiplier(self, symbol: str) -> Decimal:
-        """
-        Haalt risk_multiplier uit coin_profile (analysis/coin_profiles/<SYMBOL>.json).
-        Fallback = 1.0 als er nog geen profiel is of iets misgaat.
-        """
         try:
-            profile = load_coin_profile(symbol)
-            raw = profile.get("risk_multiplier", 1.0)
+            source = "ram"
 
-            # Naar Decimal + simpele clamp
+            # 1) eerst RAM cache
+            profile = self._last_coin_profile.get(symbol)
+            if not profile:
+                source = "db"
+                profile = load_coin_profile(self.db_manager, symbol, strategy_name=self.STRATEGY_NAME)
+
+            raw = profile.get("risk_multiplier", 1.0)
             mult = Decimal(str(raw))
+
+            # clamp
             if mult <= 0:
                 mult = Decimal("0.25")
             if mult > 1:
                 mult = Decimal("1.0")
 
+            # ✅ DEBUG LOG (belangrijk)
             self.logger.debug(
-                "[risk] %s risk_multiplier from coin_profile = %s",
-                symbol, mult
+                "[risk] %s risk_multiplier=%s (source=%s)",
+                symbol, mult, source
             )
+
+            self.logger.debug("[risk] %s risk_multiplier from coin_profile = %s", symbol, mult)
+
             return mult
+
         except Exception as e:
             self.logger.debug(
-                "[risk] kon coin_profile niet laden voor %s: %s",
+                "[risk] %s risk_multiplier fallback=1.0 (error=%s)",
                 symbol, e
             )
             return Decimal("1.0")

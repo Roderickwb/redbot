@@ -214,9 +214,6 @@ class TrendStrategy4H:
 
         self._last_coin_profile: Dict[str, dict] = {}
 
-        # cache van laatst geladen coin_profile per symbol (voor risk_mult + telegram bewijs)
-        self._last_coin_profile = {}
-
         # daily snapshot stats + guard (12:00)
         self._daily_stats = self._new_daily_stats()
         self._daily_snapshot_sent_date = None
@@ -545,12 +542,13 @@ class TrendStrategy4H:
 
             # 6b) Coin profile inladen (uit JSON)
             try:
-                coin_profile = load_coin_profile(self.db_manager, symbol, strategy_name=self.STRATEGY_NAME)
+                coin_profile = load_coin_profile(self.db_manager, symbol, strategy_name=self.STRATEGY_NAME) or {}
+                profile_source = "db" if coin_profile else "none"
                 self._last_coin_profile[symbol] = coin_profile
             except Exception as e:
                 self.logger.warning("[%s] coin_profile load failed: %s", symbol, e)
                 coin_profile = {}
-                self._last_coin_profile[symbol] = {}
+                profile_source = "error"
 
 
             # === NIEUW: extern sentiment (macro/coin/chain) ===
@@ -832,7 +830,7 @@ class TrendStrategy4H:
                 [f"{i + 1}) {sym} {act} {conf:.0f}%" for i, (conf, sym, act) in enumerate(top)]) or "-"
 
             self._notify(
-                f"📊 Daily Snapshot 12:00\n"
+                f"📊 Daily Snapshot 17:30\n"                
                 f"Checked: {s['checked']} | SkipContext: {s['skip_context']} | Sideways: {s['sideways_block']}\n"
                 f"GPT calls: {s['gpt_calls']} | Opens L{s['open_long']}/S{s['open_short']} | Holds {s['hold']}\n"
                 f"Top:\n{top_lines}"
@@ -841,6 +839,13 @@ class TrendStrategy4H:
 
     def _notify_gpt_hold(self, symbol: str, conf: float, trend_4h: str, trend_1h: str, sentiment: dict,
                          coin_profile: dict, decision: dict):
+
+        # --- profile provenance (bewijs of coin_profile echt gebruikt is) ---
+        profile_loaded = bool(coin_profile)  # {} / None => False
+        profile_source = (coin_profile or {}).get("_source", "unknown")  # 'db'/'json'/'none'/'unknown'
+        rm_is_default = (not profile_loaded) and float((coin_profile or {}).get("risk_multiplier", 1.0)) == 1.0
+        rm_origin = "default" if rm_is_default else ("profile" if profile_loaded else "unknown")
+
         sent_macro = (sentiment or {}).get("macro", {}).get("label", "neutral")
         sent_coin = (sentiment or {}).get("coin", {}).get("label", "neutral")
         sent_chain = (sentiment or {}).get("chain", {}).get("label", "neutral")
@@ -858,11 +863,17 @@ class TrendStrategy4H:
             f"Conf: {conf:.0f}% | Tags: {tag_str}\n"
             f"Trend: 4h {trend_4h.upper()} | 1h {trend_1h.upper()}\n"
             f"Sent: M={sent_macro.upper()} C={sent_coin.upper()} Ch={sent_chain.upper()}\n"
-            f"Profile: risk={risk_mult:.2f} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
+            f"Profile: risk={risk_mult:.2f}({rm_origin}) | src={profile_source} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
         )
 
     def _notify_gpt_open(self, symbol: str, decision_label: str, conf: float, trend_4h: str, trend_1h: str,
                          sentiment: dict, coin_profile: dict, decision: dict):
+        # --- profile provenance (bewijs of coin_profile echt gebruikt is) ---
+        profile_loaded = bool(coin_profile)  # {} / None => False
+        profile_source = (coin_profile or {}).get("_source", "unknown")  # 'db'/'json'/'none'/'unknown'
+        rm_is_default = (not profile_loaded) and float((coin_profile or {}).get("risk_multiplier", 1.0)) == 1.0
+        rm_origin = "default" if rm_is_default else ("profile" if profile_loaded else "unknown")
+
         sent_macro = (sentiment or {}).get("macro", {}).get("label", "neutral")
         sent_coin = (sentiment or {}).get("coin", {}).get("label", "neutral")
         sent_chain = (sentiment or {}).get("chain", {}).get("label", "neutral")
@@ -880,7 +891,7 @@ class TrendStrategy4H:
             f"Conf: {conf:.0f}% | Tags: {tag_str}\n"
             f"Trend: 4h {trend_4h.upper()} | 1h {trend_1h.upper()}\n"
             f"Sent: M={sent_macro.upper()} C={sent_coin.upper()} Ch={sent_chain.upper()}\n"
-            f"Profile: risk={risk_mult:.2f} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
+            f"Profile: risk={risk_mult:.2f}({rm_origin}) | src={profile_source} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
         )
 
     # ---------------------------------------------------------
@@ -1567,7 +1578,7 @@ class TrendStrategy4H:
             "atr_value": float(atr_1h),
             "depth_score": 0.0,
             "ml_signal": 0.0,
-            "rsi_h4": 0.0,
+            "rsi_4h": 0.0,
             "timestamp": int(time.time() * 1000)
         }
         try:
@@ -1723,7 +1734,7 @@ class TrendStrategy4H:
             row = self.db_manager.execute_query(
                 """
                 SELECT atr_value
-                FROM signals
+                FROM trade_signals
                 WHERE trade_id=?
                 ORDER BY timestamp DESC
                 LIMIT 1

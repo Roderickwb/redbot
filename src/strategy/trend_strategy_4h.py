@@ -220,7 +220,6 @@ class TrendStrategy4H:
 
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
 
-
     def _notify(self, text: str):
         """Stuur een Telegram-bericht via de globale notifier-bus (als die er is)."""
         try:

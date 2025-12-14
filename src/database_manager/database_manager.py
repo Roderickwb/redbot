@@ -37,6 +37,20 @@ class DatabaseManager:
                 isolation_level=None  # We beheren zelf transactiegrenzen
             )
             self.connection.execute("PRAGMA journal_mode=WAL;")
+            # --- WAL safety / growth control ---
+            self.connection.execute("PRAGMA busy_timeout = 30000;")  # wacht op locks
+            self.connection.execute("PRAGMA synchronous = NORMAL;")  # sneller, nog steeds ok voor WAL
+            self.connection.execute("PRAGMA wal_autocheckpoint = 1000;")  # checkpoint elke ~1000 pages
+            self.connection.execute("PRAGMA journal_size_limit = 200000000;")  # max ~200MB voor -wal (soft limit)
+            # Optioneel: cache/temps op disk beperken
+            # self.connection.execute("PRAGMA temp_store = MEMORY;")
+
+            # Forceer 1 checkpoint bij startup (truncates WAL als mogelijk)
+            try:
+                self.connection.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            except Exception as e:
+                logger.warning(f"[DatabaseManager] wal_checkpoint(TRUNCATE) failed: {e}")
+
             self.cursor = self.connection.cursor()
 
             # Lock voor concurrency (als er meerdere threads werken)
@@ -245,6 +259,52 @@ class DatabaseManager:
             return 0
 
     # --------------------------------------------------------------------------
+    # Schema helpers (no manual SQL needed)
+    # --------------------------------------------------------------------------
+
+    def _get_table_columns(self, table_name: str) -> set:
+        try:
+            rows = self.execute_query(f"PRAGMA table_info({table_name})")
+            return set(r[1] for r in rows) if rows else set()
+        except Exception:
+            return set()
+
+    def _ensure_column(self, table: str, col: str, col_def_sql: str):
+        """
+        Zorgt dat een column bestaat. col_def_sql = bv. "TEXT", "INTEGER", "REAL", etc.
+        """
+        cols = self._get_table_columns(table)
+        if col in cols:
+            return
+        try:
+            self.execute_query(f"ALTER TABLE {table} ADD COLUMN {col} {col_def_sql}")
+            logger.info(f"[schema] Added column {table}.{col} {col_def_sql}")
+        except Exception as e:
+            logger.error(f"[schema] Failed to add column {table}.{col}: {e}")
+
+    def _ensure_index(self, index_sql: str):
+        try:
+            self.execute_query(index_sql)
+        except Exception as e:
+            logger.error(f"[schema] Failed to create index: {e} | sql={index_sql}")
+
+    def ensure_schema_upgrades(self):
+        """
+        Centrale plek voor alle schema upgrades (ALTER TABLE / indexes) op bestaande DB's.
+        Veilig om elke startup te draaien.
+        """
+        # gpt_decisions upgrades
+        self._ensure_column("gpt_decisions", "request_hash", "TEXT")
+        self._ensure_column("gpt_decisions", "response_hash", "TEXT")
+
+        # trades upgrades
+        self._ensure_column("trades", "is_master", "INT DEFAULT 0")
+
+        # indexes (voorbeeld)
+        self._ensure_index("CREATE INDEX IF NOT EXISTS idx_gpt_decisions_ts ON gpt_decisions(timestamp)")
+        self._ensure_index("CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(timestamp)")
+
+    # --------------------------------------------------------------------------
     # Creëren/updaten tabellen
     # --------------------------------------------------------------------------
     def create_tables(self):
@@ -280,8 +340,7 @@ class DatabaseManager:
             self.create_gpt_decisions_table()   # <--- NIEUW
             self.create_coin_analysis_summary_table()  # <--- NIEUW
             self.create_gpt_review_cases_table()  # <--- HIER TOEVOEGEN
-
-            self.create_trades_table()  # <--- Hier wordt dus óók je trades-tabel geüpdatet!
+            self.ensure_schema_upgrades()
 
 
             logger.info("[create_tables] Alle (oude en nieuwe) tabellen klaar of bijgewerkt.")
@@ -756,11 +815,11 @@ class DatabaseManager:
             self.connection.commit()
             logger.info("[create_trades_table] Trades tabel is klaar.")
 
+            # Huidige kolommen ophalen
             self.cursor.execute("PRAGMA table_info(trades)")
             columns = [col[1] for col in self.cursor.fetchall()]
             logger.debug(f"[create_trades_table] Kolommen in 'trades': {columns}")
 
-            # Toevoeging: Kolom strategy_name, zodat we per strategie kunnen filteren.
             maybe_add = {
                 'datetime_utc': 'TEXT',
                 'position_id': 'TEXT',
@@ -769,35 +828,59 @@ class DatabaseManager:
                 'pnl_eur': 'REAL',
                 'fees': 'REAL',
                 'trade_cost': 'REAL',
-                'strategy_name': 'TEXT'  # <- nieuw
+                'strategy_name': 'TEXT'
             }
+
+            # Missing columns toevoegen
             for col_name, col_type in maybe_add.items():
                 if col_name not in columns:
                     try:
-                        self.cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
+                        self.cursor.execute(
+                            f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}"
+                        )
                         self.connection.commit()
                         logger.info(f"[create_trades_table] Kolom '{col_name}' toegevoegd.")
+                        columns.append(col_name)  # <-- belangrijk: lokaal bijwerken
                     except sqlite3.OperationalError as e:
                         if "duplicate column name" in str(e).lower():
-                            logger.info(f"[create_trades_table] Kolom '{col_name}' bestaat al, skip.")
+                            logger.info(
+                                f"[create_trades_table] Kolom '{col_name}' bestaat al, skip."
+                            )
+                            # ook lokaal bijwerken zodat checks verderop kloppen
+                            if col_name not in columns:
+                                columns.append(col_name)
                         else:
-                            logger.error(f"[create_trades_table] Fout bij kolom {col_name}: {e}")
+                            logger.error(
+                                f"[create_trades_table] Fout bij kolom {col_name}: {e}"
+                            )
 
-                # ============================
-                # HIER ONZE NIEUWE KLEINE STAP
-                # ============================
-                if 'is_master' not in columns:
-                    try:
-                        self.cursor.execute("ALTER TABLE trades ADD COLUMN is_master INT DEFAULT 0")
-                        self.connection.commit()
-                        logger.info("[create_trades_table] Kolom 'is_master' (INT) toegevoegd met default=0.")
-                    except sqlite3.OperationalError as e:
-                        if "duplicate column name" in str(e).lower():
-                            logger.info("[create_trades_table] Kolom 'is_master' bestaat al, skip.")
-                        else:
-                            logger.error(f"[create_trades_table] Fout bij kolom 'is_master': {e}")
+            # ============================
+            # is_master → APART, BUITEN de loop
+            # ============================
+            if 'is_master' not in columns:
+                try:
+                    self.cursor.execute(
+                        "ALTER TABLE trades ADD COLUMN is_master INT DEFAULT 0"
+                    )
+                    self.connection.commit()
+                    logger.info(
+                        "[create_trades_table] Kolom 'is_master' toegevoegd (DEFAULT 0)."
+                    )
+                    columns.append('is_master')
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" in str(e).lower():
+                        logger.info(
+                            "[create_trades_table] Kolom 'is_master' bestaat al, skip."
+                        )
+                        if 'is_master' not in columns:
+                            columns.append('is_master')
+                    else:
+                        logger.error(
+                            f"[create_trades_table] Fout bij kolom 'is_master': {e}"
+                        )
 
             logger.info("[create_trades_table] Tabel 'trades' is nu volledig opgebouwd.")
+
         except Exception as e:
             logger.error(f"[create_trades_table] Error: {e}")
 

@@ -288,6 +288,61 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"[schema] Failed to create index: {e} | sql={index_sql}")
 
+    def upsert_coin_profile(self, symbol: str, strategy_name: str, profile: dict, updated_ts: int,
+                            source: str = "import_json"):
+        import json
+        self.cursor.execute("""
+            INSERT INTO coin_profiles (
+                symbol, strategy_name,
+                risk_multiplier, bias, n_trades, expectancy_r,
+                source, updated_ts, profile_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, strategy_name) DO UPDATE SET
+                risk_multiplier=excluded.risk_multiplier,
+                bias=excluded.bias,
+                n_trades=excluded.n_trades,
+                expectancy_r=excluded.expectancy_r,
+                source=excluded.source,
+                updated_ts=excluded.updated_ts,
+                profile_json=excluded.profile_json
+        """, (
+            symbol,
+            strategy_name,
+            float(profile.get("risk_multiplier", 1.0)),
+            profile.get("bias", "neutral"),
+            int(profile.get("n_trades", 0)),
+            float(profile.get("expectancy_R", 0.0)),
+            source,
+            int(updated_ts),
+            json.dumps(profile)
+        ))
+        self.connection.commit()
+
+    def load_coin_profile(self, symbol: str, strategy_name: str):
+        self.cursor.execute("""
+            SELECT risk_multiplier, bias, n_trades, expectancy_r, source, updated_ts, profile_json
+            FROM coin_profiles
+            WHERE symbol=? AND strategy_name=?
+            LIMIT 1
+        """, (symbol, strategy_name))
+        row = self.cursor.fetchone()
+        if not row:
+            return None
+
+        import json
+        risk_multiplier, bias, n_trades, expectancy_r, source, updated_ts, profile_json = row
+        data = json.loads(profile_json) if profile_json else {}
+        data.setdefault("risk_multiplier", risk_multiplier)
+        data.setdefault("bias", bias)
+        data.setdefault("n_trades", n_trades)
+        data.setdefault("expectancy_R", expectancy_r)
+        data["_meta"] = {
+            "source": source,
+            "updated_ts": updated_ts
+        }
+        return data
+
     def ensure_schema_upgrades(self):
         """
         Centrale plek voor alle schema upgrades (ALTER TABLE / indexes) op bestaande DB's.
@@ -338,6 +393,7 @@ class DatabaseManager:
             # [NEW] => Ook onze nieuwe tabellen voor analyse
             self.create_trade_signals_table()
             self.create_gpt_decisions_table()   # <--- NIEUW
+            self.create_coin_profiles_table()  # <<< HIER
             self.create_coin_analysis_summary_table()  # <--- NIEUW
             self.create_gpt_review_cases_table()  # <--- HIER TOEVOEGEN
             self.ensure_schema_upgrades()
@@ -2355,6 +2411,28 @@ class DatabaseManager:
             logger.info("[create_gpt_decisions_table] Tabel 'gpt_decisions' aangemaakt/bestond al.")
         except Exception as e:
             logger.error(f"[create_gpt_decisions_table] Fout: {e}")
+
+    def create_coin_profiles_table(self):
+        try:
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS coin_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    strategy_name TEXT NOT NULL,
+                    risk_multiplier REAL DEFAULT 1.0,
+                    bias TEXT DEFAULT 'neutral',
+                    n_trades INTEGER DEFAULT 0,
+                    expectancy_r REAL DEFAULT 0.0,
+                    source TEXT DEFAULT 'db',
+                    updated_ts INTEGER,
+                    profile_json TEXT,
+                    UNIQUE(symbol, strategy_name)
+                )
+            """)
+            self.connection.commit()
+            logger.info("[create_coin_profiles_table] coin_profiles bestaat / aangemaakt.")
+        except Exception as e:
+            logger.error(f"[create_coin_profiles_table] Error: {e}")
 
     def create_coin_analysis_summary_table(self):
         """

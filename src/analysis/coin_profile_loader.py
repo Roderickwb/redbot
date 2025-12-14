@@ -60,3 +60,33 @@ def load_coin_profile(
         "expectancy_R": float(expectancy_R or 0.0),
         "max_drawdown_R": float(max_dd or 0.0),
     }
+
+import json
+
+def load_coin_profile_json(
+    db: DatabaseManager,
+    symbol: str,
+    strategy_name: str = "trend_4h",
+) -> Dict:
+    """
+    Laadt het coin_profile zoals het écht bedoeld is: 1-op-1 uit coin_profiles.profile_json
+    """
+    rows = db.execute_query(
+        """
+        SELECT profile_json
+        FROM coin_profiles
+        WHERE symbol = ? AND strategy_name = ?
+        ORDER BY updated_ts DESC
+        LIMIT 1
+        """,
+        (symbol, strategy_name),
+    )
+
+    if not rows or not rows[0] or not rows[0][0]:
+        return {}
+
+    raw_json = rows[0][0]
+    try:
+        return json.loads(raw_json)
+    except Exception:
+        return {}

@@ -37,10 +37,10 @@ from src.indicator_analysis.indicators import IndicatorAnalysis
 from src.notifier.telegram_notifier import TelegramNotifier
 from src.notifier.bus import send as bus_send
 from src.ai.gpt_trend_decider import get_gpt_action, GPT_TREND_DECIDER_VERSION
-from src.analysis.coin_profile_loader import load_coin_profile
 from datetime import datetime
 from collections import defaultdict
 from src.sentiment.external_sentiment import get_external_sentiment
+from src.analysis.coin_profile_loader import load_coin_profile_json
 
 
 def _to_decimal(x) -> Decimal:
@@ -539,16 +539,25 @@ class TrendStrategy4H:
                 limit=20
             )
 
-            # 6b) Coin profile inladen (uit JSON)
+            # 6b) Coin profile inladen (DB)
             try:
-                coin_profile = load_coin_profile(self.db_manager, symbol, strategy_name=self.STRATEGY_NAME) or {}
-                profile_source = "db" if coin_profile else "none"
+                raw_profile = load_coin_profile_json(self.db_manager, symbol, strategy_name="trend_4h")
+                coin_profile = raw_profile or {}
+
+                # ✅ HIER (direct na coin_profile = ...)
+                coin_profile["_source"] = "db_json" if raw_profile else "none"
                 self._last_coin_profile[symbol] = coin_profile
+
             except Exception as e:
                 self.logger.warning("[%s] coin_profile load failed: %s", symbol, e)
-                coin_profile = {}
-                profile_source = "error"
+                coin_profile = {"_source": "error"}  # (optioneel)
+                self._last_coin_profile[symbol] = coin_profile  # (optioneel)
 
+            self.logger.info(
+                "[%s] coin_profile loaded: keys=%s",
+                symbol,
+                sorted(list(coin_profile.keys()))
+            )
 
             # === NIEUW: extern sentiment (macro/coin/chain) ===
             try:
@@ -1161,7 +1170,7 @@ class TrendStrategy4H:
             profile = self._last_coin_profile.get(symbol)
             if not profile:
                 source = "db"
-                profile = load_coin_profile(self.db_manager, symbol, strategy_name=self.STRATEGY_NAME)
+                profile = load_coin_profile_json(self.db_manager, symbol, strategy_name=self.STRATEGY_NAME)
 
             raw = profile.get("risk_multiplier", 1.0)
             mult = Decimal(str(raw))

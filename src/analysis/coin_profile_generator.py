@@ -1,7 +1,11 @@
 import os
 import json
 import logging
+import time
 from typing import Dict, Any
+from src.database_manager.database_manager import DatabaseManager
+from src.config.config import DB_FILE
+
 
 # Map met per-coin analyse JSON’s (gemaakt door analysis_job / analysis_reporter)
 ANALYSIS_DIR = os.path.join("analysis", "coins")
@@ -38,6 +42,40 @@ def load_analysis_files() -> Dict[str, Any]:
 
     return results
 
+def write_profiles_to_db(profiles: Dict[str, Dict[str, Any]], strategy_name: str = "trend_4h"):
+    db = DatabaseManager(db_path=DB_FILE)
+
+    for sym, prof in profiles.items():
+        profile_json = json.dumps(prof)
+
+        n_trades = int(prof.get("n_trades", 0) or 0)
+        winrate = float(prof.get("winrate", 0.0) or 0.0)
+        expectancy_R = float(prof.get("expectancy_R", 0.0) or 0.0)
+        max_dd = float(prof.get("max_drawdown_R", 0.0) or 0.0)
+
+        risk_mult = float(prof.get("risk_multiplier", 1.0) or 1.0)
+        bias = prof.get("bias", "neutral") or "neutral"
+        flags_text = "|".join(prof.get("flags", []) or [])
+
+        # updated_ts in ms
+        updated_ts = int(time.time() * 1000)
+
+        db.execute_query(
+            """
+            INSERT INTO coin_profiles
+                (symbol, strategy_name, profile_json,
+                 risk_multiplier, bias, flags_text,
+                 n_trades, winrate, expectancy_R, max_drawdown_R,
+                 source, updated_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sym, strategy_name, profile_json,
+                risk_mult, bias, flags_text,
+                n_trades, winrate, expectancy_R, max_dd,
+                "derived_trades_daily", updated_ts
+            )
+        )
 
 def derive_profile(analysis: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -48,10 +86,16 @@ def derive_profile(analysis: Dict[str, Any]) -> Dict[str, Any]:
     gm = analysis.get("gpt_metrics", {}) or {}
     flags = analysis.get("flags", []) or []
 
+    from datetime import datetime, timezone
+
+    n_trades = int(tm.get("n_trades", 0) or 0)
+    generated_at_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     symbol = analysis.get("symbol", "UNKNOWN")
     winrate = tm.get("winrate", 0.0)
     expectancy_R = tm.get("expectancy_R", 0.0)
     max_dd = tm.get("max_drawdown_R", 0.0)
+
 
     # -------------------------
     # 1) Regime bepalen
@@ -108,6 +152,11 @@ def derive_profile(analysis: Dict[str, Any]) -> Dict[str, Any]:
     profile = {
         "symbol": symbol,
 
+        "profile_version": "v1",
+        "generated_at_utc": generated_at_utc,
+        "source": "derived_trades_daily",
+        "n_trades": n_trades,
+
         "market_regime": regime,
         "regime_strength": round(regime_strength, 3),
 
@@ -161,6 +210,7 @@ def generate_coin_profiles():
         profiles[symbol] = derive_profile(analysis)
 
     write_profiles(profiles)
+    write_profiles_to_db(profiles, strategy_name="trend_4h")
     print("[coin_profile] Klaar.")
 
 if __name__ == "__main__":

@@ -849,8 +849,9 @@ class TrendStrategy4H:
                          coin_profile: dict, decision: dict):
 
         # --- profile provenance (bewijs of coin_profile echt gebruikt is) ---
+        generated_at = (coin_profile or {}).get("generated_at_utc", "unknown")
         profile_loaded = bool(coin_profile)  # {} / None => False
-        profile_source = (coin_profile or {}).get("_source", "unknown")  # 'db'/'json'/'none'/'unknown'
+        profile_source = (coin_profile or {}).get("source", "unknown")
         rm_is_default = (not profile_loaded) and float((coin_profile or {}).get("risk_multiplier", 1.0)) == 1.0
         rm_origin = "default" if rm_is_default else ("profile" if profile_loaded else "unknown")
 
@@ -871,14 +872,16 @@ class TrendStrategy4H:
             f"Conf: {conf:.0f}% | Tags: {tag_str}\n"
             f"Trend: 4h {trend_4h.upper()} | 1h {trend_1h.upper()}\n"
             f"Sent: M={sent_macro.upper()} C={sent_coin.upper()} Ch={sent_chain.upper()}\n"
-            f"Profile: risk={risk_mult:.2f}({rm_origin}) | src={profile_source} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
+            f"Profile: risk={risk_mult:.2f}({rm_origin}) | src={profile_source} | asof={generated_at} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
         )
+
 
     def _notify_gpt_open(self, symbol: str, decision_label: str, conf: float, trend_4h: str, trend_1h: str,
                          sentiment: dict, coin_profile: dict, decision: dict):
         # --- profile provenance (bewijs of coin_profile echt gebruikt is) ---
+        generated_at = (coin_profile or {}).get("generated_at_utc", "unknown")
         profile_loaded = bool(coin_profile)  # {} / None => False
-        profile_source = (coin_profile or {}).get("_source", "unknown")  # 'db'/'json'/'none'/'unknown'
+        profile_source = (coin_profile or {}).get("source", "unknown")
         rm_is_default = (not profile_loaded) and float((coin_profile or {}).get("risk_multiplier", 1.0)) == 1.0
         rm_origin = "default" if rm_is_default else ("profile" if profile_loaded else "unknown")
 
@@ -899,7 +902,7 @@ class TrendStrategy4H:
             f"Conf: {conf:.0f}% | Tags: {tag_str}\n"
             f"Trend: 4h {trend_4h.upper()} | 1h {trend_1h.upper()}\n"
             f"Sent: M={sent_macro.upper()} C={sent_coin.upper()} Ch={sent_chain.upper()}\n"
-            f"Profile: risk={risk_mult:.2f}({rm_origin}) | src={profile_source} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
+            f"Profile: risk={risk_mult:.2f}({rm_origin}) | src={profile_source} | asof={generated_at} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
         )
 
     # ---------------------------------------------------------

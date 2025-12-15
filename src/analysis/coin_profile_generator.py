@@ -46,35 +46,49 @@ def write_profiles_to_db(profiles: Dict[str, Dict[str, Any]], strategy_name: str
     db = DatabaseManager(db_path=DB_FILE)
 
     for sym, prof in profiles.items():
-        profile_json = json.dumps(prof)
+        profile_json = json.dumps(prof, ensure_ascii=False)
 
-        n_trades = int(prof.get("n_trades", 0) or 0)
-        winrate = float(prof.get("winrate", 0.0) or 0.0)
-        expectancy_R = float(prof.get("expectancy_R", 0.0) or 0.0)
-        max_dd = float(prof.get("max_drawdown_R", 0.0) or 0.0)
+        risk_mult = float(prof.get("risk_multiplier", 1.0))
+        bias = prof.get("bias", "neutral")
+        n_trades = int(prof.get("n_trades", 0))
+        expectancy_r = float(prof.get("expectancy_R", 0.0))
 
-        risk_mult = float(prof.get("risk_multiplier", 1.0) or 1.0)
-        bias = prof.get("bias", "neutral") or "neutral"
-        flags_text = "|".join(prof.get("flags", []) or [])
-
-        # updated_ts in ms
         updated_ts = int(time.time() * 1000)
 
         db.execute_query(
             """
-            INSERT INTO coin_profiles
-                (symbol, strategy_name, profile_json,
-                 risk_multiplier, bias, flags_text,
-                 n_trades, winrate, expectancy_R, max_drawdown_R,
-                 source, updated_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO coin_profiles (
+                symbol,
+                strategy_name,
+                risk_multiplier,
+                bias,
+                n_trades,
+                expectancy_r,
+                source,
+                updated_ts,
+                profile_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, strategy_name) DO UPDATE SET
+                risk_multiplier=excluded.risk_multiplier,
+                bias=excluded.bias,
+                n_trades=excluded.n_trades,
+                expectancy_r=excluded.expectancy_r,
+                source=excluded.source,
+                updated_ts=excluded.updated_ts,
+                profile_json=excluded.profile_json
             """,
             (
-                sym, strategy_name, profile_json,
-                risk_mult, bias, flags_text,
-                n_trades, winrate, expectancy_R, max_dd,
-                "derived_trades_daily", updated_ts
-            )
+                sym,
+                strategy_name,
+                risk_mult,
+                bias,
+                n_trades,
+                expectancy_r,
+                "derived_trades_daily",
+                updated_ts,
+                profile_json,
+            ),
         )
 
 def derive_profile(analysis: Dict[str, Any]) -> Dict[str, Any]:

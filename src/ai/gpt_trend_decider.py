@@ -7,6 +7,8 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 from src.config.config import yaml_config
+from src.analysis.coin_profile_loader import load_coin_profile_json
+
 
 from src.database_manager.database_manager import (
     DatabaseManager,
@@ -369,6 +371,15 @@ def get_gpt_decision(
     """
     Stuurt de volledige chart-data naar GPT en krijgt een beslissings-object terug.
     """
+
+    # --- coin_profile: altijd de FULL JSON uit DB (als db beschikbaar is) ---
+    if coin_profile is None and db is not None:
+        coin_profile = load_coin_profile_json(db, symbol, strategy_name=strategy_name) or {}
+
+    # provenance (zodat je in Telegram/logs ziet waar het vandaan komt)
+    if isinstance(coin_profile, dict):
+        coin_profile["_source"] = "db" if coin_profile else "none"
+
 
     dataset = _build_dataset(
         symbol=symbol,

@@ -595,6 +595,7 @@ class TrendStrategy4H:
                         candles_4h=candles_4h,
                         coin_profile=coin_profile,
                         sentiment=sentiment,  # ✅ juiste naam
+                        db=self.db_manager,
                     )
                     break
 

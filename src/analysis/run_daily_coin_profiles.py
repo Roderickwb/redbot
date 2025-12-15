@@ -1,4 +1,8 @@
-from analysis.coin_profile_generator import load_analysis_files, derive_profile, write_profiles_to_db
+from src.analysis.coin_profile_generator import (
+    load_analysis_files,
+    derive_profile,
+    write_profiles_to_db,
+)
 
 STRATEGY_NAME = "trend_4h"
 

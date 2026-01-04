@@ -2,10 +2,11 @@ import os
 import json
 import logging
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+from datetime import datetime, timezone
+
 from src.database_manager.database_manager import DatabaseManager
 from src.config.config import DB_FILE
-
 
 # Map met per-coin analyse JSON’s (gemaakt door analysis_job / analysis_reporter)
 ANALYSIS_DIR = os.path.join("analysis", "coins")
@@ -42,17 +43,47 @@ def load_analysis_files() -> Dict[str, Any]:
 
     return results
 
-def write_profiles_to_db(profiles: Dict[str, Dict[str, Any]], strategy_name: str = "trend_4h"):
-    db = DatabaseManager(db_path=DB_FILE)
+
+def write_profiles(profiles: Dict[str, Dict[str, Any]]) -> None:
+    """
+    Schrijf:
+    - per coin een JSON-file in analysis/coin_profiles/<SYMBOL>.json
+    - één gecombineerde file analysis/coin_profiles/all_profiles.json
+    """
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    for sym, prof in profiles.items():
+        path = os.path.join(OUTPUT_DIR, f"{sym}.json")
+        with open(path, "w") as f:
+            json.dump(prof, f, indent=2, ensure_ascii=False)
+
+    all_path = os.path.join(OUTPUT_DIR, "all_profiles.json")
+    with open(all_path, "w") as f:
+        json.dump(profiles, f, indent=2, ensure_ascii=False)
+
+    logger.info("[coin_profile] %d profiles geschreven naar %s", len(profiles), OUTPUT_DIR)
+
+
+def write_profiles_to_db(
+    profiles: Dict[str, Dict[str, Any]],
+    strategy_name: str = "trend_4h",
+    db: Optional[DatabaseManager] = None,
+) -> None:
+    """
+    Schrijft profiles weg naar tabel coin_profiles (UPSERT op (symbol, strategy_name)).
+    Als db niet is meegegeven, maken we zelf een DB-verbinding.
+    """
+    local_db = db is None
+    if db is None:
+        db = DatabaseManager(db_path=DB_FILE)
 
     for sym, prof in profiles.items():
         profile_json = json.dumps(prof, ensure_ascii=False)
 
-        risk_mult = float(prof.get("risk_multiplier", 1.0))
-        bias = prof.get("bias", "neutral")
-        n_trades = int(prof.get("n_trades", 0))
-        expectancy_r = float(prof.get("expectancy_R", 0.0))
-
+        risk_mult = float(prof.get("risk_multiplier", 1.0) or 1.0)
+        bias = str(prof.get("bias", "neutral") or "neutral")
+        n_trades = int(prof.get("n_trades", 0) or 0)
+        expectancy_r = float(prof.get("expectancy_R", 0.0) or 0.0)
         updated_ts = int(time.time() * 1000)
 
         db.execute_query(
@@ -91,29 +122,31 @@ def write_profiles_to_db(profiles: Dict[str, Dict[str, Any]], strategy_name: str
             ),
         )
 
+    # Alleen sluiten als we hem hier lokaal hebben aangemaakt
+    if local_db:
+        try:
+            db.close_connection()
+        except Exception:
+            pass
+
+
 def derive_profile(analysis: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Zet een analysis JSON (zoals AAVE-EUR.json, ADA-EUR.json, ...) om
-    naar een klein coin_profile dat we later aan GPT en de strategie meegeven.
+    Zet een analysis JSON om naar een coin_profile dat we later aan GPT en de strategie meegeven.
     """
     tm = analysis.get("trade_metrics", {}) or {}
     gm = analysis.get("gpt_metrics", {}) or {}
     flags = analysis.get("flags", []) or []
 
-    from datetime import datetime, timezone
-
     n_trades = int(tm.get("n_trades", 0) or 0)
     generated_at_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     symbol = analysis.get("symbol", "UNKNOWN")
-    winrate = tm.get("winrate", 0.0)
-    expectancy_R = tm.get("expectancy_R", 0.0)
-    max_dd = tm.get("max_drawdown_R", 0.0)
+    winrate = float(tm.get("winrate", 0.0) or 0.0)
+    expectancy_R = float(tm.get("expectancy_R", 0.0) or 0.0)
+    max_dd = float(tm.get("max_drawdown_R", 0.0) or 0.0)
 
-
-    # -------------------------
     # 1) Regime bepalen
-    # -------------------------
     if expectancy_R < -0.2:
         regime = "bear"
     elif expectancy_R > 0.2:
@@ -121,14 +154,11 @@ def derive_profile(analysis: Dict[str, Any]) -> Dict[str, Any]:
     else:
         regime = "range"
 
-    # strength (0–1)
     regime_strength = min(1.0, abs(expectancy_R) / 1.0)
 
-    # -------------------------
     # 2) Long/short edge
-    # -------------------------
-    long_edge = tm.get("avg_R_long", 0.0)
-    short_edge = tm.get("avg_R_short", 0.0)
+    long_edge = float(tm.get("avg_R_long", 0.0) or 0.0)
+    short_edge = float(tm.get("avg_R_short", 0.0) or 0.0)
 
     if short_edge > long_edge:
         bias = "short_edge"
@@ -137,9 +167,7 @@ def derive_profile(analysis: Dict[str, Any]) -> Dict[str, Any]:
     else:
         bias = "neutral"
 
-    # -------------------------
-    # 3) Risk multiplier (0–1) – sizing richting
-    # -------------------------
+    # 3) Risk multiplier
     if max_dd < -3.0:
         risk_multiplier = 0.25
     elif max_dd < -2.0:
@@ -149,10 +177,8 @@ def derive_profile(analysis: Dict[str, Any]) -> Dict[str, Any]:
     else:
         risk_multiplier = 1.0
 
-    # -------------------------
     # 4) HOLD behaviour (GPT)
-    # -------------------------
-    hold_missed = gm.get("hold_missed_rate", 0.0)
+    hold_missed = float(gm.get("hold_missed_rate", 0.0) or 0.0)
     if hold_missed > 0.7:
         hold_behavior = "too_conservative"
     elif hold_missed < 0.3:
@@ -160,10 +186,7 @@ def derive_profile(analysis: Dict[str, Any]) -> Dict[str, Any]:
     else:
         hold_behavior = "balanced"
 
-    # -------------------------
-    # Final profile
-    # -------------------------
-    profile = {
+    return {
         "symbol": symbol,
 
         "profile_version": "v1",
@@ -186,46 +209,29 @@ def derive_profile(analysis: Dict[str, Any]) -> Dict[str, Any]:
         "hold_behavior": hold_behavior,
 
         "risk_multiplier": risk_multiplier,
-
         "flags": flags,
     }
 
-    return profile
 
-
-def write_profiles(profiles: Dict[str, Dict[str, Any]]):
+def generate_coin_profiles(db: Optional[DatabaseManager] = None) -> int:
     """
-    Schrijf:
-    - per coin een JSON-file in analysis/coin_profiles/<SYMBOL>.json
-    - één gecombineerde file analysis/coin_profiles/all_profiles.json
+    Genereert profiles vanuit analysis/coins/*.json en schrijft ze naar:
+      - JSON files (analysis/coin_profiles/)
+      - DB table coin_profiles
     """
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
-
-    # Per coin
-    for sym, prof in profiles.items():
-        path = os.path.join(OUTPUT_DIR, f"{sym}.json")
-        with open(path, "w") as f:
-            json.dump(prof, f, indent=2)
-
-    # All-in-one
-    all_path = os.path.join(OUTPUT_DIR, "all_profiles.json")
-    with open(all_path, "w") as f:
-        json.dump(profiles, f, indent=2)
-
-    logger.info("[coin_profile] %d profiles geschreven naar %s", len(profiles), OUTPUT_DIR)
-
-def generate_coin_profiles():
     print("[coin_profile] Start genereren coin profiles...")
     analyses = load_analysis_files()
-    profiles = {}
+    profiles: Dict[str, Dict[str, Any]] = {}
 
     for symbol, analysis in analyses.items():
         profiles[symbol] = derive_profile(analysis)
 
     write_profiles(profiles)
-    write_profiles_to_db(profiles, strategy_name="trend_4h")
+    write_profiles_to_db(profiles, strategy_name="trend_4h", db=db)
     print("[coin_profile] Klaar.")
+
+    return len(profiles)
+
 
 if __name__ == "__main__":
     generate_coin_profiles()

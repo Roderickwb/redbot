@@ -195,9 +195,9 @@ class Executor:
 
         # ALTCOIN SCANNER (Kraken)
         self.altcoin_scanner_kraken = None
-        if self.use_kraken and self.kraken_data_client:
+        alt_cfg = self.yaml_config.get("altcoin_scanner_strategy", {})
+        if self.use_kraken and self.kraken_data_client and bool(alt_cfg.get("enabled", False)):
             # We lezen 'altcoin_scanner_strategy' uit je config
-            alt_cfg = self.yaml_config.get("altcoin_scanner_strategy", {})
             self.logger.info("[Executor] init KrakenAltcoinScannerStrategy => alt_cfg=%s", alt_cfg)
             self.altcoin_scanner_kraken = KrakenAltcoinScannerStrategy(
                 kraken_client=self.kraken_data_client,
@@ -205,6 +205,8 @@ class Executor:
                 config=alt_cfg,
                 logger=None
             )
+        else:
+            self.logger.info("[Executor] AltcoinScanner DISABLED via config.")
 
         # PULLBACK (Kraken)
         self.pullback_strategy_kraken = None

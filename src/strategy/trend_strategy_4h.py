@@ -209,7 +209,9 @@ class TrendStrategy4H:
         self.last_processed_candle_ts: Dict[str, int] = {}
         self.last_processed_1h_ts: Dict[str, int] = {}   # <-- NIEUW, ANTI-DUBBEL GUARD
         self.last_gpt_candle_ts: Dict[str, int] = {}
-        self.gpt_state_file = os.path.join("src", "config", "trend_4h_gpt_state.yaml")
+        self.gpt_state_file = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "config", "trend_4h_gpt_state.yaml")
+        )
         self._load_gpt_state()
 
 

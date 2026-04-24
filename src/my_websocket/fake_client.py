@@ -2,8 +2,7 @@
 
 import logging
 from decimal import Decimal
-from src.config.config import PULLBACK_CONFIG  # Correcte import
-
+from src.config.config import yaml_config
 
 # in fake_client.py
 class FakeClient:
@@ -17,9 +16,8 @@ class FakeClient:
         self._check_rate_limit()
         self._increment_call()
 
-        # Haal budget uit de PULLBACK_CONFIG
-        yaml_budget = PULLBACK_CONFIG.get("initial_capital", 100)
-        logging.debug(f"YAML Budget opgehaald: {yaml_budget}")
+        # Paper balance is global, not tied to the old pullback strategy config.
+        yaml_budget = yaml_config.get("paper_equity_eur", 1000)
 
         # Casten naar Decimal
         budget_decimal = Decimal(str(yaml_budget))

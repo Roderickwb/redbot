@@ -24,6 +24,8 @@
 
 import time
 import logging
+import os
+import yaml
 from decimal import Decimal
 from typing import Optional, Dict
 
@@ -206,6 +208,10 @@ class TrendStrategy4H:
         self.open_positions: Dict[str, dict] = {}   # per symbol
         self.last_processed_candle_ts: Dict[str, int] = {}
         self.last_processed_1h_ts: Dict[str, int] = {}   # <-- NIEUW, ANTI-DUBBEL GUARD
+        self.last_gpt_candle_ts: Dict[str, int] = {}
+        self.gpt_state_file = os.path.join("src", "config", "trend_4h_gpt_state.yaml")
+        self._load_gpt_state()
+
 
         # << NIEUW >>
         self._load_open_positions_from_db()
@@ -219,6 +225,26 @@ class TrendStrategy4H:
         self._daily_snapshot_sent_date = None
 
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
+
+    def _load_gpt_state(self):
+        try:
+            if not os.path.exists(self.gpt_state_file):
+                return
+            with open(self.gpt_state_file, "r") as f:
+                data = yaml.safe_load(f) or {}
+            raw = data.get("last_gpt_candle_ts", {})
+            self.last_gpt_candle_ts = {str(k): int(v) for k, v in raw.items()}
+            self.logger.info("[GPT_STATE] loaded %d symbols from %s", len(self.last_gpt_candle_ts), self.gpt_state_file)
+        except Exception as e:
+            self.logger.warning("[GPT_STATE] load failed: %s", e)
+
+    def _save_gpt_state(self):
+        try:
+            os.makedirs(os.path.dirname(self.gpt_state_file), exist_ok=True)
+            with open(self.gpt_state_file, "w") as f:
+                yaml.safe_dump({"last_gpt_candle_ts": self.last_gpt_candle_ts}, f)
+        except Exception as e:
+            self.logger.warning("[GPT_STATE] save failed: %s", e)
 
     def _notify(self, text: str):
         """Stuur een Telegram-bericht via de globale notifier-bus (als die er is)."""
@@ -479,6 +505,19 @@ class TrendStrategy4H:
 
         # Alleen een nieuwe setup als er nog geen positie open is
         if not has_pos and trend_dir in ("bull", "bear"):
+            if last_1h_ts is not None:
+                prev_gpt_ts = self.last_gpt_candle_ts.get(symbol)
+                if prev_gpt_ts is not None and last_1h_ts <= prev_gpt_ts:
+                    self.logger.info(
+                        "[%s] GPT al geraadpleegd voor 1h-candle %s => skip duplicate GPT.",
+                        symbol,
+                        last_1h_ts
+                    )
+                    return
+
+                self.last_gpt_candle_ts[symbol] = last_1h_ts
+                self._save_gpt_state()
+
             # 1) Algo-signal bepalen
             algo_signal = "long_candidate" if trend_dir == "bull" else "short_candidate"
 

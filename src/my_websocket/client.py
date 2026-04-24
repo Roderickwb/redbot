@@ -169,12 +169,14 @@ class WebSocketClient:
     def get_balance(self):
         """
         In paper-mode doen we geen echte call, maar simuleren we.
+        Gebruik paper_equity_eur uit config.yaml.
         """
         self._check_rate_limit()
         self._increment_call()
-        # Fake / paper logic
-        yaml_budget = PULLBACK_CONFIG.get("initial_capital", 100)
+
+        yaml_budget = yaml_config.get("paper_equity_eur", 1000)
         budget_decimal = Decimal(str(yaml_budget))
+
         self.logger.info(f"Simuleer get_balance(): return {{'EUR': {budget_decimal}}}")
         return {"EUR": budget_decimal}
 

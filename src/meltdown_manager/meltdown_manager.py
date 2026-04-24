@@ -10,13 +10,13 @@ import yaml
 import os
 
 # We nemen aan dat je deze functie WEL hebt, uit je eigen logger.py
-from src.logger.logger import setup_logger
-
 try:
-    from logger import setup_logger
+    from src.logger.logger import setup_logger
 except ImportError:
-    setup_logger = None  # Fallback als je geen logger.py hebt; pas dit naar wens aan.
-
+    try:
+        from logger import setup_logger
+    except ImportError:
+        setup_logger = None
 
 class MeltdownManager:
     """
@@ -53,14 +53,19 @@ class MeltdownManager:
 
         # Als er geen logger is doorgegeven, maken we er zelf een
         if logger is None:
-            logger = setup_logger(
-                name="meltdown_manager",
-                log_file="logs/meltdown_manager.log",
-                level=logging.DEBUG,  # Hoger debug-niveau
-                max_bytes=5_000_000,
-                backup_count=5,
-                use_json=False
-            )
+            if setup_logger is not None:
+                logger = setup_logger(
+                    name="meltdown_manager",
+                    log_file="logs/meltdown_manager.log",
+                    level=logging.DEBUG,
+                    max_bytes=5_000_000,
+                    backup_count=5,
+                    use_json=False
+                )
+            else:
+                logger = logging.getLogger("meltdown_manager")
+                if not logger.handlers:
+                    logging.basicConfig(level=logging.DEBUG)
 
         self.logger = logger
         # Hoe lang je wilt wachten tussen meltdown-checks (bv. 900s => 15 min)
@@ -114,20 +119,52 @@ class MeltdownManager:
             self.peak_equity = init_cap
             self.logger.info(f"[MeltdownManager] No peak file => start peak_equity={self.peak_equity}")
 
+    def _safe_get_equity(self, strategy):
+        """
+        Haalt equity veilig op. Als Bitvavo/API/eigen code faalt, dan crasht
+        de meltdown manager niet en wordt deze meltdown-check overgeslagen.
+        """
+        try:
+            raw = strategy._get_equity_estimate()
+
+            if raw is None:
+                self.logger.warning("[MeltdownManager] equity=None => skip meltdown check.")
+                return None
+
+            eq = Decimal(str(raw))
+
+            if eq <= 0:
+                self.logger.warning(f"[MeltdownManager] invalid equity={eq} => skip meltdown check.")
+                return None
+
+            return eq
+
+        except (InvalidOperation, TypeError, ValueError) as e:
+            self.logger.warning(f"[MeltdownManager] invalid equity value => skip meltdown check: {e}")
+            return None
+        except Exception as e:
+            self.logger.warning(f"[MeltdownManager] equity fetch failed => skip meltdown check: {e}")
+            return None
+
     def update_meltdown_state(self, strategy, symbol: str) -> bool:
         """
         Als meltdown actief => check RSI => meltdown end
         Anders => check flash_crash & 'daily_loss' (peak-based => _check_daily_loss),
                   meltdown trigger.
         """
+
         # update peak_equity als current_equity > peak_equity
-        current_eq = strategy._get_equity_estimate()
+        current_eq = self._safe_get_equity(strategy)
+        if current_eq is None:
+            return self.meltdown_active
+
         self.logger.debug(
-            f"[MeltdownManager] update_meltdown_state => current_eq={current_eq:.2f}, peak={self.peak_equity:.2f}")
+            f"[MeltdownManager] update_meltdown_state => current_eq={current_eq:.2f}, peak={self.peak_equity:.2f}"
+        )
+
         if current_eq > self.peak_equity:
             self.peak_equity = current_eq
             self.logger.info(f"[MeltdownManager] new peak_equity => {self.peak_equity:.2f}")
-            # [CHANGED] => meteen saven in peak_state.yaml
             self._save_peak_equity(self.peak_equity)
 
         if self.meltdown_active:
@@ -177,11 +214,10 @@ class MeltdownManager:
         we meten drawdown% = (peak_equity - eq_now)/peak_equity *100
         >= self.daily_loss_pct => meltdown
         """
-        eq_now = strategy._get_equity_estimate()
+        eq_now = self._safe_get_equity(strategy)
 
-        # 1) Als eq_now=0 (of <0), skip meltdown (omdat eq=0 in 99,9% van de gevallen een fout is)
-        if eq_now <= 0:
-            self.logger.warning("[MeltdownManager] eq_now=0 => skip meltdown this round.")
+        # Als equity niet betrouwbaar opgehaald kan worden, géén meltdown triggeren.
+        if eq_now is None:
             return False
 
         if self.peak_equity <= 0:

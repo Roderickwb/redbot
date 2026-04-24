@@ -1096,6 +1096,13 @@ class TrendStrategy4H:
 
         return total
 
+    def _get_equity_estimate(self) -> Decimal:
+        """
+        Compatibiliteit voor MeltdownManager.
+        Andere strategieën gebruiken deze naam; trend_4h had alleen _equity_estimate().
+        """
+        return self._equity_estimate()
+
     # ==========================================
     # Position sizing helper (EUR -> amount)
     # ==========================================

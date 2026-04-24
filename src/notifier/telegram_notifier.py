@@ -27,7 +27,7 @@ class TelegramNotifier:
 
 # ========= Alleen voor test vanaf je laptop =========
 if __name__ == "__main__":
-    BOT_TOKEN = "8428736345:AAEwagLlw2cpNnGymbLESPCcm1vXu4u8Ios"
+    BOT_TOKEN = "8260800435:AAE3wgWpKRnI2xNdwIdnG4Hkcg05eZ54wQ4"
     CHAT_ID = "8256312700"
 
     notifier = TelegramNotifier(BOT_TOKEN, CHAT_ID)

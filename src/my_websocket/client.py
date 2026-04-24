@@ -169,7 +169,7 @@ class WebSocketClient:
     def get_balance(self):
         """
         In paper-mode doen we geen echte call, maar simuleren we.
-        Gebruik paper_equity_eur uit config.yaml.
+        Gebruikt de globale paper-equity uit config.yaml.
         """
         self._check_rate_limit()
         self._increment_call()

@@ -4,6 +4,9 @@ database:
 
 paper_equity_eur: 1000
 
+executor_config:
+  enable_pullback: false
+
 bitvavo:
   websocket_url: "wss://ws.bitvavo.com/v2/"
   pairs:
@@ -188,7 +191,7 @@ kraken:
 
 ### Altcoin "Momentum/RotationScanner"-strategy ###
 altcoin_scanner_strategy:
-  enabled: true
+  enabled: false
   log_file: "logs/altcoin_scanner_strategy.log"
 
   # Je kunt eventueel BTC-EUR / ETH-EUR uitsluiten, of andere "large caps".

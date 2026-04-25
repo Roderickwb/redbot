@@ -43,6 +43,7 @@ from datetime import datetime
 from collections import defaultdict
 from src.sentiment.external_sentiment import get_external_sentiment
 from src.analysis.coin_profile_loader import load_coin_profile_json
+from src.meltdown_manager.meltdown_manager import MeltdownManager
 
 
 def _to_decimal(x) -> Decimal:
@@ -135,7 +136,13 @@ class TrendStrategy4H:
         self.order_client = order_client
         self.db_manager = db_manager
         self.notifier = notifier  # <— DIT IS NIEUW
-
+        meltdown_cfg = yaml_config.get("meltdown_manager", {}) or {}
+        self.meltdown_enabled = bool(meltdown_cfg.get("enabled", False))
+        self.meltdown_manager = (
+            MeltdownManager(meltdown_cfg, db_manager=self.db_manager, logger=self.logger)
+            if self.meltdown_enabled
+            else None
+        )
         # === YAML settings ===
         self.enabled = bool(cfg.get("enabled", False))
 
@@ -227,6 +234,7 @@ class TrendStrategy4H:
         self._daily_snapshot_sent_date = None
 
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
+        self.logger.info("[TrendStrategy4H] meltdown_enabled=%s", self.meltdown_enabled)
 
     def _load_gpt_state(self):
         try:
@@ -303,6 +311,19 @@ class TrendStrategy4H:
             return
 
         self.logger.info("[CHECK][%s] execute_strategy tick (mode=%s)", symbol, self.trading_mode)
+
+        if self.meltdown_manager:
+            try:
+                if self.meltdown_manager.update_meltdown_state(self, symbol):
+                    self.logger.warning(
+                        "[%s] Meltdown active (%s) => skip new trend entries.",
+                        symbol,
+                        self.meltdown_manager.meltdown_reason,
+                    )
+                    return
+            except Exception as e:
+                # Meltdown mag de strategie niet slopen; bij fout geen nieuwe meltdown trigger.
+                self.logger.warning("[%s] Meltdown check failed => continue without trigger: %s", symbol, e)
 
         self._daily_stats["checked"] += 1
         self._daily_snapshot_if_due()
@@ -1097,15 +1118,24 @@ class TrendStrategy4H:
                 return _to_decimal(px)
         except Exception:
             pass
-        # backfill via DB 1m
-        df = self.db_manager.fetch_data(
-            table_name="candles_kraken",
-            limit=1,
-            market=symbol,
-            interval="1m"
-        )
-        if isinstance(df, pd.DataFrame) and not df.empty and "close" in df.columns:
-            return _to_decimal(df["close"].iloc[0])
+
+        # Backfill via DB. Kraken draait meestal 5m/15m/1h/4h, niet altijd 1m.
+        for interval in ("1m", "5m", "15m", "1h", "4h"):
+            try:
+                df = self.db_manager.fetch_data(
+                    table_name="candles_kraken",
+                    limit=1,
+                    market=symbol,
+                    interval=interval
+                )
+                if isinstance(df, pd.DataFrame) and not df.empty and "close" in df.columns:
+                    px = _to_decimal(df["close"].iloc[0])
+                    if px > 0:
+                        return px
+            except Exception:
+                continue
+
+        self.logger.warning("[equity] no usable price for %s", symbol)
         return Decimal("0")
 
     def _min_lot(self, symbol: str) -> Decimal:
@@ -1117,24 +1147,36 @@ class TrendStrategy4H:
     def _equity_estimate(self) -> Decimal:
         try:
             bal = self.order_client.get_balance()
-        except Exception:
+        except Exception as e:
+            self.logger.warning("[equity] get_balance failed: %s", e)
             bal = {}
 
         total = Decimal("0")
         for asset, amt in (bal or {}).items():
+            asset_key = str(asset).upper()
             amt = _to_decimal(amt)
-            if asset.upper() == "EUR":
+            if amt <= 0:
+                continue
+
+            if asset_key in ("EUR", "ZEUR"):
                 total += amt
+                self.logger.info("[equity] EUR balance=%s", amt)
             else:
-                sym = f"{asset.upper()}-EUR"
+                sym = f"{asset_key}-EUR"
                 px = self._latest_price(sym)
                 if px > 0:
-                    total += (amt * px)
+                    value = amt * px
+                    total += value
+                    self.logger.info("[equity] %s amount=%s px=%s value=%s", asset_key, amt, px, value)
+                else:
+                    self.logger.warning("[equity] %s amount=%s not counted; no price for %s", asset_key, amt, sym)
 
         # Fallback so paper sizing works
         if total <= 0 and self.trading_mode == "dryrun":
             total = _to_decimal(yaml_config.get("paper_equity_eur", 1000))
+            self.logger.warning("[equity] fallback paper_equity_eur=%s", total)
 
+        self.logger.info("[equity] total_estimate=%s", total)
         return total
 
     def _get_equity_estimate(self) -> Decimal:

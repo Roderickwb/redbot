@@ -152,23 +152,10 @@ class MeltdownManager:
         Anders => check flash_crash & 'daily_loss' (peak-based => _check_daily_loss),
                   meltdown trigger.
         """
+        now = time.time()
 
-        # update peak_equity als current_equity > peak_equity
-        current_eq = self._safe_get_equity(strategy)
-        if current_eq is None:
-            return self.meltdown_active
-
-        self.logger.debug(
-            f"[MeltdownManager] update_meltdown_state => current_eq={current_eq:.2f}, peak={self.peak_equity:.2f}"
-        )
-
-        if current_eq > self.peak_equity:
-            self.peak_equity = current_eq
-            self.logger.info(f"[MeltdownManager] new peak_equity => {self.peak_equity:.2f}")
-            self._save_peak_equity(self.peak_equity)
-
+        # Als meltdown actief is, check alleen re-entry. Geen daily/flash checks.
         if self.meltdown_active:
-            # meltdown => skip daily/flash, alleen RSI re-entry
             reentry = self._check_reentry_rsi(strategy, symbol)
             if reentry:
                 self.logger.info("[MeltdownManager] RSI-based re-entry => meltdown ended.")
@@ -176,23 +163,33 @@ class MeltdownManager:
                 self.meltdown_reason = None
             return self.meltdown_active
 
-        # -- meltdown niet actief => cooldown check --
-        now = time.time()
+        # Meltdown niet actief => cooldown check VOOR equity/API calls.
         elapsed = now - self.last_meltdown_check_ts
-
         if elapsed < self.meltdown_check_cooldown:
-            # => Skip meltdown-check, want pas X seconden geleden gedaan
             self.logger.debug(
                 f"[MeltdownManager] meltdown-check cooldown => only {elapsed:.1f}s ago, skip checking."
             )
-            # meltdown_active = False (nog steeds), dus return
             return self.meltdown_active
 
-            # We gaan nu WEL echt checken => reset je 'last_meltdown_check_ts'
+        # We gaan nu WEL echt checken => reset timestamp en haal equity veilig op.
         self.last_meltdown_check_ts = now
 
+        current_eq = self._safe_get_equity(strategy)
+        if current_eq is None:
+            return self.meltdown_active
+
+        self.logger.info(
+            f"[MeltdownManager] update_meltdown_state => current_eq={current_eq:.2f}, peak={self.peak_equity:.2f}"
+        )
+
+        # update peak_equity als current_equity > peak_equity
+        if current_eq > self.peak_equity:
+            self.peak_equity = current_eq
+            self.logger.info(f"[MeltdownManager] new peak_equity => {self.peak_equity:.2f}")
+            self._save_peak_equity(self.peak_equity)
+
         # meltdown not active => check daily_loss & flash_crash
-        meltdown_daily = self._check_daily_loss(strategy)
+        meltdown_daily = self._check_daily_loss(strategy, eq_now=current_eq)
         meltdown_flash = self._check_flash_crash(strategy)
 
         # [CHANGED] => Niet meer '_close_all_positions' aanroepen,
@@ -205,7 +202,7 @@ class MeltdownManager:
 
         return self.meltdown_active
 
-    def _check_daily_loss(self, strategy) -> bool:
+    def _check_daily_loss(self, strategy, eq_now=None) -> bool:
         """
         Oorspronkelijke docstring:
         Check of (initial_capital - equity_now)/initial_capital >= daily_loss_pct
@@ -214,9 +211,10 @@ class MeltdownManager:
         we meten drawdown% = (peak_equity - eq_now)/peak_equity *100
         >= self.daily_loss_pct => meltdown
         """
-        eq_now = self._safe_get_equity(strategy)
+        if eq_now is None:
+            eq_now = self._safe_get_equity(strategy)
 
-        # Als equity niet betrouwbaar opgehaald kan worden, géén meltdown triggeren.
+            # Als equity niet betrouwbaar opgehaald kan worden, géén meltdown triggeren.
         if eq_now is None:
             return False
 
@@ -249,7 +247,18 @@ class MeltdownManager:
         """
         drop_count = 0
         for coin in self.meltdown_coins:
-            df = strategy._fetch_and_indicator(coin, self.meltdown_tf, limit=self.meltdown_lookback)
+            try:
+                if hasattr(strategy, "_fetch_and_indicator"):
+                    df = strategy._fetch_and_indicator(coin, self.meltdown_tf, limit=self.meltdown_lookback)
+                elif hasattr(strategy, "_fetch_df"):
+                    df = strategy._fetch_df(coin, self.meltdown_tf, limit=self.meltdown_lookback)
+                else:
+                    self.logger.warning("[MeltdownManager] no candle fetch method on strategy => skip flash crash.")
+                    return False
+            except Exception as e:
+                self.logger.warning("[MeltdownManager] flash_crash fetch failed for %s: %s", coin, e)
+                continue
+
             if df.empty or len(df) < 2:
                 continue
 

@@ -2,33 +2,23 @@
 # src/trading_engine/executor.py
 # ============================================================
 
-import os
 import threading
 import time
 import logging
 from datetime import datetime, timezone
 
 from src.logger.logger import setup_logger
-from src.my_websocket.client import WebSocketClient
 from src.my_websocket.fake_client import FakeClient
 
 # Strategy modules
-from src.strategy.pullback_accumulate_strategy import PullbackAccumulateStrategy
 from src.strategy.trend_strategy_4h import TrendStrategy4H
-from src.strategy.breakout_strategy import BreakoutStrategy
 
-from src.ml_engine.ml_engine import MLEngine
-from src.indicator_analysis.indicators import process_indicators
-from src.config.config import EXECUTOR_LOG_FILE, PAIRS_CONFIG
-
-# [# AltcoinScanner ADDED]
-from src.strategy.KrakenAltcoinScannerStrategy import KrakenAltcoinScannerStrategy
+from src.config.config import EXECUTOR_LOG_FILE
 
 # Kraken client
 from src.exchange.kraken.kraken_mixed_client import KrakenMixedClient
 
 import requests  # <-- voor de except-block
-
 
 def is_candle_closed(candle_timestamp_ms: int, interval_str: str) -> bool:
     now_ms = int(time.time() * 1000)
@@ -68,46 +58,19 @@ class Executor:
         self.db_manager = db_manager
         self.use_websocket = use_websocket
         self.paper_trading = paper_trading
-        self.api_key = api_key
-        self.api_secret = api_secret
         self.use_kraken = use_kraken
         self.kraken_paper = kraken_paper
 
         # Lees YAML
         self.yaml_config = yaml_config or {}
-        bitvavo_cfg = self.yaml_config.get("bitvavo", {})
         kraken_cfg = self.yaml_config.get("kraken", {})
 
         # ------------------------------
-        # B) Bitvavo – data + orders
+        # B) Bitvavo disabled
         # ------------------------------
-        # 1) Bitvavo pairs uit YAML of fallback
-        fallback_bitvavo_pairs = PAIRS_CONFIG
-        self.bitvavo_pairs = bitvavo_cfg.get("pairs", fallback_bitvavo_pairs)
-        self.logger.info(f"[Executor] bitvavo_pairs={self.bitvavo_pairs}")
-
-        # == BITVAVO init ==
         self.ws_client = None
-        if self.use_websocket:
-            ws_url = bitvavo_cfg.get("websocket_url", os.getenv("WS_URL", "wss://ws.bitvavo.com/v2/"))
-            self.ws_client = WebSocketClient(
-                ws_url=ws_url,
-                db_manager=self.db_manager,
-                api_key=self.api_key,
-                api_secret=self.api_secret
-            )
-            self.logger.info(f"[Executor] Bitvavo WebSocket aangemaakt op {ws_url}")
-            self.data_client = self.ws_client
-        else:
-            self.data_client = None
-
-        # 2) Bitvavo orders
-        if self.paper_trading:
-            self.logger.info("[Executor] Paper Trading actief => FakeClient (Bitvavo).")
-            self.order_client = FakeClient(pairs=self.bitvavo_pairs)
-        else:
-            self.logger.info("[Executor] Real Trading => WSClient (Bitvavo).")
-            self.order_client = self.ws_client
+        self.data_client = None
+        self.order_client = None
 
         # -----------------------------
         # KRAKEN: data + orders
@@ -138,89 +101,7 @@ class Executor:
         # -----------------------------
         # EXECUTOR-config
         # -----------------------------
-        default_executor_cfg = {
-            "pairs": self.bitvavo_pairs,
-            "partial_sell_threshold": 0.02,
-            "dip_rebuy_threshold": 0.01,
-            "core_ratio": 0.50,
-            "fallback_allocation_ratio": 0.25,
-            "first_profit_threshold": 1.02,
-            "second_profit_threshold": 1.05,
-            "enable_pullback": True,  # default = aan
-        }
-        self.config = self.yaml_config.get("executor_config", default_executor_cfg)
-
-        # Handige attribuut:
-        self.enable_pullback = bool(self.config.get("enable_pullback", True))
-        self.logger.info(f"[Executor] enable_pullback={self.enable_pullback}")
-
-        # ML-engine
-        self.ml_engine = MLEngine(
-            db_manager=self.db_manager,
-            model_path="models/pullback_model.pkl"
-        )
-
-        # == PULLBACK (Bitvavo) ==
-        # --------------------------------------------------------
-        # UITGEKOMMENTEERD: We laten Pullback NIET op Bitvavo lopen
-        """
-        self.pullback_strategy_bitvavo = PullbackAccumulateStrategy(
-            data_client=self.data_client,
-            order_client=self.order_client,
-            db_manager=self.db_manager,
-            config_path="src/config/config.yaml"
-        )
-        self.pullback_strategy_bitvavo.set_ml_engine(self.ml_engine)
-        """
-
-        # == BREAKOUT (Bitvavo) ==
-        # --------------------------------------------------------
-        # UITGEKOMMENTEERD: We laten Breakout NIET op Bitvavo lopen
-        """
-        self.breakout_strategy_bitvavo = BreakoutStrategy(
-            client=self.order_client,
-            db_manager=self.db_manager,
-            config_path="src/config/config.yaml"
-        )
-        """
-
-        # BREAKOUT (Kraken)
-        self.breakout_strategy_kraken = None
-        #if self.kraken_order_client:
-        #    self.breakout_strategy_kraken = BreakoutStrategy(
-        #        client=self.kraken_order_client,
-        #        db_manager=self.db_manager,
-        #        config_path="src/config/config.yaml"
-        #    )
-
-        # ALTCOIN SCANNER (Kraken)
-        self.altcoin_scanner_kraken = None
-        alt_cfg = self.yaml_config.get("altcoin_scanner_strategy", {})
-        if self.use_kraken and self.kraken_data_client and bool(alt_cfg.get("enabled", False)):
-            # We lezen 'altcoin_scanner_strategy' uit je config
-            self.logger.info("[Executor] init KrakenAltcoinScannerStrategy => alt_cfg=%s", alt_cfg)
-            self.altcoin_scanner_kraken = KrakenAltcoinScannerStrategy(
-                kraken_client=self.kraken_data_client,
-                db_manager=self.db_manager,
-                config=alt_cfg,
-                logger=None
-            )
-        else:
-            self.logger.info("[Executor] AltcoinScanner DISABLED via config.")
-
-        # PULLBACK (Kraken)
-        self.pullback_strategy_kraken = None
-        if self.enable_pullback and self.kraken_order_client:
-            self.logger.info("[Executor] Pullback-Kraken ENABLED via config.")
-            self.pullback_strategy_kraken = PullbackAccumulateStrategy(
-                data_client=self.kraken_data_client,
-                order_client=self.kraken_order_client,
-                db_manager=self.db_manager,
-                config_path="src/config/config.yaml"
-            )
-            self.pullback_strategy_kraken.set_ml_engine(self.ml_engine)
-        else:
-            self.logger.info("[Executor] Pullback-Kraken DISABLED via config.")
+        self.config = self.yaml_config.get("executor_config", {})
 
         # TREND (Kraken) — watch-only skeleton
         self.trend_strategy_kraken = None
@@ -241,137 +122,16 @@ class Executor:
         # Dictionary om per (table, symbol, interval) de laatst verwerkte candle-ts te onthouden
         self.last_closed_ts = {}
 
-    # =============================================================================
-    # ORIGINELE run() => commentaarblok, zodat ALLE code + commentaar bewaard blijft
-    # =============================================================================
-    """
-    def run(self):
-        \"\"\"
-        Hoofd-loop:
-          - Start Bitvavo-WS
-          - Start KrakenMixedClient
-          - Periodiek strategies callen (Bitvavo + Kraken)
-          - Event-loops
-        \"\"\"
-        self.logger.info("[Executor] run() gestart.")
-
-        # A) Bitvavo-WS
-        if self.use_websocket and self.ws_client:
-            self.ws_client.start_websocket()
-            self.logger.info("[Executor] Bitvavo WS client thread gestart.")
-
-        # B) Start Kraken (WS + poll)
-        if self.use_kraken and self.kraken_data_client:
-            self.logger.info("[Executor] KrakenMixedClient => start()")
-            self.kraken_data_client.start()
-
-        self.logger.debug("[Executor] run() => about to enter main loop")
-
-        loop_count = 0
-        try:
-            while True:
-                loop_count += 1
-
-                # 1) Verwerk evt. Bitvavo WS events
-                self._process_ws_events()
-
-                # 2) Check of er een "new closed 15m candle" is voor minimaal 1 coin => run pullback
-                new_15m_found = False
-                if self.kraken_data_client:
-                    for symbol in self.kraken_data_client.pairs:
-                        if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
-                            new_15m_found = True
-                    if new_15m_found:
-                        self.logger.info("[Executor] Found new closed 15m => run 2-pass Pullback now.")
-                        self.run_once_pullback_15m()
-
-                # 3) Breakout => old _has_new_closed_candle approach
-                if self.breakout_strategy_kraken and self.kraken_data_client:
-                    for symbol in self.kraken_data_client.pairs:
-                        if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
-                            self.logger.debug(f"[Executor] NEW CLOSED 15m => breakout_kraken({symbol}).")
-                            self.breakout_strategy_kraken.execute_strategy(symbol)
-
-                # 4) AltcoinScanner => unchanged
-                if self.altcoin_scanner_kraken and self.kraken_data_client:
-                    any_new_candle = False
-                    for symbol in self.kraken_data_client.pairs:
-                        if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
-                            self.logger.info(f"[Executor] FOUND new closed 15m candle for {symbol} => alt_scanner_kraken!")
-                            any_new_candle = True
-                            break
-                    if any_new_candle:
-                        self.logger.info("[Executor] Call altcoin_scanner_kraken.execute_strategy()")
-                        self.altcoin_scanner_kraken.execute_strategy()
-                    else:
-                        self.logger.debug("[Executor] No new closed 15m candle => skip altcoin_scanner_kraken")
-
-                # 5) Intra-candle checks => HIER STAAN JE LOGGERS NOG STEEDS
-                if self.altcoin_scanner_kraken:
-                    self.logger.debug("[Executor] altcoin_scanner_kraken.manage_intra_candle_exits() called.")
-                    self.altcoin_scanner_kraken.manage_intra_candle_exits()
-
-                if self.breakout_strategy_kraken:
-                    self.logger.debug("[Executor] breakout_strategy_kraken.manage_intra_candle_exits() called.")
-                    self.breakout_strategy_kraken.manage_intra_candle_exits()
-
-                if self.pullback_strategy_kraken:
-                    self.logger.info("[Executor] pullback_strategy_kraken.manage_intra_candle_exits() called.")
-                    self.pullback_strategy_kraken.manage_intra_candle_exits()
-
-                # 6) Elk uur DB-check
-                if loop_count % 120 == 0:
-                    self._hourly_db_checks()
-
-                time.sleep(5)
-
-        except KeyboardInterrupt:
-            self.logger.info("[Executor] Bot handmatig gestopt (Ctrl+C).")
-        except requests.exceptions.ConnectionError as ce:
-            self.logger.error(f"[Executor] Netwerkfout => {ce}, wachten en doorgaan")
-            time.sleep(5)
-        except Exception as e:
-            self.logger.exception(f"[Executor] Fout in run-lus: {e}")
-        finally:
-            self.logger.info("[Executor] shutting down.")
-
-            # 1) Stop Bitvavo
-            if self.ws_client:
-                self.logger.info("[Executor] Stop Bitvavo WS.")
-                self.ws_client.stop_websocket()
-
-            # 2) Stop Kraken
-            if self.kraken_data_client:
-                self.logger.info("[Executor] Stop KrakenMixedClient.")
-                self.kraken_data_client.stop()
-            self.logger.info("[Executor] alles gestopt.")
-    """
-
     def _intra_candle_exits_loop(self):
         """
-        Deze functie draait in een aparte thread en roept elke 5 seconden
-        de 'manage_intra_candle_exits()' van je strategies aan.
+        Deze functie draait in een aparte thread en roept periodiek
+        trend_4h.manage_intra_candle_exits() aan.
         """
         while self.keep_running:
             try:
-                # 1) Pullback exit-check
-                if self.pullback_strategy_kraken:
-                    self.pullback_strategy_kraken.manage_intra_candle_exits()
-
-                # 1b) Trend exit-check  ⬅️ HIER INVOEGEN
+                # Trend exit-check
                 if self.trend_strategy_kraken:
                     self.trend_strategy_kraken.manage_intra_candle_exits()
-
-                # 2) Breakout exit-check
-                if self.breakout_strategy_kraken:
-                    self.breakout_strategy_kraken.manage_intra_candle_exits()
-
-                # 3) AltcoinScanner exit-check (optioneel)
-                if self.altcoin_scanner_kraken:
-                    self.altcoin_scanner_kraken.manage_intra_candle_exits()
-
-                # hier kun je evt. meltdown_manager checken, als dat in de strategy is
-                # of in meltdown_manager zelf.
 
             except Exception as e:
                 self.logger.error(f"[IntraCandleThread] Fout in exit-check: {e}", exc_info=True)
@@ -380,23 +140,18 @@ class Executor:
             time.sleep(30)
 
     # =========================================================================
-    # TIMED run() elke 15m, met 3 passes Pullback en Breakout/AltScanner
+    # TIMED run() elke 15m: poll data, run trend_4h, manage exits in separate thread
     # =========================================================================
     def run(self):
         """
         1) Start WS's
         2) Start 2e thread voor intra-candle exits elke 5s
-        3) Hoofdloop: elke 15m poll + strategy
+        3) Hoofdloop: elke 15m poll + trend checks
         """
 
         self.logger.info("[Executor] run() gestart => TIMED 15m + separate 5s exit-check thread.")
 
-        # A) Start Bitvavo-WS
-        if self.use_websocket and self.ws_client:
-            self.ws_client.start_websocket()
-            self.logger.info("[Executor] Bitvavo WS client thread gestart.")
-
-        # B) Start Kraken (WS + poll)
+        # Start Kraken (WS + poll)
         if self.use_kraken and self.kraken_data_client:
             self.logger.info("[Executor] KrakenMixedClient => start()")
             self.kraken_data_client.start()
@@ -421,13 +176,10 @@ class Executor:
 
                 loop_count += 1
 
-                # 3) Poll 15m + run pullback
+                # 3) Poll 15m data
                 if self.kraken_data_client:
                     self.logger.info("[Executor] poll_15m_only()")
                     self.kraken_data_client._poll_15m_only()
-
-                self.logger.info("[Executor] run_once_pullback_15m()")
-                self.run_once_pullback_15m()
 
                 # 4h-trendstrategie (watch/dryrun/auto): draai bij nieuwe 1h of 4h candle
                 if self.trend_strategy_kraken and self.kraken_data_client:
@@ -458,26 +210,6 @@ class Executor:
                         total_pairs
                     )
 
-                # 4) Breakout => ...
-                if self.breakout_strategy_kraken and self.kraken_data_client:
-                    for symbol in self.kraken_data_client.pairs:
-                        if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
-                            self.logger.debug(f"[Executor] => breakout_kraken({symbol})")
-                            self.breakout_strategy_kraken.execute_strategy(symbol)
-
-                # 5) AltcoinScanner => ...
-                if self.altcoin_scanner_kraken and self.kraken_data_client:
-                    any_new_candle = False
-                    for symbol in self.kraken_data_client.pairs:
-                        if self._has_new_closed_candle("candles_kraken", symbol, "15m"):
-                            self.logger.info(f"[Executor] => alt_scanner_kraken for {symbol}")
-                            any_new_candle = True
-                            break
-                    if any_new_candle:
-                        self.altcoin_scanner_kraken.execute_strategy()
-                    else:
-                        self.logger.debug("[Executor] No new 15m candle => skip alt_scanner_kraken")
-
                 # 6) Evt. DB-check elk uur
                 if loop_count % 4 == 0:
                     self._hourly_db_checks()
@@ -499,69 +231,14 @@ class Executor:
             if exit_thread.is_alive():
                 exit_thread.join(timeout=5)
 
-            # 1) Stop Bitvavo
-            if self.ws_client:
-                self.logger.info("[Executor] Stop Bitvavo WS.")
-                self.ws_client.stop_websocket()
-            # 2) Stop Kraken
+            # Stop Kraken
             if self.kraken_data_client:
                 self.logger.info("[Executor] Stop KrakenMixedClient.")
                 self.kraken_data_client.stop()
             self.logger.info("[Executor] alles gestopt.")
 
-    def run_once_pullback_15m(self):
-        """
-        Nieuw: voer de PullbackAccumulateStrategy uit in twee passes (15m).
-         - Pass #1: check all pairs => skip_not_closed => coins_skipped
-         - time.sleep(20)
-         - Pass #2: check only coins_skipped
-        (Deze methode is ongewijzigd uit je oorspronkelijke code.)
-        """
-        if not self.pullback_strategy_kraken or not self.kraken_data_client:
-            return
-
-        coins = self.kraken_data_client.pairs
-        coins_skipped = []
-
-        self.logger.info("[Executor] PASS #1 => Pullback (15m) for all coins.")
-        for symbol in coins:
-            result = self.pullback_strategy_kraken.execute_strategy(symbol)
-            if result == "skip_not_closed":
-                coins_skipped.append(symbol)
-
-        if coins_skipped:
-            self.logger.info(f"[Executor] PASS #1 skip_not_closed={coins_skipped} => second pass in 20s.")
-            time.sleep(20)
-            self.logger.info("[Executor] PASS #2 => re-check the coins_skipped.")
-            for symbol in coins_skipped:
-                self.pullback_strategy_kraken.execute_strategy(symbol)
-        else:
-            self.logger.info("[Executor] No coins skipped => no second pass needed.")
-
     def run_daily_tasks(self):
-        self.logger.info("[Executor] run_daily_tasks() gestart.")
-
-        # 1) Train model
-        ok_train = self.ml_engine.train_model()
-        if ok_train:
-            self.logger.info("[Executor] ML-model training geslaagd.")
-
-        # 2) Load model
-        ok_load = self.ml_engine.load_model_from_db()
-        if ok_load:
-            self.logger.info("[Executor] ML-model geladen => pullback_strategy kan ml_signal gebruiken")
-
-        # 3) Scenario-tests
-        result = self.ml_engine.run_scenario_tests()
-        best_paramset = result.get("best_paramset")
-        best_score = result.get("best_score", 0)
-        self.logger.info(f"[Executor] best_paramset={best_paramset}, best_score={best_score:.2f}")
-
-        # 4) Schrijf beste params naar config.yaml
-        if best_paramset:
-            self.ml_engine.write_best_params_to_yaml(best_paramset)
-
-        self.logger.info("[Executor] run_daily_tasks() voltooid.")
+        self.logger.info("[Executor] run_daily_tasks() skipped (trend-only runtime).")
 
     def _hourly_db_checks(self):
         self.logger.info("[Executor] _hourly_db_checks => start.")

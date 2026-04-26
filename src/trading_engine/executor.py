@@ -181,7 +181,11 @@ class Executor:
                     self.logger.info("[Executor] poll_15m_only()")
                     self.kraken_data_client._poll_15m_only()
 
-                # 4h-trendstrategie (watch/dryrun/auto): draai bij nieuwe 1h of 4h candle
+                # 4h-trendstrategie: draai bij nieuwe 1h of 4h candle.
+                # Op het hele uur doen we later nog een extra retry voor coins die nog geen candle hadden.
+                top_of_hour = datetime.now(timezone.utc).minute == 0
+                retry_symbols = []
+
                 if self.trend_strategy_kraken and self.kraken_data_client:
                     total_pairs = len(self.kraken_data_client.pairs)
                     trend_triggered = 0
@@ -202,12 +206,53 @@ class Executor:
                                 self.trend_strategy_kraken.execute_strategy(symbol)
                             except Exception as e:
                                 self.logger.warning("[Executor] TrendStrategy4H error for %s: %s", symbol, e)
+                        elif top_of_hour:
+                            retry_symbols.append(symbol)
 
-                    # INFO-regel: hoeveel coins zijn echt door de strategy gegaan
                     self.logger.info(
-                        "[Executor][TREND] execute_strategy aangeroepen voor %d/%d pairs in deze uur-check.",
+                        "[Executor][TREND] execute_strategy aangeroepen voor %d/%d pairs.",
                         trend_triggered,
                         total_pairs
+                    )
+
+                # Extra retry 5 minuten na het hele uur voor coins waarvan de 1h/4h candle nog niet binnen was.
+                if top_of_hour and retry_symbols and self.trend_strategy_kraken and self.kraken_data_client:
+                    self.logger.info(
+                        "[Executor][TREND][RETRY] %d coins misten candle op heel uur => retry over 5 min: %s",
+                        len(retry_symbols),
+                        retry_symbols
+                    )
+
+                    time.sleep(300)
+
+                    try:
+                        self.logger.info("[Executor][TREND][RETRY] poll_15m_only() vóór retry")
+                        self.kraken_data_client._poll_15m_only()
+                    except Exception as e:
+                        self.logger.warning("[Executor][TREND][RETRY] poll failed: %s", e)
+
+                    retry_triggered = 0
+                    for symbol in retry_symbols:
+                        has_new_1h = self._has_new_closed_candle("candles_kraken", symbol, "1h")
+                        has_new_4h = self._has_new_closed_candle("candles_kraken", symbol, "4h")
+
+                        if has_new_1h or has_new_4h:
+                            retry_triggered += 1
+                            try:
+                                self.logger.debug(
+                                    "[Executor][TREND][RETRY] Trend trigger for %s (new %s%s candle)",
+                                    symbol,
+                                    "1h" if has_new_1h else "",
+                                    "/4h" if has_new_4h else ""
+                                )
+                                self.trend_strategy_kraken.execute_strategy(symbol)
+                            except Exception as e:
+                                self.logger.warning("[Executor][TREND][RETRY] TrendStrategy4H error for %s: %s", symbol, e)
+
+                    self.logger.info(
+                        "[Executor][TREND][RETRY] execute_strategy aangeroepen voor %d/%d retry coins.",
+                        retry_triggered,
+                        len(retry_symbols)
                     )
 
                 # 6) Evt. DB-check elk uur

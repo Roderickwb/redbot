@@ -26,16 +26,11 @@ def is_candle_closed(candle_timestamp_ms: int, interval_str: str) -> bool:
 
 class Executor:
     def __init__(
-        self,
-        db_manager,
-        use_websocket=True,
-        paper_trading=True,
-        api_key=None,
-        api_secret=None,
-        use_kraken=True,
-        kraken_paper=True,
-        yaml_config=None,
-        notifier=None,
+            self,
+            db_manager,
+            use_kraken=True,
+            kraken_paper=True,
+            yaml_config=None,
     ):
         """
         :param db_manager:      DatabaseManager
@@ -56,8 +51,6 @@ class Executor:
         # A) Bewaar constructor-params
         # ------------------------------
         self.db_manager = db_manager
-        self.use_websocket = use_websocket
-        self.paper_trading = paper_trading
         self.use_kraken = use_kraken
         self.kraken_paper = kraken_paper
 
@@ -65,11 +58,7 @@ class Executor:
         self.yaml_config = yaml_config or {}
         kraken_cfg = self.yaml_config.get("kraken", {})
 
-        # ------------------------------
-        # B) Bitvavo disabled
-        # ------------------------------
-        self.ws_client = None
-        self.data_client = None
+        # Bitvavo runtime is disabled; this executor only runs Kraken trend.
         self.order_client = None
 
         # -----------------------------
@@ -95,7 +84,7 @@ class Executor:
                 kraken_pairs = kraken_cfg.get("pairs", [])
                 self.kraken_order_client = FakeClient(pairs=kraken_pairs)
             else:
-                self.logger.info("[Executor] Kraken REAL => hier evt. echte private client.")
+                self.logger.info("[Executor] Kraken REAL => KrakenMixedClient als order/data client.")
                 self.kraken_order_client = self.kraken_data_client
 
         # -----------------------------
@@ -103,7 +92,7 @@ class Executor:
         # -----------------------------
         self.config = self.yaml_config.get("executor_config", {})
 
-        # TREND (Kraken) — watch-only skeleton
+        # TREND (Kraken)
         self.trend_strategy_kraken = None
         if self.kraken_order_client:
             self.trend_strategy_kraken = TrendStrategy4H(
@@ -115,8 +104,7 @@ class Executor:
 
         self.logger.info("Executor init completed.")
         self.logger.info(
-            f"[Executor] use_websocket={self.use_websocket}, paper_trading={self.paper_trading}, "
-            f"use_kraken={self.use_kraken}, kraken_paper={self.kraken_paper}"
+            f"[Executor] use_kraken={self.use_kraken}, kraken_paper={self.kraken_paper}"
         )
 
         # Dictionary om per (table, symbol, interval) de laatst verwerkte candle-ts te onthouden
@@ -255,12 +243,9 @@ class Executor:
                         len(retry_symbols)
                     )
 
-                # 6) Evt. DB-check elk uur
+                # Periodieke DB-healthcheck
                 if loop_count % 4 == 0:
                     self._hourly_db_checks()
-
-                # 7) Verwerk evt. Bitvavo WS events
-                self._process_ws_events()
 
         except KeyboardInterrupt:
             self.logger.info("[Executor] Bot handmatig gestopt (Ctrl+C).")
@@ -288,49 +273,21 @@ class Executor:
     def _hourly_db_checks(self):
         self.logger.info("[Executor] _hourly_db_checks => start.")
         try:
-            c = self.db_manager.get_table_count("candles")
-            t = self.db_manager.get_table_count("ticker")
-            b = self.db_manager.get_table_count("orderbook_bids")
-            a = self.db_manager.get_table_count("orderbook_asks")
-            self.logger.info(f"[Executor] candles={c}, ticker={t}, bids={b}, asks={a}")
+            candles_kraken = self.db_manager.get_table_count("candles_kraken")
+            trades = self.db_manager.get_table_count("trades")
+            trade_signals = self.db_manager.get_table_count("trade_signals")
+            coin_profiles = self.db_manager.get_table_count("coin_profiles")
+
+            self.logger.info(
+                "[Executor] candles_kraken=%s, trades=%s, trade_signals=%s, coin_profiles=%s",
+                candles_kraken,
+                trades,
+                trade_signals,
+                coin_profiles,
+            )
         except Exception as e:
             self.logger.error(f"[Executor] fout in _hourly_db_checks: {e}")
         self.logger.info("[Executor] _hourly_db_checks => done.")
-
-    def _process_ws_events(self):
-        """
-        Verwerkt de Bitvavo 'order_updates_queue'.
-        We laten dit staan voor later re-activatie,
-        ook al is Bitvavo nu feitelijk uitgeschakeld.
-        """
-        if not self.ws_client:
-            return
-        import queue
-        while True:
-            try:
-                event_data = self.ws_client.order_updates_queue.get(block=False)
-            except queue.Empty:
-                break
-
-            event_type = event_data.get("event")
-            if event_type == "order":
-                self.ws_client.handle_order_update(event_data)
-                # meltdown/fill updates?
-            elif event_type == "fill":
-                self.ws_client.handle_fill_update(event_data)
-                # if self.pullback_strategy_bitvavo:
-                #     self.pullback_strategy_bitvavo.update_position_with_fill(event_data)
-            else:
-                self.logger.warning(f"[Executor] Onbekend event in queue: {event_type}")
-
-    def _indicator_analysis_thread(self):
-        """
-        Eventuele periodieke indicator analysis,
-        we laten het hier volledig intact.
-        """
-        while True:
-            process_indicators(self.db_manager)
-            time.sleep(60)
 
     # [NEW] Hulpmethode die checkt of er een nieuwe candle in table_name staat voor (symbol, interval)
     #       én of die candle closed is. Return True als strategy nog niet heeft verwerkt.

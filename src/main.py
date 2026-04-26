@@ -155,10 +155,6 @@ def main():
     # === Stap 5) Maak Executor aan ===
     executor = Executor(
         db_manager=db_manager,
-        use_websocket=USE_WEBSOCKET,
-        paper_trading=PAPER_TRADING,
-        api_key=BITVAVO_API_KEY,
-        api_secret=BITVAVO_API_SECRET,
         use_kraken=USE_KRAKEN,
         kraken_paper=KRAKEN_PAPER,
         yaml_config=yaml_config

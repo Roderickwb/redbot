@@ -5,7 +5,7 @@
 import threading
 import time
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from src.logger.logger import setup_logger
 from src.my_websocket.fake_client import FakeClient
@@ -421,8 +421,7 @@ class Executor:
             target_min = 60  # => nieuw uur
 
         if target_min == 60:
-            next_hour = now.hour + 1
-            next_dt = now.replace(hour=(next_hour % 24), minute=0, second=0, microsecond=0)
+            next_dt = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         else:
             next_dt = now.replace(minute=target_min, second=0, microsecond=0)
 

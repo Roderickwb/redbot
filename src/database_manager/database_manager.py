@@ -392,8 +392,9 @@ class DatabaseManager:
 
             # [NEW] => Ook onze nieuwe tabellen voor analyse
             self.create_trade_signals_table()
-            self.create_gpt_decisions_table()   # <--- NIEUW
-            self.create_coin_profiles_table()  # <<< HIER
+            self.create_gpt_decisions_table()
+            self.create_strategy_events_table()
+            self.create_coin_profiles_table()
             self.create_coin_analysis_summary_table()  # <--- NIEUW
             self.create_gpt_review_cases_table()  # <--- HIER TOEVOEGEN
             self.ensure_schema_upgrades()
@@ -2411,6 +2412,127 @@ class DatabaseManager:
             logger.info("[create_gpt_decisions_table] Tabel 'gpt_decisions' aangemaakt/bestond al.")
         except Exception as e:
             logger.error(f"[create_gpt_decisions_table] Fout: {e}")
+
+    def create_strategy_events_table(self):
+        """Maak strategy_events aan voor latere analyse/ML."""
+        try:
+            sql = """
+            CREATE TABLE IF NOT EXISTS strategy_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                created_ts INTEGER,
+
+                symbol TEXT NOT NULL,
+                strategy_name TEXT NOT NULL,
+                strategy_version TEXT,
+
+                event_type TEXT,
+                decision_stage TEXT,
+                skip_reason TEXT,
+                trend_dir TEXT,
+
+                price REAL,
+                adx_4h REAL,
+                adx_4h_delta REAL,
+                adx_4h_slope TEXT,
+                adx_1h REAL,
+                di_pos_1h REAL,
+                di_neg_1h REAL,
+                rsi_1h REAL,
+                rsi_4h REAL,
+                macd_1h REAL,
+                atr_1h REAL,
+
+                algo_signal TEXT,
+                gpt_action TEXT,
+                gpt_confidence REAL,
+                trade_id INTEGER,
+
+                coin_profile_bias TEXT,
+                coin_profile_risk REAL,
+                coin_profile_expectancy REAL,
+                coin_profile_n_trades INTEGER,
+
+                features_json TEXT,
+                outcome_status TEXT DEFAULT 'pending',
+                outcome_json TEXT
+            );
+            """
+            self.cursor.execute(sql)
+            self.cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_events_ts ON strategy_events(timestamp)"
+            )
+            self.cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_events_symbol_ts ON strategy_events(symbol, timestamp)"
+            )
+            self.connection.commit()
+            logger.info("[create_strategy_events_table] strategy_events bestaat / aangemaakt.")
+        except Exception as e:
+            logger.error(f"[create_strategy_events_table] Fout: {e}")
+
+    def save_strategy_event(self, event_data: dict):
+        """Sla een strategy-event op voor latere analyse/ML."""
+        try:
+            import json
+
+            features_json = event_data.get("features_json")
+            if isinstance(features_json, (dict, list)):
+                features_json = json.dumps(features_json)
+
+            outcome_json = event_data.get("outcome_json")
+            if isinstance(outcome_json, (dict, list)):
+                outcome_json = json.dumps(outcome_json)
+
+            sql = """
+            INSERT INTO strategy_events (
+                timestamp, created_ts, symbol, strategy_name, strategy_version,
+                event_type, decision_stage, skip_reason, trend_dir,
+                price, adx_4h, adx_4h_delta, adx_4h_slope,
+                adx_1h, di_pos_1h, di_neg_1h, rsi_1h, rsi_4h,
+                macd_1h, atr_1h, algo_signal, gpt_action, gpt_confidence,
+                trade_id, coin_profile_bias, coin_profile_risk,
+                coin_profile_expectancy, coin_profile_n_trades,
+                features_json, outcome_status, outcome_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            ts = event_data.get("timestamp", get_current_utc_timestamp_ms())
+            vals = (
+                ts,
+                event_data.get("created_ts", get_current_utc_timestamp_ms()),
+                event_data.get("symbol"),
+                event_data.get("strategy_name"),
+                event_data.get("strategy_version"),
+                event_data.get("event_type"),
+                event_data.get("decision_stage"),
+                event_data.get("skip_reason"),
+                event_data.get("trend_dir"),
+                event_data.get("price"),
+                event_data.get("adx_4h"),
+                event_data.get("adx_4h_delta"),
+                event_data.get("adx_4h_slope"),
+                event_data.get("adx_1h"),
+                event_data.get("di_pos_1h"),
+                event_data.get("di_neg_1h"),
+                event_data.get("rsi_1h"),
+                event_data.get("rsi_4h"),
+                event_data.get("macd_1h"),
+                event_data.get("atr_1h"),
+                event_data.get("algo_signal"),
+                event_data.get("gpt_action"),
+                event_data.get("gpt_confidence"),
+                event_data.get("trade_id"),
+                event_data.get("coin_profile_bias"),
+                event_data.get("coin_profile_risk"),
+                event_data.get("coin_profile_expectancy"),
+                event_data.get("coin_profile_n_trades"),
+                features_json,
+                event_data.get("outcome_status", "pending"),
+                outcome_json,
+            )
+            self.execute_query(sql, vals)
+        except Exception as e:
+            logger.error(f"[save_strategy_event] Fout: {e}")
 
     def create_coin_profiles_table(self):
         try:

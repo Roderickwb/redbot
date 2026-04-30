@@ -98,6 +98,7 @@ trend_strategy_4h:
   adx_entry_tf_threshold: 22        # was 20
   use_adx_multitimeframe: true
   adx_high_tf_threshold: 22         # was 20
+  adx_high_tf_hard_skip_threshold: 16
   use_adx_directional_filter: true
   adx_window: 14
   adx_check_timeframes: [ "1h","4h" ]

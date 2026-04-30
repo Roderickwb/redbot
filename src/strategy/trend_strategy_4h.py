@@ -225,6 +225,8 @@ class TrendStrategy4H:
         self.intra_log_verbose = bool(cfg.get("intra_log_verbose", True))
 
         self._last_coin_profile: Dict[str, dict] = {}
+        self._last_price_source: Dict[str, str] = {}
+
 
         # Dagelijkse strategy-statistieken; snapshot moet periodiek vanuit executor aangeroepen worden.
         self._daily_stats = self._new_daily_stats()
@@ -860,38 +862,52 @@ class TrendStrategy4H:
         """Aangeroepen door executor (aparte thread)."""
         if not self.enabled or self.trading_mode == "watch":
             return
+
         for sym, pos in list(self.open_positions.items()):
             px = self._latest_price(sym)
             if px <= 0:
                 continue
+
             # --- TIME-STOP (if enabled) ---
             try:
                 if self.max_hold_hours and self.max_hold_hours > 0:
                     opened_ts = pos.get("opened_ts", int(time.time()))
                     hours_open = (time.time() - opened_ts) / 3600.0
+
                     if hours_open >= float(self.max_hold_hours):
                         side = pos["side"]
                         entry = pos["entry_price"]
                         cur = _to_decimal(px)
 
                         if self.time_stop_action == "close":
-                            self.logger.info("[TIME-STOP][%s] max_hold_hours=%s reached => CLOSE NOW",
-                                             sym, self.max_hold_hours)
+                            self.logger.info(
+                                "[TIME-STOP][%s] max_hold_hours=%s reached => CLOSE NOW",
+                                sym,
+                                self.max_hold_hours,
+                            )
                             self._close_all(sym, reason="TimeStop", exec_price=cur)
                             continue
-                        else:
-                            # breakeven action: close only if we can do so at or better than entry
-                            closeable = ((side == "buy" and cur >= entry) or
-                                         (side == "sell" and cur <= entry))
-                            if closeable:
-                                self.logger.info("[TIME-STOP][%s] breakeven close allowed at %.4f (entry %.4f)",
-                                                 sym, float(cur), float(entry))
-                                self._close_all(sym, reason="TimeStopBreakeven", exec_price=cur)
-                                continue
-                            else:
-                                self.logger.info(
-                                    "[TIME-STOP][%s] breakeven not possible yet (px=%.4f, entry=%.4f) => hold",
-                                    sym, float(cur), float(entry))
+
+                        closeable = (
+                            (side == "buy" and cur >= entry)
+                            or (side == "sell" and cur <= entry)
+                        )
+                        if closeable:
+                            self.logger.info(
+                                "[TIME-STOP][%s] breakeven close allowed at %.4f (entry %.4f)",
+                                sym,
+                                float(cur),
+                                float(entry),
+                            )
+                            self._close_all(sym, reason="TimeStopBreakeven", exec_price=cur)
+                            continue
+
+                        self.logger.info(
+                            "[TIME-STOP][%s] breakeven not possible yet (px=%.4f, entry=%.4f) => hold",
+                            sym,
+                            float(cur),
+                            float(entry),
+                        )
             except Exception as e:
                 self.logger.debug("[TIME-STOP][%s] error: %s", sym, e)
             # --- END TIME-STOP ---
@@ -914,19 +930,32 @@ class TrendStrategy4H:
                     tp1 = entry - (one_r * self.tp1_atr_mult)
                     trailing = (trail_high + (one_r * self.trailing_atr_mult)) if trail_active else None
 
+                price_source = getattr(self, "_last_price_source", {}).get(sym, "unknown")
+
                 if trailing is not None:
                     self.logger.info(
-                        "[INTRA][%s] %s price=%.4f | SL=%.4f | TP1=%.4f | trail_stop=%.4f | tp1_done=%s | trail_active=%s",
-                        sym, ("LONG" if side == "buy" else "SHORT"),
-                        float(px), float(sl), float(tp1), float(trailing),
-                        tp1_done, trail_active
+                        "[INTRA][%s] %s price=%.4f src=%s | SL=%.4f | TP1=%.4f | trail_stop=%.4f | tp1_done=%s | trail_active=%s",
+                        sym,
+                        "LONG" if side == "buy" else "SHORT",
+                        float(px),
+                        price_source,
+                        float(sl),
+                        float(tp1),
+                        float(trailing),
+                        tp1_done,
+                        trail_active,
                     )
                 else:
                     self.logger.info(
-                        "[INTRA][%s] %s price=%.4f | SL=%.4f | TP1=%.4f | trail_stop=-- | tp1_done=%s | trail_active=%s",
-                        sym, ("LONG" if side == "buy" else "SHORT"),
-                        float(px), float(sl), float(tp1),
-                        tp1_done, trail_active
+                        "[INTRA][%s] %s price=%.4f src=%s | SL=%.4f | TP1=%.4f | trail_stop=-- | tp1_done=%s | trail_active=%s",
+                        sym,
+                        "LONG" if side == "buy" else "SHORT",
+                        float(px),
+                        price_source,
+                        float(sl),
+                        float(tp1),
+                        tp1_done,
+                        trail_active,
                     )
 
             self._manage_position(sym, current_price=_to_decimal(px), atr_value=pos["atr"])
@@ -1176,8 +1205,9 @@ class TrendStrategy4H:
     def _latest_price(self, symbol: str) -> Decimal:
         # 1) Verse WS tickerprijs. Voor exits mag deze niet te oud zijn.
         try:
-            px = self.data_client.get_latest_ws_price(symbol, max_age_s=45)
+            px = self.data_client.get_latest_ws_price(symbol, max_age_s=20)
             if px and px > 0:
+                self._last_price_source[symbol] = "ws"
                 return _to_decimal(px)
         except Exception:
             pass
@@ -1187,6 +1217,7 @@ class TrendStrategy4H:
             if hasattr(self.data_client, "get_latest_rest_price"):
                 px = self.data_client.get_latest_rest_price(symbol)
                 if px and px > 0:
+                    self._last_price_source[symbol] = "rest"
                     return _to_decimal(px)
         except Exception:
             pass
@@ -1204,11 +1235,13 @@ class TrendStrategy4H:
                 if isinstance(df, pd.DataFrame) and not df.empty and "close" in df.columns:
                     px = _to_decimal(df["close"].iloc[0])
                     if px > 0:
+                        self._last_price_source[symbol] = f"candle:{interval}"
                         return px
             except Exception:
                 continue
 
         self.logger.warning("[equity] no usable price for %s", symbol)
+        self._last_price_source[symbol] = "none"
         return Decimal("0")
 
     def _min_lot(self, symbol: str) -> Decimal:

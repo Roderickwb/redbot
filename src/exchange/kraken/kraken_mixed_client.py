@@ -246,6 +246,7 @@ class KrakenMixedClient:
 
         # [ADDED] Dictionary voor live tickerprijzen
         self.live_ticker_prices = {}  # key=symbol("BTC-EUR"), value=float price
+        self.live_ticker_ts = {}  # key=symbol("BTC-EUR"), value=time.time()
 
         logger.info("[KrakenMixedClient] init => pairs=%s", self.pairs)
         logger.info("[KrakenMixedClient] intervals_realtime=%s, intervals_poll=%s, poll_interval=%ds",
@@ -701,6 +702,7 @@ class KrakenMixedClient:
             best_ask = float(best_ask_arr[0])
             mid_px = (best_bid + best_ask) / 2
             self.live_ticker_prices[local_pair] = mid_px
+            self.live_ticker_ts[local_pair] = time.time()
             logger.debug(f"[Ticker] {local_pair} => bid={best_bid:.2f}, ask={best_ask:.2f}, mid={mid_px:.2f}")
         except Exception as e:
             logger.error("[Ticker] parsing error => %s", e)
@@ -1162,9 +1164,64 @@ class KrakenMixedClient:
     # ===========================================
     # PUBLIC HELPER: get_latest_ws_price(...)
     # ===========================================
-    def get_latest_ws_price(self, symbol: str) -> float:
+    def get_latest_ws_price(self, symbol: str, max_age_s: float = 45.0) -> float:
         """
         Geeft de meest recente (live) prijs terug, zoals ontvangen via
-        de 'ticker'-websocket feed. Returnt 0 als er niets bekend is.
+        de 'ticker'-websocket feed. Returnt 0 als er niets bekend is
+        of als de laatste ticker te oud is.
         """
-        return float(self.live_ticker_prices.get(symbol, 0.0))
+        px = float(self.live_ticker_prices.get(symbol, 0.0))
+        ts = float(self.live_ticker_ts.get(symbol, 0.0))
+        if px <= 0 or ts <= 0:
+            return 0.0
+        if time.time() - ts > max_age_s:
+            return 0.0
+        return px
+
+    def get_latest_rest_price(self, symbol: str) -> float:
+        """
+        Haal direct een verse tickerprijs op via Kraken REST.
+        Returnt midprice op basis van best bid/ask, of 0 als dit niet lukt.
+        """
+        try:
+            ws_name = self.kraken_ws_map.get(symbol)
+            rest_name = self.kraken_rest_map.get(ws_name)
+            if not rest_name:
+                logger.warning("[REST][Ticker] no rest mapping for %s", symbol)
+                return 0.0
+
+            self._check_rate_limit()
+            self._increment_call()
+
+            resp = safe_get(
+                "https://api.kraken.com/0/public/Ticker",
+                params={"pair": rest_name},
+                max_retries=2,
+                sleep_seconds=1,
+            )
+            if not resp:
+                return 0.0
+
+            data = resp.json()
+            result = data.get("result", {})
+            if not result:
+                logger.warning("[REST][Ticker] empty result for %s", symbol)
+                return 0.0
+
+            payload = next(iter(result.values()))
+            bid = float(payload.get("b", [0])[0])
+            ask = float(payload.get("a", [0])[0])
+            if bid > 0 and ask > 0:
+                mid_px = (bid + ask) / 2
+                self.live_ticker_prices[symbol] = mid_px
+                self.live_ticker_ts[symbol] = time.time()
+                return mid_px
+
+            last = float(payload.get("c", [0])[0])
+            if last > 0:
+                self.live_ticker_prices[symbol] = last
+                self.live_ticker_ts[symbol] = time.time()
+                return last
+        except Exception as e:
+            logger.warning("[REST][Ticker] failed for %s: %s", symbol, e)
+        return 0.0

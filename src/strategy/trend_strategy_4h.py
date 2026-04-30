@@ -260,6 +260,12 @@ class TrendStrategy4H:
         except Exception:
             # notificatie mag nooit de strategie slopen
             pass
+    def _save_strategy_event(self, event_data: dict):
+        """Opslag van strategy-events voor analyse/ML."""
+        try:
+            self.db_manager.save_strategy_event(event_data)
+        except Exception as e:
+            self.logger.warning("[strategy_event] kon event niet opslaan: %s", e)
 
     # ---------------------------------------------------------
     # Cooldown helpers
@@ -561,6 +567,9 @@ class TrendStrategy4H:
         # 5) Mode-actie
         #    - watch: alleen signals opslaan
         #    - dryrun/auto: positioneren (als geen open positie)
+
+        # Contextprijs voor logging/analyse. De echte entry-prijs pakken we
+        # vlak voor openen opnieuw via _latest_price().
         current_price = _to_decimal(df_1h["close"].iloc[-1])
 
         # eventueel signal logging naar DB
@@ -806,13 +815,18 @@ class TrendStrategy4H:
                 self.logger.info("[%s] GPT -> HOLD => geen trade geopend.", symbol)
                 return
 
-            # -------------------------------------------------
-            # 4) Trade openen (dryrun/auto) + master_id ophalen
-            # -------------------------------------------------
+                # -------------------------------------------------
+                # 4) Trade openen (dryrun/auto) + master_id ophalen
+                # -------------------------------------------------
+            live_entry_price = self._latest_price(symbol)
+            if live_entry_price <= 0:
+                self.logger.info("[%s] geen verse entry-prijs beschikbaar => geen trade geopend.", symbol)
+                return
+
             master_id = self._open_position(
                 symbol=symbol,
                 side=side,
-                entry_price=current_price,
+                entry_price=live_entry_price,
                 atr_value=_to_decimal(atr_1h)
             )
 
@@ -1160,15 +1174,25 @@ class TrendStrategy4H:
         return candles
 
     def _latest_price(self, symbol: str) -> Decimal:
-        # probeeer WS prijs via data_client
+        # 1) Verse WS tickerprijs. Voor exits mag deze niet te oud zijn.
         try:
-            px = self.data_client.get_latest_ws_price(symbol)
+            px = self.data_client.get_latest_ws_price(symbol, max_age_s=45)
             if px and px > 0:
                 return _to_decimal(px)
         except Exception:
             pass
 
-        # Backfill via DB. Kraken draait meestal 5m/15m/1h/4h, niet altijd 1m.
+        # 2) Directe REST ticker als WS stil/stale is.
+        try:
+            if hasattr(self.data_client, "get_latest_rest_price"):
+                px = self.data_client.get_latest_rest_price(symbol)
+                if px and px > 0:
+                    return _to_decimal(px)
+        except Exception:
+            pass
+
+        # 3) Laatste noodvangnet: candle-close uit DB.
+        # Kraken draait meestal 5m/15m/1h/4h, niet altijd 1m.
         for interval in ("1m", "5m", "15m", "1h", "4h"):
             try:
                 df = self.db_manager.fetch_data(

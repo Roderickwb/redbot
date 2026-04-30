@@ -4,15 +4,16 @@
 # 4h trend-volgende strategie met 1h entry-filtering.
 # - Modes:
 #     "watch"  : alleen signalen loggen + optional save_trade_signals()
-#     "dryrun" : trades simuleren in DB (zoals pullback), geen echte orders
+#     "dryrun" : trades simuleren in DB, geen echte orders
 #     "auto"   : echte orders via order_client + DB
 #
-# - Risk/TP/Trailing zoals bij pullback (ATR-based).
+# - Risk/TP/Trailing zijn ATR-based.
+
 # - Strategy-naam in DB: "trend_4h"  (zodat je alles in 1 trades-tabel kunt houden)
 #
 # Afhankelijkheden:
 #  - ta (pip install ta)
-#  - jouw IndicatorAnalysis voor RSI (en evt. BB)
+#  - IndicatorAnalysis voor RSI/MACD en optionele Supertrend
 #  - jouw DatabaseManager interface: save_trade, update_trade, save_trade_signals, fetch_data
 #  - jouw order_client: .place_order(side, symbol, amount, ordertype="market") (in auto mode)
 #
@@ -36,7 +37,6 @@ from ta.trend import ADXIndicator, MACD
 from src.logger.logger import setup_logger
 from src.config.config import yaml_config  # al door main geladen
 from src.indicator_analysis.indicators import IndicatorAnalysis
-from src.notifier.telegram_notifier import TelegramNotifier
 from src.notifier.bus import send as bus_send
 from src.ai.gpt_trend_decider import get_gpt_action, GPT_TREND_DECIDER_VERSION
 from datetime import datetime
@@ -117,10 +117,9 @@ class SidewaysFilter:
 
 class TrendStrategy4H:
     STRATEGY_NAME = "trend_4h"
-    STRATEGY_VERSION = "2025-11-15-gpt-v1"  # <<< nieuw
+    STRATEGY_VERSION = "trend_4h_v1"
 
-    def __init__(self, data_client, order_client, db_manager, notifier: Optional[TelegramNotifier] = None,
-                     config_path=None):
+    def __init__(self, data_client, order_client, db_manager, config_path=None):
 
         """
         :param data_client:    KrakenMixedClient (data)
@@ -135,7 +134,6 @@ class TrendStrategy4H:
         self.data_client = data_client
         self.order_client = order_client
         self.db_manager = db_manager
-        self.notifier = notifier  # <— DIT IS NIEUW
         meltdown_cfg = yaml_config.get("meltdown_manager", {}) or {}
         self.meltdown_enabled = bool(meltdown_cfg.get("enabled", False))
         self.meltdown_manager = (
@@ -161,7 +159,7 @@ class TrendStrategy4H:
         self.use_adx_multitimeframe = bool(cfg.get("use_adx_multitimeframe", True))
         self.adx_high_tf_threshold = float(cfg.get("adx_high_tf_threshold", 20.0))
         self.use_adx_directional_filter = bool(cfg.get("use_adx_directional_filter", True))
-        self.adx_window = int(cfg.get("adx_window", 14))  # NEW
+        self.adx_window = int(cfg.get("adx_window", 14))
         # Sideways-filter (ADX + EMA-compressie + ATR%)
         self.sideways_filter = SidewaysFilter(cfg)
 
@@ -183,12 +181,12 @@ class TrendStrategy4H:
         self.tp1_portion_pct = _to_decimal(cfg.get("tp1_portion_pct", "0.50"))
         self.trailing_atr_mult = _to_decimal(cfg.get("trailing_atr_mult", "1.0"))
 
-        # NEW exit/guard flags
+        # Exit/guard flags
         self.breakeven_after_tp1 = bool(cfg.get("breakeven_after_tp1", True))
         self.max_hold_hours = int(cfg.get("max_hold_hours", 0))  # 0 = disabled
         self.time_stop_action = str(cfg.get("time_stop_action", "breakeven")).lower()
 
-        # ==== NIEUW: position sizing (vaste bedragen + per-coin multiplier) ====
+        # ==== Psition sizing (vaste bedragen + per-coin multiplier) ====
         # Basis-range in EUR per trade (jij: min 10, max 25)
         self.base_min_eur = _to_decimal(cfg.get("base_min_eur", "10"))
         self.base_max_eur = _to_decimal(cfg.get("base_max_eur", "25"))
@@ -201,7 +199,7 @@ class TrendStrategy4H:
         self.min_lot_multiplier = _to_decimal(cfg.get("min_lot_multiplier", "2.1"))
         self.max_position_pct = _to_decimal(cfg.get("max_position_pct", "0.05"))
         self.max_position_eur = _to_decimal(cfg.get("max_position_eur", "15"))
-        self.fee_rate = _to_decimal(cfg.get("fee_rate", "0.0035"))  # NEW
+        self.fee_rate = _to_decimal(cfg.get("fee_rate", "0.0035"))
 
         # Cooldown na verlies (tegen chop / tilt)
         self.cooldown_enabled = bool(cfg.get("cooldown_enabled", False))
@@ -214,22 +212,20 @@ class TrendStrategy4H:
         # Interne state
         self.open_positions: Dict[str, dict] = {}   # per symbol
         self.last_processed_candle_ts: Dict[str, int] = {}
-        self.last_processed_1h_ts: Dict[str, int] = {}   # <-- NIEUW, ANTI-DUBBEL GUARD
+        self.last_processed_1h_ts: Dict[str, int] = {}
         self.last_gpt_candle_ts: Dict[str, int] = {}
         self.gpt_state_file = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "config", "trend_4h_gpt_state.yaml")
         )
         self._load_gpt_state()
 
-
-        # << NIEUW >>
         self._load_open_positions_from_db()
 
         self.intra_log_verbose = bool(cfg.get("intra_log_verbose", True))
 
         self._last_coin_profile: Dict[str, dict] = {}
 
-        # daily snapshot stats + guard (12:00)
+        # Dagelijkse strategy-statistieken; snapshot moet periodiek vanuit executor aangeroepen worden.
         self._daily_stats = self._new_daily_stats()
         self._daily_snapshot_sent_date = None
 
@@ -257,7 +253,7 @@ class TrendStrategy4H:
             self.logger.warning("[GPT_STATE] save failed: %s", e)
 
     def _notify(self, text: str):
-        """Stuur een Telegram-bericht via de globale notifier-bus (als die er is)."""
+        """Stuur strategy-berichten via de globale notifier-bus."""
         try:
             bus_send(text)
         except Exception:
@@ -302,7 +298,7 @@ class TrendStrategy4H:
     # Public API
     # ---------------------------------------------------------
     def execute_strategy(self, symbol: str):
-        """Wordt aangeroepen bij nieuwe 1h of 4h candle (via executor)."""
+        """Wordt aangeroepen bij 1h of 4h candle (via executor)."""
         if not self.enabled:
             return
 
@@ -326,7 +322,7 @@ class TrendStrategy4H:
                 self.logger.warning("[%s] Meltdown check failed => continue without trigger: %s", symbol, e)
 
         self._daily_stats["checked"] += 1
-        self._daily_snapshot_if_due()
+        self._daily_snapshot_if_due() # Alleen versturen binnen het 17:30-17:34 window.
 
         # 1) Trend op 4h
         df_4h = self._fetch_df(symbol, self.trend_tf, limit=200)
@@ -391,7 +387,7 @@ class TrendStrategy4H:
             )
             return
 
-        # === NIEUW: max 1x per 1h-candle een GPT/entry-check per symbol ===
+        # === max 1x per 1h-candle een GPT/entry-check per symbol ===
         last_1h_ts = None
         try:
             if "timestamp_ms" in df_1h.columns:
@@ -409,9 +405,8 @@ class TrendStrategy4H:
                 )
                 return
 
-            # Nieuwe 1h-bar → markeren als verwerkt
+            # 1h-bar → markeren als verwerkt
             self.last_processed_1h_ts[symbol] = last_1h_ts
-        # === EINDE NIEUW ===
 
         # RSI + MACD op 1h
         df_1h = self._add_rsi_macd(df_1h)
@@ -621,7 +616,7 @@ class TrendStrategy4H:
                 sorted(list(coin_profile.keys()))
             )
 
-            # === NIEUW: extern sentiment (macro/coin/chain) ===
+            # === Extern sentiment (macro/coin/chain) ===
             try:
                 sentiment = get_external_sentiment(symbol)
             except Exception as e:
@@ -885,12 +880,12 @@ class TrendStrategy4H:
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
 
-        # reset op nieuwe dag
+        # Reset dagtellers bij een nieuwe kalenderdag.
         if self._daily_stats.get("date") != today:
             self._daily_stats = self._new_daily_stats()
             self._daily_snapshot_sent_date = None
 
-        # alleen 17:30 (17:30–17:34 window)
+        # Verstuur maximaal één snapshot binnen het 17:30-17:34 window.
         if now.hour == 17 and 30 <= now.minute <= 34:
             if self._daily_snapshot_sent_date == today:
                 return
@@ -981,7 +976,7 @@ class TrendStrategy4H:
         if not isinstance(df, pd.DataFrame) or df.empty:
             return pd.DataFrame()
 
-        # Normaliseer kolommen (zoals je pullback doet)
+        # Normaliseer candle-kolommen
         cols = list(df.columns)
         # verwacht: [timestamp, market, interval, open, high, low, close, volume, ...]
         rename_map = {}
@@ -1538,7 +1533,7 @@ class TrendStrategy4H:
             trade_cost = px * amt_to_close
             fees = float(trade_cost * self.fee_rate)
             realized_pnl = float(pnl_raw) - fees
-            # --- NIEUW: totals in RAM bijhouden voor CLOSE-bericht ---
+            # --- Totals in RAM bijhouden voor CLOSE-bericht ---
             pos["realized_pnl"] = pos.get("realized_pnl", Decimal("0")) + _to_decimal(realized_pnl)
             pos["total_fees"] = pos.get("total_fees", Decimal("0")) + _to_decimal(fees)
 
@@ -1622,7 +1617,7 @@ class TrendStrategy4H:
                 except Exception:
                     pass
 
-            # --- NIEUW: totaal PnL / ROI / R / fees / hold time ---
+            # --- Totaal PnL / ROI / R / fees / hold time ---
             total_pnl = float(pos.get("realized_pnl", Decimal("0")))
             total_fees = float(pos.get("total_fees", Decimal("0")))
             entry = pos["entry_price"]
@@ -1662,15 +1657,15 @@ class TrendStrategy4H:
         self._partial_close(symbol, portion=Decimal("1.0"), reason=reason, exec_price=exec_price)
 
     # ---------------------------------------------------------
-    # Signals opslag (optioneel, zelfde stijl als pullback)
+    # Setup- en trade-signal opslag
     # ---------------------------------------------------------
     def _save_signal_snapshot(self, symbol: str, trend_dir: str,
                               adx_4h: Optional[float], adx_1h: Optional[float],
                               di_pos_1h: Optional[float], di_neg_1h: Optional[float],
                               atr_1h: float):
-        # schrijf een klein snapshotje in signals-tabel
+        # Basis setup-snapshot; indicatorvelden worden later uitgebreid voor analyse.
         data = {
-            "trade_id": None,  # los signaal
+            "trade_id": None,  # setup zonder geopende trade
             "event_type": "setup",
             "symbol": symbol,
             "strategy_name": self.STRATEGY_NAME,
@@ -1710,6 +1705,7 @@ class TrendStrategy4H:
             self.logger.debug("[daily_rsi][%s] kon daily RSI niet berekenen: %s", symbol, e)
             return None
 
+    # Sla indicatorcontext op voor events die aan een trade gekoppeld zijn.
     def _save_trade_signals(self, trade_id: Optional[int], event_type: str, symbol: str, atr_value: Decimal):
         if not trade_id:
             return
@@ -1728,7 +1724,7 @@ class TrendStrategy4H:
             else:
                 rsi_4h = 50.0
 
-            # NEW: daily RSI direct uit 1D-candles
+            # Daily RSI direct uit 1D-candles
             rsi_daily = self._compute_daily_rsi(symbol)
 
             data = {
@@ -1781,7 +1777,7 @@ class TrendStrategy4H:
             )
             # Recompute ATR from 1h
             df_1h = self._fetch_df(symbol, self.entry_tf, limit=200)
-            # NEW: tiny retry for late-writing candles (up to ~10s total)
+            # Tiny retry for late-writing candles (up to ~10s total)
             if (df_1h.empty or not self._last_candle_closed(df_1h)):
                 for _ in range(5):  # 5 retries x 2s = ~10s
                     time.sleep(2)
@@ -1822,7 +1818,7 @@ class TrendStrategy4H:
             )
 
     def reload_open_positions(self):
-        """Manual/periodic refresh from DB into RAM using the unified loader."""
+        """Handmatige beheerfunctie: herlaad open/partial trend-posities uit de DB."""
         try:
             self.logger.info("[reload] manual reload requested for trend_4h.")
             self.open_positions = {}  # clear RAM view
@@ -1830,23 +1826,6 @@ class TrendStrategy4H:
         except Exception as e:
             self.logger.warning("[reload] failed: %s", e)
 
-    def _load_atr_from_signals(self, trade_id: int):
-        """Pak laatste atr_value uit signals voor deze trade_id."""
-        try:
-            row = self.db_manager.execute_query(
-                """
-                SELECT atr_value
-                FROM trade_signals
-                WHERE trade_id=?
-                ORDER BY timestamp DESC
-                LIMIT 1
-                """,
-                (trade_id,)
-            )
-            if row and row[0] and row[0][0] is not None:
-                return float(row[0][0])
-        except Exception:
-            pass
-        return None
+
 
 

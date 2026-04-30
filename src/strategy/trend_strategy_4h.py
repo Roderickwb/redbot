@@ -158,6 +158,7 @@ class TrendStrategy4H:
         self.adx_entry_tf_threshold = float(cfg.get("adx_entry_tf_threshold", 20.0))
         self.use_adx_multitimeframe = bool(cfg.get("use_adx_multitimeframe", True))
         self.adx_high_tf_threshold = float(cfg.get("adx_high_tf_threshold", 20.0))
+        self.adx_high_tf_hard_skip_threshold = float(cfg.get("adx_high_tf_hard_skip_threshold", 16.0))
         self.use_adx_directional_filter = bool(cfg.get("use_adx_directional_filter", True))
         self.adx_window = int(cfg.get("adx_window", 14))
         # Sideways-filter (ADX + EMA-compressie + ATR%)
@@ -347,6 +348,27 @@ class TrendStrategy4H:
         df_4h[f"ema_{self.ema_slow}"] = ema_slow_4h
 
         adx_4h, _, _ = self._compute_adx_di(df_4h)
+        adx_4h_delta = None
+        adx_4h_slope = "unknown"
+        try:
+            adx_obj_4h = ADXIndicator(
+                high=df_4h["high"],
+                low=df_4h["low"],
+                close=df_4h["close"],
+                window=self.adx_window
+            )
+            adx_series_4h = adx_obj_4h.adx().dropna()
+            if len(adx_series_4h) >= 2:
+                adx_4h_delta = float(adx_series_4h.iloc[-1] - adx_series_4h.iloc[-2])
+                if adx_4h_delta > 0:
+                    adx_4h_slope = "rising"
+                elif adx_4h_delta < 0:
+                    adx_4h_slope = "falling"
+                else:
+                    adx_4h_slope = "flat"
+        except Exception as e:
+            self.logger.debug("[%s] kon 4h ADX-slope niet berekenen: %s", symbol, e)
+
         # Voeg ook RSI/MACD toe op 4h zodat GPT die kan gebruiken
         df_4h = self._add_rsi_macd(df_4h)
 
@@ -362,10 +384,42 @@ class TrendStrategy4H:
         elif last_ema_fast_4h < last_ema_slow_4h and last_close_4h < last_ema_fast_4h:
             trend_dir = "bear"
 
-        if self.use_adx_multitimeframe and adx_4h is not None and adx_4h < self.adx_high_tf_threshold:
-            self._daily_stats["skip_context"] += 1
-            self.logger.info("[%s] 4h adx=%.2f<th=%.1f => skip context", symbol, adx_4h, self.adx_high_tf_threshold)
-            return
+        adx_4h_regime = "unknown"
+        if adx_4h is not None:
+            if adx_4h < self.adx_high_tf_hard_skip_threshold:
+                adx_4h_regime = "weak"
+            elif adx_4h < self.adx_high_tf_threshold:
+                adx_4h_regime = "borderline"
+            else:
+                adx_4h_regime = "tradable"
+
+        if self.use_adx_multitimeframe and adx_4h is not None:
+            if adx_4h_regime == "weak":
+                self._daily_stats["skip_context"] += 1
+                self.logger.info(
+                    "[%s] 4h adx=%.2f<hard_skip=%.1f => skip context",
+                    symbol, adx_4h, self.adx_high_tf_hard_skip_threshold
+                )
+                return
+
+            if adx_4h_regime == "borderline" and adx_4h_slope != "rising":
+                self._daily_stats["skip_context"] += 1
+                self.logger.info(
+                    "[%s] 4h adx=%.2f borderline maar slope=%s (delta=%s) => skip context",
+                    symbol,
+                    adx_4h,
+                    adx_4h_slope,
+                    f"{adx_4h_delta:.2f}" if adx_4h_delta is not None else "n/a"
+                )
+                return
+
+            if adx_4h_regime == "borderline":
+                self.logger.info(
+                    "[%s] 4h adx=%.2f borderline rising (delta=%s) => vervolg met extra filters",
+                    symbol,
+                    adx_4h,
+                    f"{adx_4h_delta:.2f}" if adx_4h_delta is not None else "n/a"
+                )
 
         if self.require_trend_stack and trend_dir == "range":
             self.logger.info("[%s] trend=range (ema%u vs ema%u) => skip", symbol, self.ema_fast, self.ema_slow)

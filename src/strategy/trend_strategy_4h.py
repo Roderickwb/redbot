@@ -269,6 +269,66 @@ class TrendStrategy4H:
         except Exception as e:
             self.logger.warning("[strategy_event] kon event niet opslaan: %s", e)
 
+
+    def _log_strategy_event(
+        self,
+        symbol: str,
+        event_type: str,
+        decision_stage: str,
+        skip_reason: Optional[str] = None,
+        trend_dir: Optional[str] = None,
+        price: Optional[float] = None,
+        adx_4h: Optional[float] = None,
+        adx_4h_delta: Optional[float] = None,
+        adx_4h_slope: Optional[str] = None,
+        adx_1h: Optional[float] = None,
+        di_pos_1h: Optional[float] = None,
+        di_neg_1h: Optional[float] = None,
+        rsi_1h: Optional[float] = None,
+        rsi_4h: Optional[float] = None,
+        macd_1h: Optional[float] = None,
+        atr_1h: Optional[float] = None,
+        algo_signal: Optional[str] = None,
+        gpt_action: Optional[str] = None,
+        gpt_confidence: Optional[float] = None,
+        trade_id: Optional[int] = None,
+        coin_profile: Optional[dict] = None,
+        features: Optional[dict] = None,
+    ):
+        profile = coin_profile or {}
+        now_ms = int(time.time() * 1000)
+        self._save_strategy_event({
+            "timestamp": now_ms,
+            "created_ts": now_ms,
+            "symbol": symbol,
+            "strategy_name": self.STRATEGY_NAME,
+            "strategy_version": self.STRATEGY_VERSION,
+            "event_type": event_type,
+            "decision_stage": decision_stage,
+            "skip_reason": skip_reason,
+            "trend_dir": trend_dir,
+            "price": float(price) if price is not None else None,
+            "adx_4h": float(adx_4h) if adx_4h is not None else None,
+            "adx_4h_delta": float(adx_4h_delta) if adx_4h_delta is not None else None,
+            "adx_4h_slope": adx_4h_slope,
+            "adx_1h": float(adx_1h) if adx_1h is not None else None,
+            "di_pos_1h": float(di_pos_1h) if di_pos_1h is not None else None,
+            "di_neg_1h": float(di_neg_1h) if di_neg_1h is not None else None,
+            "rsi_1h": float(rsi_1h) if rsi_1h is not None else None,
+            "rsi_4h": float(rsi_4h) if rsi_4h is not None else None,
+            "macd_1h": float(macd_1h) if macd_1h is not None else None,
+            "atr_1h": float(atr_1h) if atr_1h is not None else None,
+            "algo_signal": algo_signal,
+            "gpt_action": gpt_action,
+            "gpt_confidence": float(gpt_confidence) if gpt_confidence is not None else None,
+            "trade_id": trade_id,
+            "coin_profile_bias": profile.get("bias"),
+            "coin_profile_risk": profile.get("risk_multiplier"),
+            "coin_profile_expectancy": profile.get("expectancy_R"),
+            "coin_profile_n_trades": profile.get("n_trades"),
+            "features_json": features,
+            "outcome_status": "pending",
+        })
     # ---------------------------------------------------------
     # Cooldown helpers
     # ---------------------------------------------------------
@@ -408,6 +468,7 @@ class TrendStrategy4H:
                     "[%s] 4h adx=%.2f<hard_skip=%.1f => skip context",
                     symbol, adx_4h, self.adx_high_tf_hard_skip_threshold
                 )
+                self._log_strategy_event(symbol=symbol, event_type="skip", decision_stage="context", skip_reason="adx_4h_weak", trend_dir=trend_dir, price=float(last_close_4h), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, features={"hard_skip_threshold": self.adx_high_tf_hard_skip_threshold})
                 return
 
             if adx_4h_regime == "borderline" and adx_4h_slope != "rising":
@@ -419,6 +480,7 @@ class TrendStrategy4H:
                     adx_4h_slope,
                     f"{adx_4h_delta:.2f}" if adx_4h_delta is not None else "n/a"
                 )
+                self._log_strategy_event(symbol=symbol, event_type="skip", decision_stage="context", skip_reason="adx_4h_borderline_not_rising", trend_dir=trend_dir, price=float(last_close_4h), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, features={"trend_threshold": self.adx_high_tf_threshold})
                 return
 
             if adx_4h_regime == "borderline":
@@ -431,6 +493,7 @@ class TrendStrategy4H:
 
         if self.require_trend_stack and trend_dir == "range":
             self.logger.info("[%s] trend=range (ema%u vs ema%u) => skip", symbol, self.ema_fast, self.ema_slow)
+            self._log_strategy_event(symbol=symbol, event_type="skip", decision_stage="context", skip_reason="trend_range", trend_dir=trend_dir, price=float(last_close_4h), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, features={"ema_fast": self.ema_fast, "ema_slow": self.ema_slow})
             return
 
         # 2) Entry-context op 1h
@@ -532,20 +595,24 @@ class TrendStrategy4H:
             if adx_1h is None or adx_1h < self.adx_entry_tf_threshold:
                 self.logger.info("[%s] entry ADX=%.2f<th=%.1f => skip",
                                  symbol, adx_1h if adx_1h is not None else -1.0, self.adx_entry_tf_threshold)
+                self._log_strategy_event(symbol=symbol, event_type="skip", decision_stage="entry_filter", skip_reason="adx_1h_below_threshold", trend_dir=trend_dir, price=float(df_1h["close"].iloc[-1]), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h, rsi_1h=float(df_1h["rsi"].iloc[-1]) if "rsi" in df_1h.columns else None, macd_1h=float(df_1h["macd"].iloc[-1]) if "macd" in df_1h.columns else None, features={"entry_threshold": self.adx_entry_tf_threshold})
                 return
 
         if self.use_adx_directional_filter and di_pos_1h is not None and di_neg_1h is not None:
             if trend_dir == "bull" and not (di_pos_1h > di_neg_1h):
                 self.logger.info("[%s] bull maar +DI<=-DI (%.2f<=%.2f) => skip", symbol, di_pos_1h, di_neg_1h)
+                self._log_strategy_event(symbol=symbol, event_type="skip", decision_stage="entry_filter", skip_reason="di_not_confirming_long", trend_dir=trend_dir, price=float(df_1h["close"].iloc[-1]), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h)
                 return
             if trend_dir == "bear" and not (di_neg_1h > di_pos_1h):
                 self.logger.info("[%s] bear maar -DI<=+DI (%.2f<=%.2f) => skip", symbol, di_neg_1h, di_pos_1h)
+                self._log_strategy_event(symbol=symbol, event_type="skip", decision_stage="entry_filter", skip_reason="di_not_confirming_short", trend_dir=trend_dir, price=float(df_1h["close"].iloc[-1]), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h)
                 return
 
         # 4) ATR (1h) voor risk
         atr_1h = self._compute_atr(df_1h, self.atr_window)
         if atr_1h is None or atr_1h <= 0:
             self.logger.info("[%s] geen ATR => skip", symbol)
+            self._log_strategy_event(symbol=symbol, event_type="skip", decision_stage="entry_filter", skip_reason="atr_missing", trend_dir=trend_dir, price=float(df_1h["close"].iloc[-1]), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h)
             return
 
         # 4b) SIDEWAYS-regime check (ADX + EMA-compressie + ATR%)
@@ -564,6 +631,7 @@ class TrendStrategy4H:
         ):
             self._daily_stats["sideways_block"] += 1
             self.logger.info("[%s] SIDEWAYS regime (ADX+EMA+ATR) → geen trendtrade.", symbol)
+            self._log_strategy_event(symbol=symbol, event_type="skip", decision_stage="entry_filter", skip_reason="sideways_regime", trend_dir=trend_dir, price=last_close_1h, adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h, atr_1h=atr_1h, features={"ema20_1h": last_ema_fast_1h, "ema50_1h": last_ema_slow_1h})
             return
 
         # 5) Mode-actie
@@ -776,6 +844,7 @@ class TrendStrategy4H:
             if action == "HOLD":
                 self._daily_stats["hold"] += 1
                 self._daily_stats["top"].append((conf, symbol, "HOLD"))
+                self._log_strategy_event(symbol=symbol, event_type="gpt_decision", decision_stage="gpt", skip_reason="gpt_hold", trend_dir=trend_dir, price=float(current_price), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h, rsi_1h=rsi_1h, rsi_4h=rsi_4h, macd_1h=macd_1h, atr_1h=atr_1h, algo_signal=algo_signal, gpt_action=action, gpt_confidence=conf, coin_profile=coin_profile, features={"rationale": rationale, "journal_tags": decision.get("journal_tags", [])})
                 self._notify_gpt_hold(
                     symbol=symbol,
                     conf=conf,
@@ -794,6 +863,7 @@ class TrendStrategy4H:
                     label = "OPEN SHORT"
 
                 self._daily_stats["top"].append((conf, symbol, action))
+                self._log_strategy_event(symbol=symbol, event_type="gpt_decision", decision_stage="gpt", trend_dir=trend_dir, price=float(current_price), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h, rsi_1h=rsi_1h, rsi_4h=rsi_4h, macd_1h=macd_1h, atr_1h=atr_1h, algo_signal=algo_signal, gpt_action=action, gpt_confidence=conf, coin_profile=coin_profile, features={"rationale": rationale, "journal_tags": decision.get("journal_tags", [])})
                 self._notify_gpt_open(
                     symbol=symbol,
                     decision_label=label,
@@ -837,6 +907,7 @@ class TrendStrategy4H:
             #    (zodat je later GPT vs. trade-resultaten kunt koppelen)
             # -------------------------------------------------
             if master_id:
+                self._log_strategy_event(symbol=symbol, event_type="trade_open", decision_stage="open", trend_dir=trend_dir, price=float(live_entry_price), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h, rsi_1h=rsi_1h, rsi_4h=rsi_4h, macd_1h=macd_1h, atr_1h=atr_1h, algo_signal=algo_signal, gpt_action=action, gpt_confidence=conf, trade_id=master_id, coin_profile=coin_profile)
                 try:
                     self.db_manager.save_gpt_decision({
                         "timestamp": int(time.time() * 1000),

@@ -11,6 +11,7 @@ import threading
 import os
 
 from src.config.config import DB_FILE
+from src.notifier.bus import send as notify
 
 logger = logging.getLogger("database_manager")
 
@@ -25,6 +26,7 @@ class DatabaseManager:
         Roep zelf create_tables() aan als je alle tabellen wilt aanmaken.
         """
         self.db_path = db_path
+        self._last_wal_alert_ts = 0
         logger.debug(f"[DatabaseManager] DB_FILE: {self.db_path}")
         logger.info(f"[DatabaseManager] Database pad: {self.db_path}")
 
@@ -75,6 +77,9 @@ class DatabaseManager:
         """
         Harde startup-check: de bot mag niet gezond lijken als de DB niet schrijft.
         """
+        integrity = self.execute_query("PRAGMA integrity_check")
+        if not integrity or not integrity[0] or str(integrity[0][0]).lower() != "ok":
+            raise RuntimeError(f"Database integrity_check failed: {integrity}")
         ts = int(time.time() * 1000)
         self.execute_query("""
             CREATE TABLE IF NOT EXISTS db_healthcheck (

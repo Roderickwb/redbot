@@ -66,6 +66,7 @@ def main():
 
     # === Stap 4) Maak tabellen aan ===
     db_manager.create_tables()
+    db_manager.assert_writeable()
     logger.info("Database-tables ensured/created.")
 
     # === Samenvattende log ===

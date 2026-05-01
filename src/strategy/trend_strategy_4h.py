@@ -1468,8 +1468,11 @@ class TrendStrategy4H:
                 "strategy_name": self.STRATEGY_NAME,
                 "is_master": 1
             }
-            self.db_manager.save_trade(trade_data)
-            master_id = self.db_manager.cursor.lastrowid
+            try:
+                master_id = self.db_manager.save_trade(trade_data)
+            except Exception as e:
+                self.logger.error("[OPEN][%s] trade niet opgeslagen in DB => positie niet geopend: %s", symbol, e)
+                return None
 
         # 6) Echte order alleen in auto
         if self.trading_mode == "auto":

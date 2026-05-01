@@ -71,6 +71,28 @@ class DatabaseManager:
         """
         self.create_tables()
 
+    def assert_writeable(self):
+        """
+        Harde startup-check: de bot mag niet gezond lijken als de DB niet schrijft.
+        """
+        ts = int(time.time() * 1000)
+        self.execute_query("""
+            CREATE TABLE IF NOT EXISTS db_healthcheck (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                check_name TEXT NOT NULL
+            )
+        """)
+        self.execute_query(
+            "INSERT INTO db_healthcheck (timestamp, check_name) VALUES (?, ?)",
+            (ts, "startup_write_check")
+        )
+        self.execute_query(
+            "DELETE FROM db_healthcheck WHERE timestamp < ?",
+            (ts - 7 * 24 * 60 * 60 * 1000,)
+        )
+        logger.info("[DatabaseManager] startup write-check OK.")
+
     def connect(self):
         """Geeft de bestaande verbinding terug of een error als er geen is."""
         if self.connection:
@@ -1720,8 +1742,10 @@ class DatabaseManager:
             )
             self.execute_query(query, params)
             logger.info(f"[save_trade] Trade data opgeslagen: {trade_data}")
+            return self.cursor.lastrowid
         except Exception as e:
             logger.error(f"[save_trade] Fout: {e}")
+            raise
 
     def update_trade(self, trade_id: int, updates: dict):
         """

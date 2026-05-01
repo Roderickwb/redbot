@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timezone
 import threading
 import os
+import shutil
 
 from src.config.config import DB_FILE
 from src.notifier.bus import send as notify
@@ -26,7 +27,8 @@ class DatabaseManager:
         Roep zelf create_tables() aan als je alle tabellen wilt aanmaken.
         """
         self.db_path = db_path
-        self._last_wal_alert_ts = 0
+        self._last_db_health_alert_ts = 0
+        self._last_db_health_snapshot = None
         logger.debug(f"[DatabaseManager] DB_FILE: {self.db_path}")
         logger.info(f"[DatabaseManager] Database pad: {self.db_path}")
 
@@ -276,6 +278,103 @@ class DatabaseManager:
             logger.error(f"[get_table_count] Error: {e}")
             return 0
 
+    def _notify_db_health_once(self, message: str, cooldown_seconds: int = 900):
+        """Stuur DB-health waarschuwingen met cooldown, zodat Telegram niet gaat spammen."""
+        now = time.time()
+        if now - self._last_db_health_alert_ts < cooldown_seconds:
+            return
+        self._last_db_health_alert_ts = now
+        try:
+            notify(message)
+        except Exception as e:
+            logger.warning("[DB_HEALTH] Telegram notify failed: %s", e)
+
+    def monitor_database_health(self):
+        """
+        Periodieke DB/disk-bewaking.
+        Doel: vroeg signaleren dat de DB of disk abnormaal groeit, zonder WAL-magie.
+        """
+        try:
+            db_size_mb = 0.0
+            if os.path.exists(self.db_path):
+                db_size_mb = os.path.getsize(self.db_path) / (1024 * 1024)
+
+            wal_path = f"{self.db_path}-wal"
+            wal_size_mb = 0.0
+            if os.path.exists(wal_path):
+                wal_size_mb = os.path.getsize(wal_path) / (1024 * 1024)
+
+            disk_root = os.path.dirname(os.path.abspath(self.db_path)) or "."
+            disk_usage = shutil.disk_usage(disk_root)
+            free_gb = disk_usage.free / (1024 ** 3)
+
+            counts = {
+                "candles_kraken": self.get_table_count("candles_kraken"),
+                "trades": self.get_table_count("trades"),
+                "strategy_events": self.get_table_count("strategy_events"),
+                "gpt_decisions": self.get_table_count("gpt_decisions"),
+            }
+
+            now = time.time()
+            growth_mb_per_hour = 0.0
+            if self._last_db_health_snapshot:
+                prev_ts = self._last_db_health_snapshot.get("ts", now)
+                prev_size = self._last_db_health_snapshot.get("db_size_mb", db_size_mb)
+                hours = max((now - prev_ts) / 3600.0, 0.001)
+                growth_mb_per_hour = (db_size_mb - prev_size) / hours
+
+            self._last_db_health_snapshot = {
+                "ts": now,
+                "db_size_mb": db_size_mb,
+                "free_gb": free_gb,
+            }
+
+            logger.info(
+                "[DB_HEALTH] db=%.1fMB wal=%.1fMB free=%.1fGB growth=%.1fMB/h counts=%s",
+                db_size_mb,
+                wal_size_mb,
+                free_gb,
+                growth_mb_per_hour,
+                counts,
+            )
+
+            if wal_size_mb > 0:
+                logger.warning(
+                    "[DB_HEALTH] WAL file bestaat ondanks DELETE journal mode: %.1fMB (%s)",
+                    wal_size_mb,
+                    wal_path,
+                )
+
+            if free_gb < 10:
+                msg = (
+                    "DB CRITICAL: minder dan 10GB vrije diskruimte. "
+                    f"free={free_gb:.1f}GB db={db_size_mb:.1f}MB wal={wal_size_mb:.1f}MB"
+                )
+                self._notify_db_health_once(msg, cooldown_seconds=300)
+                raise RuntimeError(msg)
+
+            if free_gb < 50 or growth_mb_per_hour > 5120:
+                msg = (
+                    "DB CRITICAL: disk/DB groeit gevaarlijk hard. "
+                    f"free={free_gb:.1f}GB db={db_size_mb:.1f}MB "
+                    f"wal={wal_size_mb:.1f}MB growth={growth_mb_per_hour:.1f}MB/h"
+                )
+                logger.error("[DB_HEALTH] %s", msg)
+                self._notify_db_health_once(msg, cooldown_seconds=900)
+                return
+
+            if free_gb < 200 or growth_mb_per_hour > 1024 or wal_size_mb > 1024:
+                msg = (
+                    "DB WARNING: check database/disk. "
+                    f"free={free_gb:.1f}GB db={db_size_mb:.1f}MB "
+                    f"wal={wal_size_mb:.1f}MB growth={growth_mb_per_hour:.1f}MB/h"
+                )
+                logger.warning("[DB_HEALTH] %s", msg)
+                self._notify_db_health_once(msg, cooldown_seconds=1800)
+
+        except Exception:
+            logger.exception("[DB_HEALTH] monitor_database_health failed")
+            raise
     # --------------------------------------------------------------------------
     # Schema helpers (no manual SQL needed)
     # --------------------------------------------------------------------------

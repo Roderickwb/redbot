@@ -273,6 +273,9 @@ class Executor:
     def _hourly_db_checks(self):
         self.logger.info("[Executor] _hourly_db_checks => start.")
         try:
+            if hasattr(self.db_manager, "monitor_database_health"):
+                self.db_manager.monitor_database_health()
+
             candles_kraken = self.db_manager.get_table_count("candles_kraken")
             trades = self.db_manager.get_table_count("trades")
             trade_signals = self.db_manager.get_table_count("trade_signals")

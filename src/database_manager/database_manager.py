@@ -29,27 +29,18 @@ class DatabaseManager:
         logger.info(f"[DatabaseManager] Database pad: {self.db_path}")
 
         try:
-            # Verbind met de database en zet deze in WAL-modus
+            # Verbind met de database. WAL is bewust uitgeschakeld:
+            # bij deze bot-runtime kan een langlevende WAL extreem groot worden.
             self.connection = sqlite3.connect(
                 self.db_path,
                 check_same_thread=False,
                 timeout=30,
                 isolation_level=None  # We beheren zelf transactiegrenzen
             )
-            self.connection.execute("PRAGMA journal_mode=WAL;")
-            # --- WAL safety / growth control ---
             self.connection.execute("PRAGMA busy_timeout = 30000;")  # wacht op locks
-            self.connection.execute("PRAGMA synchronous = NORMAL;")  # sneller, nog steeds ok voor WAL
-            self.connection.execute("PRAGMA wal_autocheckpoint = 1000;")  # checkpoint elke ~1000 pages
-            self.connection.execute("PRAGMA journal_size_limit = 200000000;")  # max ~200MB voor -wal (soft limit)
-            # Optioneel: cache/temps op disk beperken
-            # self.connection.execute("PRAGMA temp_store = MEMORY;")
-
-            # Forceer 1 checkpoint bij startup (truncates WAL als mogelijk)
-            try:
-                self.connection.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-            except Exception as e:
-                logger.warning(f"[DatabaseManager] wal_checkpoint(TRUNCATE) failed: {e}")
+            self.connection.execute("PRAGMA journal_mode=DELETE;")
+            self.connection.execute("PRAGMA synchronous=FULL;")
+            self.connection.execute("PRAGMA temp_store=MEMORY;")
 
             self.cursor = self.connection.cursor()
 

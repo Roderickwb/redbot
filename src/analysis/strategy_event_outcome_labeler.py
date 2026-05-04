@@ -117,12 +117,17 @@ class StrategyEventOutcomeLabeler:
             return self._base_outcome(event, direction, status="no_candles")
 
         latest_candle_ts = int(candles[-1]["timestamp"])
-        if latest_candle_ts < end_ts:
+        min_required_ts = end_ts - self._interval_ms()
+        if latest_candle_ts < min_required_ts:
             return self._base_outcome(
                 event,
                 direction,
                 status="waiting_for_candles",
-                extra={"latest_candle_ts": latest_candle_ts, "required_end_ts": end_ts},
+                extra={
+                    "latest_candle_ts": latest_candle_ts,
+                    "required_end_ts": end_ts,
+                    "min_required_ts": min_required_ts,
+                },
             )
 
         entry_price = self._entry_price(event, candles)
@@ -240,6 +245,15 @@ class StrategyEventOutcomeLabeler:
             pass
         return float(candles[0]["close"])
 
+    def _interval_ms(self) -> int:
+        intervals = {
+            "1m": 60 * 1000,
+            "5m": 5 * 60 * 1000,
+            "15m": 15 * 60 * 1000,
+            "1h": 60 * 60 * 1000,
+            "4h": 4 * 60 * 60 * 1000,
+        }
+        return intervals.get(self.config.interval, 5 * 60 * 1000)
     def _fetch_candles(self, symbol: str, start_ts: int, end_ts: int) -> list[Dict[str, Any]]:
         rows = self.db.execute_query(
             """

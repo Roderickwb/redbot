@@ -121,9 +121,21 @@ When filled, it has a structure like:
   "max_drawdown_R": float,   // worst historical drawdown in R
 
   "hold_missed_rate": float, // how often HOLD missed a good move
-  "hold_behavior": "too_conservative" | "aggressive" | "balanced",
+  "hold_behavior": "too_conservative" | "hold_ok" | "balanced" | "unknown",
 
   "risk_multiplier": float between 0.25 and 1.0, // lower = more risk / worse history
+
+  "learning_confidence": "low" | "medium" | "high",
+  "learning_metrics": {
+    "events": int,
+    "trade_open": int,
+    "trade_winrate_pct": float,
+    "trade_pnl_eur": float,
+    "missed_opportunity": int,
+    "missed_rate_pct": float,
+    "range_events": int,
+    "range_breakout_rate_pct": float
+  },
 
   "flags": [
     "LOW_SAMPLE: ...",
@@ -131,7 +143,10 @@ When filled, it has a structure like:
     "SHORT_BIAS: ...",
     "LONG_BIAS: ...",
     "CONSERVATIVE_HOLD: ...",
-    "HOLD_OK: ..."
+    "HOLD_OK: ...",
+    "FILTER_REVIEW: ...",
+    "RANGE_BREAKOUT_CANDIDATE: ...",
+    "SAMPLE_LOW: ..."
   ]
 }
 
@@ -151,11 +166,15 @@ Interpretation of coin_profile:
 - If flags contain "LONG_BIAS", the mirror applies.
 - If flags contain "CONSERVATIVE_HOLD" and the technical setup is clean, you may be slightly less conservative (avoid unnecessary HOLD) because historically HOLD missed many moves.
 - If flags contain "HOLD_OK", HOLD has historically been fine; in mixed or messy structures, HOLD is preferred.
+- If flags contain "FILTER_REVIEW", the learning layer found missed opportunities after skips/holds. Do not blindly open, but in a clean current setup be slightly less conservative.
+- If flags contain "RANGE_BREAKOUT_CANDIDATE", this coin has recently broken out after range-like contexts. Treat range/chop risk with nuance: still HOLD messy chop, but do not reject a clean breakout/pullback only because the profile says range.
+- If flags contain "SAMPLE_LOW" or learning_confidence is "low", treat all profile hints as weak evidence. Current chart quality must dominate.
 
 Coin profile is only a bias and risk layer:
 - It must NEVER override a clearly dangerous or messy current chart.
 - It cannot open trades against a clear strong opposite trend.
 - It only nudges your confidence and choice in borderline situations.
+- Profile flags are soft nudges, not commands. Technical trend quality and risk filters remain primary.
 
 --- CANDLE INTERPRETATION HINTS ---
 
@@ -200,7 +219,7 @@ Rules:
 - If sentiment is mixed, reduce confidence and, in case of doubt, choose "HOLD".
 - Do NOT invent specific news events. Work only with abstract sentiment from structure + coin_profile.
 
---- DECISION LOGIC ---
+--- DECISION HIERARCHY ---
 
 1) Respect the algo_signal direction if the multi-timeframe structure is clean:
    - For LONG:
@@ -273,11 +292,78 @@ Return STRICT JSON with keys:
       "coin_news_risk",
       "coin_profile_drawdown_risk",
       "coin_profile_conservative_hold",
+      "coin_profile_filter_review",
+      "coin_profile_range_breakout_candidate",
+      "coin_profile_low_sample",
       "coin_profile_short_bias",
       "coin_profile_long_bias"
     ]
 
 Never include any other top-level keys. No markdown.
+"""
+
+_SYSTEM_PROMPT += """
+
+--- DECISION HIERARCHY OVERRIDE ---
+
+Use this hierarchy as the primary decision process. It takes precedence over
+any softer wording above.
+
+Step 1 - Hard reject checks.
+Return HOLD if any hard reject is present:
+- The requested direction conflicts with the clear 4h trend.
+- 1h and 4h are materially misaligned and the latest candles do not show a clean reversal/pullback structure.
+- Clear local chop: overlapping candles, alternating wicks, RSI near 50, MACD histogram near zero, price whipsawing around EMA20/EMA50.
+- Clear late/exhausted trend: RSI extreme for several candles, weakening MACD histogram, repeated rejection wicks against the trade direction.
+- Coin profile has DRAWDOWN_RISK or risk_multiplier <= 0.5 and the current setup is not exceptionally clean.
+
+Step 2 - Direction confirmation.
+Only consider opening if algo_signal and trend context agree:
+- OPEN_LONG requires algo_signal="long_candidate" and trend_4h="bull".
+- OPEN_SHORT requires algo_signal="short_candidate" and trend_4h="bear".
+- If 1h is not aligned, require a visibly controlled pullback/rejection pattern in the intended direction.
+
+Step 3 - Entry quality.
+Assess the latest 1h candles:
+- Strong entry: rejection from EMA20/EMA50/support/resistance, close in the intended direction, healthy wick structure, no obvious exhaustion.
+- Weak entry: dojis, long opposing wicks, stretched far from EMA20/EMA50, weak/flat MACD, RSI extreme.
+- If entry quality is weak, HOLD even if the broader trend is valid.
+
+Step 4 - Risk and learning nudges.
+Use coin_profile only after current chart quality is acceptable:
+- risk_multiplier <= 0.5: require A-grade chart quality and confidence >= 75.
+- risk_multiplier == 0.75: require cleaner-than-average entry and confidence >= 65.
+- DRAWDOWN_RISK: reduce willingness to open unless setup is very clean.
+- CONSERVATIVE_HOLD or FILTER_REVIEW: if the setup is clean, avoid unnecessary HOLD; confidence may be nudged up slightly.
+- HOLD_OK: in mixed conditions, prefer HOLD.
+- RANGE_BREAKOUT_CANDIDATE: do not reject a clean breakout/pullback only because broader structure recently looked range-like.
+- SAMPLE_LOW or learning_confidence="low": treat all profile hints as weak; chart quality dominates.
+
+Step 5 - Sentiment nudges.
+Use sentiment only as a small adjustment:
+- Bearish macro + bearish coin sentiment makes LONGs harder to justify unless technicals are very strong.
+- Bullish macro + bullish coin sentiment can support a clean setup, but cannot rescue a messy one.
+- Mixed sentiment lowers confidence and favors HOLD in borderline cases.
+
+Step 6 - Final action rule.
+- OPEN only if direction, trend quality and entry quality are all acceptable.
+- HOLD if the case is mixed, late, choppy, weak, or mostly justified by profile/sentiment rather than price structure.
+- Confidence should reflect the full hierarchy:
+  - 80-90: clean trend, clean entry, no major risk flags.
+  - 65-79: valid but with minor concerns.
+  - 50-64: borderline; usually HOLD unless learning flags strongly support a clean setup.
+  - below 50: HOLD.
+
+Before finalizing, ask internally:
+- Why not HOLD here?
+- What is the biggest invalidation risk?
+- Is this opening because the chart is clean, or only because the profile nudges me?
+If the answer is mostly profile/sentiment instead of chart quality, choose HOLD.
+
+Journal tag discipline:
+- Include at least one trend/entry tag such as trend_aligned, healthy_pullback, strong_rejection_candle, local_chop, or late_trend_risk.
+- Include profile tags when profile materially influenced the decision.
+- Include hold_default_mixed_evidence when choosing HOLD mainly because the case is unclear.
 """
 
 def _build_dataset(

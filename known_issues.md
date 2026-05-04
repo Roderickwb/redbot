@@ -27,23 +27,6 @@ Decision:
 - Keep coin profiles enabled.
 - Re-evaluate after more dryrun/live trade history has accumulated.
 
-## ADX regime is currently strict
-
-The current `trend_4h` strategy uses a hard 4h ADX threshold around 22. This is safe, but may be too strict for crypto trend setups where trend structure is already improving before ADX fully confirms.
-
-Current behavior:
-- 4h ADX below threshold causes a hard skip.
-- Some potentially valid early/borderline trend setups may be filtered out.
-
-Preferred future behavior:
-- ADX < 16: hard skip.
-- ADX 16-22: borderline regime; allow only if EMA structure, DI direction, ADX slope, 1h entry quality, candle direction, and sideways filter are supportive.
-- ADX >= 22: normal trend mode.
-
-Decision:
-- Keep current strict ADX behavior during cleanup.
-- Revisit after `trend_strategy_4h.py` cleanup and improved signal/skip logging.
-- Implement first in dryrun, optionally with lower risk multiplier for borderline setups.
 
 ## Daily snapshot trigger
 
@@ -52,3 +35,16 @@ Decision:
 Decision:
 - Keep daily stats.
 - Later call snapshot check from the executor loop so it runs independently of new candle triggers.
+
+## Strategy event outcomes vs actual trade outcomes
+
+`strategy_event_outcome_labeler` labels what happened after an event over a fixed lookahead window, currently 8h on 5m candles. This is useful for skip/HOLD learning. For opened trades, the event outcome also includes realized master/child trade result when a `trade_id` is available.
+
+Current impact:
+- `open_went_against`, `open_no_followthrough`, and `open_followed_through` describe post-event price action.
+- `realized_trade.label` describes the actual managed trade outcome when available.
+
+Decision:
+- Keep forward-window labels for setup quality.
+- `trade_open` events are enriched with realized master/child trade outcome when a `trade_id` is available.
+- Still needed later: reporting/aggregation that compares forward-window setup quality with realized trade result per coin.

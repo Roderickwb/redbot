@@ -57,9 +57,32 @@ class StrategyEventReporter:
     def __init__(self, db: Optional[DatabaseManager] = None):
         self.db = db or DatabaseManager(db_path=DB_FILE)
 
-    def build_report(self, limit: int = 5000, symbol: Optional[str] = None) -> Dict[str, Any]:
+    def build_report(
+        self,
+        limit: int = 5000,
+        symbol: Optional[str] = None,
+        windows: Optional[list[int]] = None,
+    ) -> Dict[str, Any]:
         events = self._load_labeled_events(limit=limit, symbol=symbol)
+        windows = sorted(set(int(w) for w in (windows or []) if int(w) > 0))
 
+        report = self._summarize_events(events)
+        report["meta"] = {
+            "loaded_labeled_events": len(events),
+            "limit": limit,
+            "symbol": symbol,
+            "windows": windows,
+        }
+
+        if windows:
+            report["windows"] = {
+                str(window): self._summarize_events(events[:window])
+                for window in windows
+            }
+
+        return report
+
+    def _summarize_events(self, events: list[Dict[str, Any]]) -> Dict[str, Any]:
         by_symbol = defaultdict(_new_bucket)
         by_skip_reason = defaultdict(_new_bucket)
         by_event_type = defaultdict(_new_bucket)
@@ -90,11 +113,9 @@ class StrategyEventReporter:
             if skip_reason == "trend_range":
                 self._add_range_event(range_summary[event.get("symbol") or "UNKNOWN"], outcome)
 
-        report = {
+        summary = {
             "meta": {
                 "loaded_labeled_events": len(events),
-                "limit": limit,
-                "symbol": symbol,
             },
             "totals": self._finalize_bucket(self._combine_buckets(by_event_type.values())),
             "by_symbol": self._finalize_mapping(by_symbol),
@@ -105,8 +126,8 @@ class StrategyEventReporter:
             "trade_open_summary": self._finalize_mapping(trade_open_summary),
             "range_summary": self._finalize_range_mapping(range_summary),
         }
-        report["top_attention"] = self._build_attention_lists(report)
-        return report
+        summary["top_attention"] = self._build_attention_lists(summary)
+        return summary
 
     def _load_labeled_events(self, limit: int, symbol: Optional[str]) -> list[Dict[str, Any]]:
         params: list[Any] = []
@@ -240,11 +261,18 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Summarize labeled strategy_events.")
     parser.add_argument("--limit", type=int, default=5000, help="Max labeled events to read.")
     parser.add_argument("--symbol", type=str, default=None, help="Optional symbol filter, e.g. XBT-EUR.")
+    parser.add_argument(
+        "--windows",
+        type=str,
+        default="30,100,500",
+        help="Comma-separated rolling windows over newest labeled events. Empty disables windows.",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     reporter = StrategyEventReporter()
-    report = reporter.build_report(limit=args.limit, symbol=args.symbol)
+    windows = [int(x.strip()) for x in args.windows.split(",") if x.strip()] if args.windows else []
+    report = reporter.build_report(limit=args.limit, symbol=args.symbol, windows=windows)
     print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0
 

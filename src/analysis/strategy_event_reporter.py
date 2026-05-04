@@ -43,6 +43,16 @@ def _new_bucket() -> Dict[str, Any]:
     }
 
 
+def _new_range_bucket() -> Dict[str, Any]:
+    return {
+        "events": 0,
+        "range_breakout_up": 0,
+        "range_breakout_down": 0,
+        "range_no_breakout": 0,
+        "range_volatile_breakout": 0,
+    }
+
+
 class StrategyEventReporter:
     def __init__(self, db: Optional[DatabaseManager] = None):
         self.db = db or DatabaseManager(db_path=DB_FILE)
@@ -53,6 +63,10 @@ class StrategyEventReporter:
         by_symbol = defaultdict(_new_bucket)
         by_skip_reason = defaultdict(_new_bucket)
         by_event_type = defaultdict(_new_bucket)
+        skip_summary = defaultdict(_new_bucket)
+        gpt_hold_summary = defaultdict(_new_bucket)
+        trade_open_summary = defaultdict(_new_bucket)
+        range_summary = defaultdict(_new_range_bucket)
 
         for event in events:
             outcome = self._parse_outcome(event.get("outcome_json"))
@@ -64,6 +78,18 @@ class StrategyEventReporter:
             if skip_reason:
                 self._add_event(by_skip_reason[skip_reason], event, outcome)
 
+            if event.get("event_type") == "skip":
+                self._add_event(skip_summary[skip_reason or "UNKNOWN"], event, outcome)
+
+            if skip_reason == "gpt_hold" or event.get("gpt_action") == "HOLD":
+                self._add_event(gpt_hold_summary[event.get("symbol") or "UNKNOWN"], event, outcome)
+
+            if event.get("event_type") == "trade_open":
+                self._add_event(trade_open_summary[event.get("symbol") or "UNKNOWN"], event, outcome)
+
+            if skip_reason == "trend_range":
+                self._add_range_event(range_summary[event.get("symbol") or "UNKNOWN"], outcome)
+
         report = {
             "meta": {
                 "loaded_labeled_events": len(events),
@@ -74,6 +100,10 @@ class StrategyEventReporter:
             "by_symbol": self._finalize_mapping(by_symbol),
             "by_skip_reason": self._finalize_mapping(by_skip_reason),
             "by_event_type": self._finalize_mapping(by_event_type),
+            "skip_summary": self._finalize_mapping(skip_summary),
+            "gpt_hold_summary": self._finalize_mapping(gpt_hold_summary),
+            "trade_open_summary": self._finalize_mapping(trade_open_summary),
+            "range_summary": self._finalize_range_mapping(range_summary),
         }
         report["top_attention"] = self._build_attention_lists(report)
         return report
@@ -124,6 +154,12 @@ class StrategyEventReporter:
             except Exception:
                 pass
 
+    def _add_range_event(self, bucket: Dict[str, Any], outcome: Dict[str, Any]) -> None:
+        bucket["events"] += 1
+        label = outcome.get("label")
+        if label in bucket:
+            bucket[label] += 1
+
     def _combine_buckets(self, buckets: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         total = _new_bucket()
         for bucket in buckets:
@@ -134,6 +170,12 @@ class StrategyEventReporter:
     def _finalize_mapping(self, mapping: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         return {
             key: self._finalize_bucket(value)
+            for key, value in sorted(mapping.items(), key=lambda item: item[0])
+        }
+
+    def _finalize_range_mapping(self, mapping: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        return {
+            key: self._finalize_range_bucket(value)
             for key, value in sorted(mapping.items(), key=lambda item: item[0])
         }
 
@@ -148,15 +190,29 @@ class StrategyEventReporter:
         result["trade_pnl_eur"] = round(result["trade_pnl_eur"], 6)
         return result
 
+    def _finalize_range_bucket(self, bucket: Dict[str, Any]) -> Dict[str, Any]:
+        result = dict(bucket)
+        events = result["events"]
+        breakouts = (
+            result["range_breakout_up"]
+            + result["range_breakout_down"]
+            + result["range_volatile_breakout"]
+        )
+        result["range_breakout_rate_pct"] = round(breakouts / events * 100.0, 2) if events else 0.0
+        return result
+
     def _build_attention_lists(self, report: Dict[str, Any]) -> Dict[str, Any]:
         by_symbol = report["by_symbol"]
-        by_skip = report["by_skip_reason"]
+        skip_summary = report["skip_summary"]
+        trade_summary = report["trade_open_summary"]
+        range_summary = report["range_summary"]
 
         return {
             "symbols_most_missed_skips": self._top_items(by_symbol, "missed_opportunity"),
-            "symbols_worst_trade_pnl": self._top_items(by_symbol, "trade_pnl_eur", reverse=False),
-            "skip_reasons_most_missed": self._top_items(by_skip, "missed_opportunity"),
-            "skip_reasons_best_protection": self._top_items(by_skip, "skip_protected"),
+            "symbols_worst_trade_pnl": self._top_items(trade_summary, "trade_pnl_eur", reverse=False),
+            "skip_reasons_most_missed": self._top_items(skip_summary, "missed_opportunity"),
+            "skip_reasons_best_protection": self._top_items(skip_summary, "skip_protected"),
+            "range_symbols_most_breakouts": self._top_items(range_summary, "range_breakout_rate_pct"),
         }
 
     def _top_items(self, mapping: Dict[str, Dict[str, Any]], metric: str, reverse: bool = True) -> list[Dict[str, Any]]:
@@ -165,6 +221,8 @@ class StrategyEventReporter:
             for name, values in mapping.items()
         ]
         rows.sort(key=lambda row: row[metric], reverse=reverse)
+        if metric == "trade_pnl_eur" and not reverse:
+            return [row for row in rows if row[metric] < 0][:10]
         return [row for row in rows if row[metric] != 0][:10]
 
     def _parse_outcome(self, raw: Any) -> Dict[str, Any]:

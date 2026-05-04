@@ -83,6 +83,9 @@ def run_strategy_learning_job(
         proposals_path = os.path.join(output_dir, DEFAULT_PROPOSALS_FILE)
         with open(proposals_path, "w", encoding="utf-8") as f:
             json.dump(proposals, f, indent=2, ensure_ascii=False)
+        profiles_written = 0
+        if apply_labels:
+            profiles_written = proposer.write_coin_profiles_to_db(payload, db=db)
 
         logger.info("[strategy_learning_job] wrote %s", latest_path)
         return {
@@ -91,6 +94,7 @@ def run_strategy_learning_job(
             "output_path": latest_path,
             "proposals_path": proposals_path,
             "proposal_symbols": proposals.get("n_symbols", 0),
+            "profiles_written": profiles_written,
         }
     finally:
         db.close_connection()

@@ -15,7 +15,11 @@ import argparse
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional
+
+from src.config.config import DB_FILE
+from src.database_manager.database_manager import DatabaseManager
 
 logger = logging.getLogger("strategy_profile_proposer")
 
@@ -100,7 +104,6 @@ class StrategyProfileProposer:
 
         if metrics["trade_open"] >= self.min_trades:
             if metrics["trade_winrate_pct"] >= 60.0 and metrics["trade_pnl_eur"] > 0:
-                risk_multiplier = 1.10
                 flags.append("trade_quality_positive")
             elif metrics["trade_winrate_pct"] <= 40.0 or metrics["trade_pnl_eur"] < 0:
                 risk_multiplier = 0.75
@@ -125,6 +128,79 @@ class StrategyProfileProposer:
             "risk_multiplier": round(risk_multiplier, 2),
             "flags": flags,
             "metrics": metrics,
+        }
+
+    def build_coin_profiles(self, learning_payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        proposals_payload = self.build_proposals(learning_payload)
+        profiles = {}
+        for symbol, proposal in proposals_payload.get("proposals", {}).items():
+            profiles[symbol] = self._proposal_to_coin_profile(proposal)
+        return profiles
+
+    def write_coin_profiles_to_db(
+        self,
+        learning_payload: Dict[str, Any],
+        db: Optional[DatabaseManager] = None,
+        strategy_name: str = "trend_4h",
+    ) -> int:
+        local_db = db is None
+        if db is None:
+            db = DatabaseManager(db_path=DB_FILE)
+
+        profiles = self.build_coin_profiles(learning_payload)
+        updated_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        for symbol, profile in profiles.items():
+            db.upsert_coin_profile(
+                symbol=symbol,
+                strategy_name=strategy_name,
+                profile=profile,
+                updated_ts=updated_ts,
+                source="strategy_events_learning",
+            )
+
+        if local_db:
+            db.close_connection()
+        return len(profiles)
+
+    def _proposal_to_coin_profile(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
+        metrics = proposal.get("metrics", {}) or {}
+        flags = list(proposal.get("flags", []) or [])
+
+        mapped_flags = []
+        if "trade_quality_negative" in flags:
+            mapped_flags.append("DRAWDOWN_RISK")
+        if "range_breakout_candidate" in flags:
+            mapped_flags.append("RANGE_BREAKOUT_CANDIDATE")
+        if "filters_may_be_too_strict" in flags:
+            mapped_flags.append("FILTER_REVIEW")
+        if "sample_low" in flags:
+            mapped_flags.append("SAMPLE_LOW")
+
+        all_flags = flags + [flag for flag in mapped_flags if flag not in flags]
+        risk_multiplier = min(1.0, max(0.25, float(proposal.get("risk_multiplier", 1.0) or 1.0)))
+        n_trades = int(metrics.get("trade_open", 0) or 0)
+
+        return {
+            "symbol": proposal.get("symbol"),
+            "profile_version": "learning",
+            "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source": "strategy_events_learning",
+            "n_trades": n_trades,
+            "market_regime": "range",
+            "regime_strength": 0.0,
+            "long_edge": 0.0,
+            "short_edge": 0.0,
+            "bias": proposal.get("bias", "neutral"),
+            "winrate": round(float(metrics.get("trade_winrate_pct", 0.0) or 0.0) / 100.0, 3),
+            "expectancy_R": 0.0,
+            "max_drawdown_R": 0.0,
+            "hold_missed_rate": round(float(metrics.get("missed_rate_pct", 0.0) or 0.0) / 100.0, 3),
+            "hold_behavior": "balanced",
+            "risk_multiplier": round(risk_multiplier, 2),
+            "flags": all_flags,
+            "learning_confidence": proposal.get("confidence"),
+            "learning_metrics": metrics,
         }
 
     def _build_summary(self, proposals: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -202,15 +278,20 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_PATH, help="Proposal output JSON path.")
     parser.add_argument("--min-events", type=int, default=30, help="Min events for medium confidence.")
     parser.add_argument("--min-trades", type=int, default=5, help="Min trades for trade-quality confidence.")
+    parser.add_argument("--write-db", action="store_true", help="Write learning profiles to coin_profiles.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     proposer = StrategyProfileProposer(min_events=args.min_events, min_trades=args.min_trades)
     proposals = proposer.build_proposals(load_json(args.input))
     write_json(args.output, proposals)
+    profiles_written = 0
+    if args.write_db:
+        profiles_written = proposer.write_coin_profiles_to_db(load_json(args.input))
     print(json.dumps({
         "n_symbols": proposals.get("n_symbols", 0),
         "output_path": args.output,
+        "profiles_written": profiles_written,
     }, indent=2, ensure_ascii=False))
     return 0
 

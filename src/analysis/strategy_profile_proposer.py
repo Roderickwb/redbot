@@ -98,21 +98,25 @@ class StrategyProfileProposer:
 
     def _propose_for_symbol(self, symbol: str, metrics: Dict[str, Any]) -> Dict[str, Any]:
         confidence = self._confidence(metrics)
-        risk_multiplier = 1.0
+        risk_multiplier = self._risk_multiplier(metrics)
+        hold_behavior = self._hold_behavior(metrics)
         bias = "neutral"
         flags = []
 
         if metrics["trade_open"] >= self.min_trades:
-            if metrics["trade_winrate_pct"] >= 60.0 and metrics["trade_pnl_eur"] > 0:
+            if risk_multiplier == 1.0 and metrics["trade_winrate_pct"] >= 60.0 and metrics["trade_pnl_eur"] > 0:
                 flags.append("trade_quality_positive")
-            elif metrics["trade_winrate_pct"] <= 40.0 or metrics["trade_pnl_eur"] < 0:
-                risk_multiplier = 0.75
+            elif risk_multiplier < 1.0:
                 flags.append("trade_quality_negative")
         elif metrics["trade_open"] > 0:
             flags.append("trade_sample_low")
 
         if metrics["missed_opportunity"] >= 3 or metrics["missed_rate_pct"] >= 10.0:
             flags.append("filters_may_be_too_strict")
+        if hold_behavior == "too_conservative":
+            flags.append("CONSERVATIVE_HOLD")
+        elif hold_behavior == "hold_ok":
+            flags.append("HOLD_OK")
 
         if metrics["range_events"] >= 10 and metrics["range_breakout_rate_pct"] >= 50.0:
             flags.append("range_breakout_candidate")
@@ -126,9 +130,36 @@ class StrategyProfileProposer:
             "confidence": confidence,
             "bias": bias,
             "risk_multiplier": round(risk_multiplier, 2),
+            "hold_behavior": hold_behavior,
             "flags": flags,
             "metrics": metrics,
         }
+
+    def _risk_multiplier(self, metrics: Dict[str, Any]) -> float:
+        trades = int(metrics.get("trade_open", 0) or 0)
+        winrate = float(metrics.get("trade_winrate_pct", 0.0) or 0.0)
+        pnl = float(metrics.get("trade_pnl_eur", 0.0) or 0.0)
+
+        if trades < self.min_trades:
+            return 1.0
+        if trades >= 10 and winrate <= 30.0 and pnl < 0:
+            return 0.5
+        if winrate <= 40.0 or pnl < 0:
+            return 0.75
+        return 1.0
+
+    def _hold_behavior(self, metrics: Dict[str, Any]) -> str:
+        events = int(metrics.get("events", 0) or 0)
+        missed = int(metrics.get("missed_opportunity", 0) or 0)
+        missed_rate = float(metrics.get("missed_rate_pct", 0.0) or 0.0)
+
+        if events < self.min_events:
+            return "unknown"
+        if missed >= 3 or missed_rate >= 10.0:
+            return "too_conservative"
+        if missed == 0 and missed_rate <= 2.0:
+            return "hold_ok"
+        return "balanced"
 
     def build_coin_profiles(self, learning_payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         proposals_payload = self.build_proposals(learning_payload)
@@ -196,7 +227,7 @@ class StrategyProfileProposer:
             "expectancy_R": 0.0,
             "max_drawdown_R": 0.0,
             "hold_missed_rate": round(float(metrics.get("missed_rate_pct", 0.0) or 0.0) / 100.0, 3),
-            "hold_behavior": "balanced",
+            "hold_behavior": proposal.get("hold_behavior", "unknown"),
             "risk_multiplier": round(risk_multiplier, 2),
             "flags": all_flags,
             "learning_confidence": proposal.get("confidence"),

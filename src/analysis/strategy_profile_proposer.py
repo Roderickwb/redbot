@@ -65,6 +65,7 @@ class StrategyProfileProposer:
             "min_events": self.min_events,
             "min_trades": self.min_trades,
             "n_symbols": len(proposals),
+            "summary": self._build_summary(proposals),
             "proposals": proposals,
         }
 
@@ -125,6 +126,54 @@ class StrategyProfileProposer:
             "flags": flags,
             "metrics": metrics,
         }
+
+    def _build_summary(self, proposals: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        risk_down = []
+        risk_up = []
+        filter_review = []
+        range_breakout = []
+        low_sample = []
+
+        for symbol, proposal in proposals.items():
+            flags = set(proposal.get("flags", []))
+            row = {
+                "symbol": symbol,
+                "confidence": proposal.get("confidence"),
+                "risk_multiplier": proposal.get("risk_multiplier"),
+                "flags": proposal.get("flags", []),
+            }
+
+            if proposal.get("risk_multiplier", 1.0) < 1.0:
+                risk_down.append(row)
+            if proposal.get("risk_multiplier", 1.0) > 1.0:
+                risk_up.append(row)
+            if "filters_may_be_too_strict" in flags:
+                filter_review.append(row)
+            if "range_breakout_candidate" in flags:
+                range_breakout.append(row)
+            if proposal.get("confidence") == "low":
+                low_sample.append(row)
+
+        return {
+            "risk_down_symbols": risk_down,
+            "risk_up_symbols": risk_up,
+            "filter_review_symbols": filter_review,
+            "range_breakout_candidates": range_breakout,
+            "low_sample_symbols": low_sample,
+            "actionable_symbols": self._unique_symbols(
+                risk_down + risk_up + filter_review + range_breakout
+            ),
+        }
+
+    def _unique_symbols(self, rows: list[Dict[str, Any]]) -> list[str]:
+        seen = set()
+        result = []
+        for row in rows:
+            symbol = row.get("symbol")
+            if symbol and symbol not in seen:
+                seen.add(symbol)
+                result.append(symbol)
+        return result
 
     def _confidence(self, metrics: Dict[str, Any]) -> str:
         events = metrics["events"]

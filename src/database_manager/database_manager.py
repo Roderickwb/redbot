@@ -123,6 +123,8 @@ class DatabaseManager:
 
                     self.connection.commit()
                     self.connection.close()
+                    self.connection = None
+                    self.cursor = None
                     logger.info("Databaseverbinding netjes afgesloten.")
             except sqlite3.ProgrammingError:
                 logger.warning("[DatabaseManager] Verbinding was al gesloten.")
@@ -2349,11 +2351,15 @@ class DatabaseManager:
     def close_connection(self):
         """Manuele afsluitmethode. Sluit DB-verbinding en flush buffers."""
         if self.connection:
-            self.flush_candles()
-            self.flush_candles_bitvavo()
-            self.flush_candles_kraken()
-            self.connection.close()
-            logger.info("[close_connection] DB-verbinding is gesloten.")
+            try:
+                self.flush_candles()
+                self.flush_candles_bitvavo()
+                self.flush_candles_kraken()
+                self.connection.close()
+                logger.info("[close_connection] DB-verbinding is gesloten.")
+            finally:
+                self.connection = None
+                self.cursor = None
 
     def save_order(self, order_data: dict):
         """

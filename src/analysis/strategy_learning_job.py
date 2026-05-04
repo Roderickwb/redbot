@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 from src.analysis.strategy_event_outcome_labeler import StrategyEventOutcomeLabeler
+from src.analysis.strategy_profile_proposer import StrategyProfileProposer
 from src.analysis.strategy_event_reporter import StrategyEventReporter
 from src.config.config import DB_FILE
 from src.database_manager.database_manager import DatabaseManager
@@ -32,6 +33,7 @@ logger = logging.getLogger("strategy_learning_job")
 
 DEFAULT_OUTPUT_DIR = os.path.join("analysis", "strategy_events")
 DEFAULT_LATEST_FILE = "latest_strategy_learning_report.json"
+DEFAULT_PROPOSALS_FILE = "latest_strategy_profile_proposals.json"
 
 
 def _parse_windows(raw: str) -> list[int]:
@@ -76,11 +78,19 @@ def run_strategy_learning_job(
         with open(latest_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
+        proposer = StrategyProfileProposer()
+        proposals = proposer.build_proposals(payload)
+        proposals_path = os.path.join(output_dir, DEFAULT_PROPOSALS_FILE)
+        with open(proposals_path, "w", encoding="utf-8") as f:
+            json.dump(proposals, f, indent=2, ensure_ascii=False)
+
         logger.info("[strategy_learning_job] wrote %s", latest_path)
         return {
             "label_stats": label_stats,
             "report_loaded_events": report.get("meta", {}).get("loaded_labeled_events", 0),
             "output_path": latest_path,
+            "proposals_path": proposals_path,
+            "proposal_symbols": proposals.get("n_symbols", 0),
         }
     finally:
         db.close_connection()

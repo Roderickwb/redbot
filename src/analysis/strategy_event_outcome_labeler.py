@@ -152,7 +152,10 @@ class StrategyEventOutcomeLabeler:
             favorable_pct = max(up_pct, down_pct)
             adverse_pct = min(up_pct, down_pct)
 
-        label = self._label_event(event, direction, favorable_pct, adverse_pct)
+        event_for_label = dict(event)
+        event_for_label["_up_pct"] = up_pct
+        event_for_label["_down_pct"] = down_pct
+        label = self._label_event(event_for_label, direction, favorable_pct, adverse_pct)
         outcome = self._base_outcome(event, direction, status="labeled")
         outcome.update({
             "label": label,
@@ -174,13 +177,28 @@ class StrategyEventOutcomeLabeler:
             "first_candle_ts": int(candles[0]["timestamp"]),
             "last_candle_ts": latest_candle_ts,
         })
+
+        if event.get("event_type") == "trade_open" and event.get("trade_id"):
+            outcome["realized_trade"] = self._load_realized_trade_outcome(int(event["trade_id"]))
+
         return outcome
 
     def _label_event(self, event: Dict[str, Any], direction: Optional[str], favorable_pct: float, adverse_pct: float) -> str:
         event_type = event.get("event_type")
         skip_reason = event.get("skip_reason")
 
+        up_hit = event.get("_up_pct", 0.0) >= self.config.move_threshold_pct
+        down_hit = event.get("_down_pct", 0.0) >= self.config.move_threshold_pct
+
         if direction is None:
+            if event.get("skip_reason") == "trend_range":
+                if up_hit and down_hit:
+                    return "range_volatile_breakout"
+                if up_hit:
+                    return "range_breakout_up"
+                if down_hit:
+                    return "range_breakout_down"
+                return "range_no_breakout"
             if favorable_pct >= self.config.move_threshold_pct:
                 return "directionless_large_move_after_event"
             return "directionless_no_large_move"
@@ -245,6 +263,65 @@ class StrategyEventOutcomeLabeler:
             pass
         return float(candles[0]["close"])
 
+    def _load_realized_trade_outcome(self, trade_id: int) -> Dict[str, Any]:
+        rows = self.db.execute_query(
+            """
+            SELECT id, timestamp, symbol, side, price, amount, position_id,
+                   position_type, status, pnl_eur, fees, trade_cost
+            FROM trades
+            WHERE id = ? AND is_master = 1
+            LIMIT 1
+            """,
+            (trade_id,),
+        )
+        if not rows:
+            return {"status": "master_not_found", "trade_id": trade_id}
+
+        cols = [
+            "id", "timestamp", "symbol", "side", "price", "amount", "position_id",
+            "position_type", "status", "pnl_eur", "fees", "trade_cost",
+        ]
+        master = dict(zip(cols, rows[0]))
+        trade_status = master.get("status")
+        pnl_eur = float(master.get("pnl_eur") or 0.0)
+        fees = float(master.get("fees") or 0.0)
+        trade_cost = float(master.get("trade_cost") or 0.0)
+
+        child_rows = self.db.execute_query(
+            """
+            SELECT id, timestamp, side, price, amount, status, pnl_eur, fees, trade_cost
+            FROM trades
+            WHERE position_id = ? AND is_master = 0
+            ORDER BY timestamp ASC
+            """,
+            (master.get("position_id"),),
+        )
+        child_cols = ["id", "timestamp", "side", "price", "amount", "status", "pnl_eur", "fees", "trade_cost"]
+        children = [dict(zip(child_cols, row)) for row in child_rows] if child_rows else []
+
+        if trade_status != "closed":
+            realized_label = "trade_still_open"
+        elif pnl_eur > 0:
+            realized_label = "trade_profitable"
+        elif pnl_eur < 0:
+            realized_label = "trade_losing"
+        else:
+            realized_label = "trade_breakeven"
+
+        roi_pct = (pnl_eur / trade_cost * 100.0) if trade_cost > 0 else None
+        return {
+            "status": trade_status,
+            "label": realized_label,
+            "trade_id": trade_id,
+            "position_id": master.get("position_id"),
+            "pnl_eur": round(pnl_eur, 6),
+            "fees": round(fees, 6),
+            "trade_cost": round(trade_cost, 6),
+            "roi_pct": round(roi_pct, 4) if roi_pct is not None else None,
+            "child_count": len(children),
+            "children": children,
+        }
+
     def _interval_ms(self) -> int:
         intervals = {
             "1m": 60 * 1000,
@@ -254,6 +331,7 @@ class StrategyEventOutcomeLabeler:
             "4h": 4 * 60 * 60 * 1000,
         }
         return intervals.get(self.config.interval, 5 * 60 * 1000)
+
     def _fetch_candles(self, symbol: str, start_ts: int, end_ts: int) -> list[Dict[str, Any]]:
         rows = self.db.execute_query(
             """

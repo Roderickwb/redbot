@@ -50,37 +50,40 @@ def run_strategy_learning_job(
     started_ts = int(time.time() * 1000)
     db = DatabaseManager(db_path=DB_FILE)
 
-    labeler = StrategyEventOutcomeLabeler(db=db)
-    label_stats = labeler.label_pending_events(apply=apply_labels, limit=label_limit)
+    try:
+        labeler = StrategyEventOutcomeLabeler(db=db)
+        label_stats = labeler.label_pending_events(apply=apply_labels, limit=label_limit)
 
-    reporter = StrategyEventReporter(db=db)
-    report = reporter.build_report(limit=report_limit, windows=windows or [30, 100, 500])
+        reporter = StrategyEventReporter(db=db)
+        report = reporter.build_report(limit=report_limit, windows=windows or [30, 100, 500])
 
-    payload = {
-        "created_ts": int(time.time() * 1000),
-        "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-        "job": {
-            "apply_labels": apply_labels,
-            "label_limit": label_limit,
-            "report_limit": report_limit,
-            "windows": windows or [30, 100, 500],
-            "duration_sec": round((int(time.time() * 1000) - started_ts) / 1000.0, 3),
-        },
-        "label_stats": label_stats,
-        "report": report,
-    }
+        payload = {
+            "created_ts": int(time.time() * 1000),
+            "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "job": {
+                "apply_labels": apply_labels,
+                "label_limit": label_limit,
+                "report_limit": report_limit,
+                "windows": windows or [30, 100, 500],
+                "duration_sec": round((int(time.time() * 1000) - started_ts) / 1000.0, 3),
+            },
+            "label_stats": label_stats,
+            "report": report,
+        }
 
-    os.makedirs(output_dir, exist_ok=True)
-    latest_path = os.path.join(output_dir, DEFAULT_LATEST_FILE)
-    with open(latest_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.makedirs(output_dir, exist_ok=True)
+        latest_path = os.path.join(output_dir, DEFAULT_LATEST_FILE)
+        with open(latest_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
 
-    logger.info("[strategy_learning_job] wrote %s", latest_path)
-    return {
-        "label_stats": label_stats,
-        "report_loaded_events": report.get("meta", {}).get("loaded_labeled_events", 0),
-        "output_path": latest_path,
-    }
+        logger.info("[strategy_learning_job] wrote %s", latest_path)
+        return {
+            "label_stats": label_stats,
+            "report_loaded_events": report.get("meta", {}).get("loaded_labeled_events", 0),
+            "output_path": latest_path,
+        }
+    finally:
+        db.close_connection()
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:

@@ -40,6 +40,14 @@ def _new_bucket() -> Dict[str, Any]:
         "trade_breakeven": 0,
         "trade_still_open": 0,
         "trade_pnl_eur": 0.0,
+        "cf_simulated": 0,
+        "cf_win": 0,
+        "cf_tp1_then_positive": 0,
+        "cf_small_win": 0,
+        "cf_breakeven": 0,
+        "cf_loss": 0,
+        "cf_ambiguous_intrabar": 0,
+        "cf_total_r": 0.0,
     }
 
 
@@ -89,6 +97,7 @@ class StrategyEventReporter:
         skip_summary = defaultdict(_new_bucket)
         gpt_hold_summary = defaultdict(_new_bucket)
         trade_open_summary = defaultdict(_new_bucket)
+        counterfactual_summary = defaultdict(_new_bucket)
         range_summary = defaultdict(_new_range_bucket)
 
         for event in events:
@@ -110,6 +119,10 @@ class StrategyEventReporter:
             if event.get("event_type") == "trade_open":
                 self._add_event(trade_open_summary[event.get("symbol") or "UNKNOWN"], event, outcome)
 
+            counterfactual = outcome.get("counterfactual_trade") or {}
+            if counterfactual:
+                self._add_event(counterfactual_summary[event.get("symbol") or "UNKNOWN"], event, outcome)
+
             if skip_reason == "trend_range":
                 self._add_range_event(range_summary[event.get("symbol") or "UNKNOWN"], outcome)
 
@@ -124,6 +137,7 @@ class StrategyEventReporter:
             "skip_summary": self._finalize_mapping(skip_summary),
             "gpt_hold_summary": self._finalize_mapping(gpt_hold_summary),
             "trade_open_summary": self._finalize_mapping(trade_open_summary),
+            "counterfactual_summary": self._finalize_mapping(counterfactual_summary),
             "range_summary": self._finalize_range_mapping(range_summary),
         }
         summary["top_attention"] = self._build_attention_lists(summary)
@@ -175,6 +189,17 @@ class StrategyEventReporter:
             except Exception:
                 pass
 
+        counterfactual = outcome.get("counterfactual_trade") or {}
+        cf_label = counterfactual.get("label")
+        if cf_label:
+            bucket["cf_simulated"] += 1
+            if cf_label in bucket:
+                bucket[cf_label] += 1
+            try:
+                bucket["cf_total_r"] += float(counterfactual.get("r_multiple") or 0.0)
+            except Exception:
+                pass
+
     def _add_range_event(self, bucket: Dict[str, Any], outcome: Dict[str, Any]) -> None:
         bucket["events"] += 1
         label = outcome.get("label")
@@ -209,6 +234,11 @@ class StrategyEventReporter:
         result["skip_protection_rate_pct"] = round(result["skip_protected"] / skips * 100.0, 2) if skips else 0.0
         result["trade_winrate_pct"] = round(result["trade_profitable"] / trade_done * 100.0, 2) if trade_done else 0.0
         result["trade_pnl_eur"] = round(result["trade_pnl_eur"], 6)
+        cf_done = result["cf_simulated"]
+        cf_positive = result["cf_win"] + result["cf_tp1_then_positive"] + result["cf_small_win"]
+        result["cf_positive_rate_pct"] = round(cf_positive / cf_done * 100.0, 2) if cf_done else 0.0
+        result["cf_avg_r"] = round(result["cf_total_r"] / cf_done, 4) if cf_done else 0.0
+        result["cf_total_r"] = round(result["cf_total_r"], 4)
         return result
 
     def _finalize_range_bucket(self, bucket: Dict[str, Any]) -> Dict[str, Any]:
@@ -226,6 +256,7 @@ class StrategyEventReporter:
         by_symbol = report["by_symbol"]
         skip_summary = report["skip_summary"]
         trade_summary = report["trade_open_summary"]
+        counterfactual_summary = report["counterfactual_summary"]
         range_summary = report["range_summary"]
 
         return {
@@ -233,6 +264,8 @@ class StrategyEventReporter:
             "symbols_worst_trade_pnl": self._top_items(trade_summary, "trade_pnl_eur", reverse=False),
             "skip_reasons_most_missed": self._top_items(skip_summary, "missed_opportunity"),
             "skip_reasons_best_protection": self._top_items(skip_summary, "skip_protected"),
+            "counterfactual_best_avg_r": self._top_items(counterfactual_summary, "cf_avg_r"),
+            "counterfactual_worst_avg_r": self._top_items(counterfactual_summary, "cf_avg_r", reverse=False),
             "range_symbols_most_breakouts": self._top_items(range_summary, "range_breakout_rate_pct"),
         }
 
@@ -243,6 +276,8 @@ class StrategyEventReporter:
         ]
         rows.sort(key=lambda row: row[metric], reverse=reverse)
         if metric == "trade_pnl_eur" and not reverse:
+            return [row for row in rows if row[metric] < 0][:10]
+        if metric == "cf_avg_r" and not reverse:
             return [row for row in rows if row[metric] < 0][:10]
         return [row for row in rows if row[metric] != 0][:10]
 

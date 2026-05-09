@@ -32,16 +32,27 @@ class OutcomeConfig:
     move_threshold_pct: float = 2.0
     adverse_threshold_pct: float = 2.0
     max_events: int = 1000
+    sl_atr_mult: float = 1.3
+    tp1_atr_mult: float = 2.0
+    tp1_portion_pct: float = 0.5
+    trailing_atr_mult: float = 0.9
+    breakeven_after_tp1: bool = True
 
 
 def _analysis_cfg() -> OutcomeConfig:
     cfg = yaml_config.get("analysis", {}) or {}
+    strategy_cfg = yaml_config.get("trend_strategy_4h", {}) or {}
     return OutcomeConfig(
         interval=str(cfg.get("hold_eval_interval", "5m")),
         lookahead_hours=float(cfg.get("hold_lookahead_hours", 8.0)),
         move_threshold_pct=float(cfg.get("hold_missed_move_pct", 2.0)),
         adverse_threshold_pct=float(cfg.get("hold_missed_move_pct", 2.0)),
         max_events=int(cfg.get("outcome_label_max_events", 1000)),
+        sl_atr_mult=float(strategy_cfg.get("sl_atr_mult", 1.3)),
+        tp1_atr_mult=float(strategy_cfg.get("tp1_atr_mult", 2.0)),
+        tp1_portion_pct=float(strategy_cfg.get("tp1_portion_pct", 0.5)),
+        trailing_atr_mult=float(strategy_cfg.get("trailing_atr_mult", 0.9)),
+        breakeven_after_tp1=bool(strategy_cfg.get("breakeven_after_tp1", True)),
     )
 
 
@@ -50,9 +61,14 @@ class StrategyEventOutcomeLabeler:
         self.db = db or DatabaseManager(db_path=DB_FILE)
         self.config = config or _analysis_cfg()
 
-    def label_pending_events(self, apply: bool = False, limit: Optional[int] = None) -> Dict[str, int]:
+    def label_pending_events(
+        self,
+        apply: bool = False,
+        limit: Optional[int] = None,
+        relabel: bool = False,
+    ) -> Dict[str, int]:
         limit = int(limit or self.config.max_events)
-        events = self._load_pending_events(limit=limit)
+        events = self._load_events(limit=limit, relabel=relabel)
 
         stats = {
             "loaded": len(events),
@@ -86,15 +102,16 @@ class StrategyEventOutcomeLabeler:
         logger.info("[strategy_event_outcomes] %s", stats)
         return stats
 
-    def _load_pending_events(self, limit: int) -> list[Dict[str, Any]]:
+    def _load_events(self, limit: int, relabel: bool = False) -> list[Dict[str, Any]]:
         cutoff_ts = int(time.time() * 1000) - int(self.config.lookahead_hours * 3600 * 1000)
+        status_clause = "1 = 1" if relabel else "COALESCE(outcome_status, 'pending') = 'pending'"
         rows = self.db.execute_query(
-            """
+            f"""
             SELECT
                 id, timestamp, symbol, strategy_name, event_type, decision_stage,
-                skip_reason, trend_dir, price, algo_signal, gpt_action, trade_id
+                skip_reason, trend_dir, price, algo_signal, gpt_action, trade_id, atr_1h
             FROM strategy_events
-            WHERE COALESCE(outcome_status, 'pending') = 'pending'
+            WHERE {status_clause}
               AND timestamp <= ?
             ORDER BY timestamp ASC
             LIMIT ?
@@ -103,7 +120,7 @@ class StrategyEventOutcomeLabeler:
         )
         cols = [
             "id", "timestamp", "symbol", "strategy_name", "event_type", "decision_stage",
-            "skip_reason", "trend_dir", "price", "algo_signal", "gpt_action", "trade_id",
+            "skip_reason", "trend_dir", "price", "algo_signal", "gpt_action", "trade_id", "atr_1h",
         ]
         return [dict(zip(cols, row)) for row in rows] if rows else []
 
@@ -178,10 +195,187 @@ class StrategyEventOutcomeLabeler:
             "last_candle_ts": latest_candle_ts,
         })
 
+        counterfactual = self._simulate_counterfactual_trade(
+            direction=direction,
+            entry_price=entry_price,
+            atr_value=event.get("atr_1h"),
+            candles=candles,
+        )
+        if counterfactual:
+            outcome["counterfactual_trade"] = counterfactual
+
         if event.get("event_type") == "trade_open" and event.get("trade_id"):
             outcome["realized_trade"] = self._load_realized_trade_outcome(int(event["trade_id"]))
 
         return outcome
+
+    def _simulate_counterfactual_trade(
+        self,
+        direction: Optional[str],
+        entry_price: float,
+        atr_value: Any,
+        candles: list[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if direction not in ("long", "short"):
+            return None
+
+        try:
+            atr = float(atr_value)
+        except Exception:
+            return {"status": "no_atr", "direction": direction}
+
+        if entry_price <= 0 or atr <= 0:
+            return {"status": "invalid_risk_input", "direction": direction}
+
+        risk_per_unit = atr * self.config.sl_atr_mult
+        if risk_per_unit <= 0:
+            return {"status": "invalid_risk_input", "direction": direction}
+
+        tp1_portion = min(max(float(self.config.tp1_portion_pct), 0.0), 1.0)
+        remaining_portion = 1.0
+        realized_r = 0.0
+        tp1_hit = False
+        tp1_hit_ts: Optional[int] = None
+        trail_active = False
+        breakeven_applied = False
+        exit_price: Optional[float] = None
+        exit_reason: Optional[str] = None
+
+        if direction == "long":
+            stop = entry_price - risk_per_unit
+            tp1 = entry_price + (atr * self.config.tp1_atr_mult)
+            trail_ref = entry_price
+        else:
+            stop = entry_price + risk_per_unit
+            tp1 = entry_price - (atr * self.config.tp1_atr_mult)
+            trail_ref = entry_price
+
+        max_favorable_r = 0.0
+        max_adverse_r = 0.0
+        ambiguous = False
+        final_ts = int(candles[-1]["timestamp"])
+
+        for candle in candles:
+            high = float(candle["high"])
+            low = float(candle["low"])
+            close = float(candle["close"])
+            candle_ts = int(candle["timestamp"])
+            final_ts = candle_ts
+
+            if direction == "long":
+                max_favorable_r = max(max_favorable_r, (high - entry_price) / risk_per_unit)
+                max_adverse_r = max(max_adverse_r, (entry_price - low) / risk_per_unit)
+            else:
+                max_favorable_r = max(max_favorable_r, (entry_price - low) / risk_per_unit)
+                max_adverse_r = max(max_adverse_r, (high - entry_price) / risk_per_unit)
+
+            if not tp1_hit:
+                if direction == "long":
+                    stop_hit = low <= stop
+                    tp1_hit_now = high >= tp1
+                else:
+                    stop_hit = high >= stop
+                    tp1_hit_now = low <= tp1
+
+                if stop_hit and tp1_hit_now:
+                    ambiguous = True
+                    exit_price = stop
+                    exit_reason = "AMBIGUOUS_SL_AND_TP1"
+                    realized_r = -1.0
+                    break
+
+                if stop_hit:
+                    exit_price = stop
+                    exit_reason = "SL"
+                    realized_r = -1.0
+                    break
+
+                if tp1_hit_now:
+                    tp1_hit = True
+                    tp1_hit_ts = candle_ts
+                    trail_active = True
+                    breakeven_applied = bool(self.config.breakeven_after_tp1)
+                    tp1_r = abs(tp1 - entry_price) / risk_per_unit
+                    realized_r += tp1_portion * tp1_r
+                    remaining_portion = 1.0 - tp1_portion
+                    trail_ref = high if direction == "long" else low
+
+            if trail_active and remaining_portion > 0 and candle_ts != tp1_hit_ts:
+                if direction == "long":
+                    trail_ref = max(trail_ref, high)
+                    trailing_stop = trail_ref - (atr * self.config.trailing_atr_mult)
+                    if breakeven_applied:
+                        trailing_stop = max(trailing_stop, entry_price)
+                    if low <= trailing_stop:
+                        exit_price = trailing_stop
+                        exit_reason = "TRAILING_STOP"
+                        realized_r += remaining_portion * ((trailing_stop - entry_price) / risk_per_unit)
+                        break
+                else:
+                    trail_ref = min(trail_ref, low)
+                    trailing_stop = trail_ref + (atr * self.config.trailing_atr_mult)
+                    if breakeven_applied:
+                        trailing_stop = min(trailing_stop, entry_price)
+                    if high >= trailing_stop:
+                        exit_price = trailing_stop
+                        exit_reason = "TRAILING_STOP"
+                        realized_r += remaining_portion * ((entry_price - trailing_stop) / risk_per_unit)
+                        break
+
+            final_close = close
+            final_ts = candle_ts
+        else:
+            final_close = float(candles[-1]["close"])
+            final_ts = int(candles[-1]["timestamp"])
+
+        if exit_reason is None:
+            exit_price = final_close
+            exit_reason = "OPEN_END"
+            if direction == "long":
+                unrealized_r = (final_close - entry_price) / risk_per_unit
+            else:
+                unrealized_r = (entry_price - final_close) / risk_per_unit
+            realized_r += remaining_portion * unrealized_r
+
+        label = self._counterfactual_label(realized_r, tp1_hit, exit_reason, ambiguous)
+        return {
+            "status": "ambiguous_intrabar" if ambiguous else "simulated",
+            "label": label,
+            "direction": direction,
+            "entry_price": round(entry_price, 10),
+            "atr": round(atr, 10),
+            "risk_per_unit": round(risk_per_unit, 10),
+            "sl_atr_mult": self.config.sl_atr_mult,
+            "tp1_atr_mult": self.config.tp1_atr_mult,
+            "tp1_portion_pct": self.config.tp1_portion_pct,
+            "trailing_atr_mult": self.config.trailing_atr_mult,
+            "breakeven_after_tp1": self.config.breakeven_after_tp1,
+            "stop_price": round(stop, 10),
+            "tp1_price": round(tp1, 10),
+            "tp1_hit": tp1_hit,
+            "exit_reason": exit_reason,
+            "exit_price": round(float(exit_price), 10) if exit_price is not None else None,
+            "r_multiple": round(realized_r, 4),
+            "max_favorable_r": round(max_favorable_r, 4),
+            "max_adverse_r": round(max_adverse_r, 4),
+            "bars": len(candles),
+            "exit_ts": final_ts,
+        }
+
+    def _counterfactual_label(self, r_multiple: float, tp1_hit: bool, exit_reason: str, ambiguous: bool) -> str:
+        if ambiguous:
+            return "cf_ambiguous_intrabar"
+        if exit_reason == "SL":
+            return "cf_loss"
+        if tp1_hit and r_multiple > 0:
+            return "cf_tp1_then_positive"
+        if r_multiple >= 1.0:
+            return "cf_win"
+        if r_multiple > 0:
+            return "cf_small_win"
+        if r_multiple == 0:
+            return "cf_breakeven"
+        return "cf_loss"
 
     def _label_event(self, event: Dict[str, Any], direction: Optional[str], favorable_pct: float, adverse_pct: float) -> str:
         event_type = event.get("event_type")
@@ -383,11 +577,12 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Label outcomes for pending strategy_events.")
     parser.add_argument("--apply", action="store_true", help="Write labels to strategy_events.")
     parser.add_argument("--limit", type=int, default=None, help="Max events to process.")
+    parser.add_argument("--relabel", action="store_true", help="Rebuild existing labeled outcomes too.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     labeler = StrategyEventOutcomeLabeler()
-    stats = labeler.label_pending_events(apply=args.apply, limit=args.limit)
+    stats = labeler.label_pending_events(apply=args.apply, limit=args.limit, relabel=args.relabel)
     print(json.dumps(stats, indent=2))
     return 0
 

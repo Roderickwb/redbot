@@ -40,6 +40,13 @@ def _empty_metrics() -> Dict[str, Any]:
         "missed_rate_pct": 0.0,
         "range_events": 0,
         "range_breakout_rate_pct": 0.0,
+        "cf_simulated": 0,
+        "cf_positive_rate_pct": 0.0,
+        "cf_avg_r": 0.0,
+        "cf_loss": 0,
+        "cf_win": 0,
+        "cf_tp1_then_positive": 0,
+        "cf_ambiguous_intrabar": 0,
     }
 
 
@@ -53,6 +60,7 @@ class StrategyProfileProposer:
         by_symbol = report.get("by_symbol", {})
         trade_summary = report.get("trade_open_summary", {})
         range_summary = report.get("range_summary", {})
+        counterfactual_summary = report.get("counterfactual_summary", {})
 
         proposals = {}
         for symbol in sorted(by_symbol.keys()):
@@ -61,6 +69,7 @@ class StrategyProfileProposer:
                 symbol_data=by_symbol.get(symbol, {}),
                 trade_data=trade_summary.get(symbol, {}),
                 range_data=range_summary.get(symbol, {}),
+                counterfactual_data=counterfactual_summary.get(symbol, {}),
             )
             proposals[symbol] = self._propose_for_symbol(symbol, metrics)
 
@@ -79,6 +88,7 @@ class StrategyProfileProposer:
         symbol_data: Dict[str, Any],
         trade_data: Dict[str, Any],
         range_data: Dict[str, Any],
+        counterfactual_data: Dict[str, Any],
     ) -> Dict[str, Any]:
         metrics = _empty_metrics()
         metrics.update({
@@ -93,6 +103,13 @@ class StrategyProfileProposer:
             "trade_winrate_pct": float(trade_data.get("trade_winrate_pct", 0.0) or 0.0),
             "range_events": int(range_data.get("events", 0) or 0),
             "range_breakout_rate_pct": float(range_data.get("range_breakout_rate_pct", 0.0) or 0.0),
+            "cf_simulated": int(counterfactual_data.get("cf_simulated", 0) or 0),
+            "cf_positive_rate_pct": float(counterfactual_data.get("cf_positive_rate_pct", 0.0) or 0.0),
+            "cf_avg_r": float(counterfactual_data.get("cf_avg_r", 0.0) or 0.0),
+            "cf_loss": int(counterfactual_data.get("cf_loss", 0) or 0),
+            "cf_win": int(counterfactual_data.get("cf_win", 0) or 0),
+            "cf_tp1_then_positive": int(counterfactual_data.get("cf_tp1_then_positive", 0) or 0),
+            "cf_ambiguous_intrabar": int(counterfactual_data.get("cf_ambiguous_intrabar", 0) or 0),
         })
         return metrics
 
@@ -113,6 +130,10 @@ class StrategyProfileProposer:
 
         if metrics["missed_opportunity"] >= 3 or metrics["missed_rate_pct"] >= 10.0:
             flags.append("filters_may_be_too_strict")
+        if metrics["cf_simulated"] >= self.min_events and metrics["cf_avg_r"] > 0.25:
+            flags.append("counterfactual_edge_positive")
+        elif metrics["cf_simulated"] >= self.min_events and metrics["cf_avg_r"] < -0.25:
+            flags.append("counterfactual_edge_negative")
         if hold_behavior == "too_conservative":
             flags.append("CONSERVATIVE_HOLD")
         elif hold_behavior == "hold_ok":
@@ -139,12 +160,16 @@ class StrategyProfileProposer:
         trades = int(metrics.get("trade_open", 0) or 0)
         winrate = float(metrics.get("trade_winrate_pct", 0.0) or 0.0)
         pnl = float(metrics.get("trade_pnl_eur", 0.0) or 0.0)
+        cf_simulated = int(metrics.get("cf_simulated", 0) or 0)
+        cf_avg_r = float(metrics.get("cf_avg_r", 0.0) or 0.0)
 
         if trades < self.min_trades:
+            if cf_simulated >= self.min_events and cf_avg_r < -0.35:
+                return 0.75
             return 1.0
         if trades >= 10 and winrate <= 30.0 and pnl < 0:
             return 0.5
-        if winrate <= 40.0 or pnl < 0:
+        if winrate <= 40.0 or pnl < 0 or (cf_simulated >= self.min_events and cf_avg_r < -0.25):
             return 0.75
         return 1.0
 
@@ -205,6 +230,10 @@ class StrategyProfileProposer:
             mapped_flags.append("RANGE_BREAKOUT_CANDIDATE")
         if "filters_may_be_too_strict" in flags:
             mapped_flags.append("FILTER_REVIEW")
+        if "counterfactual_edge_positive" in flags:
+            mapped_flags.append("COUNTERFACTUAL_EDGE_POSITIVE")
+        if "counterfactual_edge_negative" in flags:
+            mapped_flags.append("COUNTERFACTUAL_EDGE_NEGATIVE")
         if "sample_low" in flags:
             mapped_flags.append("SAMPLE_LOW")
 

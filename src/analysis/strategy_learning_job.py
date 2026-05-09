@@ -53,13 +53,18 @@ def run_strategy_learning_job(
     windows: Optional[list[int]] = None,
     output_dir: str = DEFAULT_OUTPUT_DIR,
     notify_daily_summary: bool = False,
+    relabel_existing: bool = False,
 ) -> dict:
     started_ts = int(time.time() * 1000)
     db = DatabaseManager(db_path=DB_FILE)
 
     try:
         labeler = StrategyEventOutcomeLabeler(db=db)
-        label_stats = labeler.label_pending_events(apply=apply_labels, limit=label_limit)
+        label_stats = labeler.label_pending_events(
+            apply=apply_labels,
+            limit=label_limit,
+            relabel=relabel_existing,
+        )
 
         reporter = StrategyEventReporter(db=db)
         report = reporter.build_report(limit=report_limit, windows=windows or [30, 100, 500])
@@ -72,6 +77,7 @@ def run_strategy_learning_job(
                 "label_limit": label_limit,
                 "report_limit": report_limit,
                 "windows": windows or [30, 100, 500],
+                "relabel_existing": relabel_existing,
                 "duration_sec": round((int(time.time() * 1000) - started_ts) / 1000.0, 3),
             },
             "label_stats": label_stats,
@@ -176,6 +182,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--windows", type=str, default="30,100,500", help="Comma-separated report windows.")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Directory for report output.")
     parser.add_argument("--notify-daily-summary", action="store_true", help="Send Telegram summary around 17:30.")
+    parser.add_argument("--relabel", action="store_true", help="Rebuild existing labeled outcomes too.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -186,6 +193,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         windows=_parse_windows(args.windows),
         output_dir=args.output_dir,
         notify_daily_summary=args.notify_daily_summary,
+        relabel_existing=args.relabel,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0

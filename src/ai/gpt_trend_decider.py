@@ -101,6 +101,27 @@ You get a JSON object with at least:
 
 - candles_4h: similar list for 4h.
 
+- chart_features: compact computed market-structure summary, for example:
+  {
+    "1h": {
+      "structure_label": "clean_trend" | "pullback" | "late_trend" | "chop" | "mixed",
+      "entry_timing": "early" | "clean" | "late" | "noisy",
+      "ema20_distance_pct": float,
+      "ema50_distance_pct": float,
+      "ema_spread_pct": float,
+      "atr_pct": float,
+      "trend_age_bars": int,
+      "pullback_depth_pct": float,
+      "support_distance_pct": float | null,
+      "resistance_distance_pct": float | null,
+      "last_candle_quality": "bull_rejection" | "bear_rejection" | "strong_bull" | "strong_bear" | "doji" | "neutral",
+      "last_close_location_pct": float,
+      "recent_doji_count": int,
+      "recent_opposing_wick_count": int
+    },
+    "4h": { "... same idea ..." }
+  }
+
 --- COIN PROFILE (LEARNING LAYER) ---
 
 You also receive a field "coin_profile". It is always present, but it can be empty {}.
@@ -363,6 +384,12 @@ Only continue toward OPEN if the current chart itself is good enough:
 - The 1h entry is either trend-aligned or a controlled pullback into EMA/support/resistance with a fresh rejection in the intended direction.
 - Latest candles are not mostly dojis, not mostly opposing wicks, and not stretched far away from EMA20/EMA50.
 - MACD and RSI do not show obvious momentum decay against the trade.
+- Use chart_features as the compact trader summary:
+  - structure_label="chop" or entry_timing="noisy" is a strong HOLD signal.
+  - structure_label="late_trend" or entry_timing="late" lowers confidence sharply.
+  - structure_label="pullback" with a supportive rejection candle is often better than chasing extension.
+  - high trend_age_bars plus large EMA distance means late-entry risk.
+  - last_candle_quality should support the intended direction; opposing rejection is a HOLD signal.
 
 If chart quality is weak, HOLD. Coin profile and sentiment are not allowed to rescue a weak chart.
 
@@ -453,6 +480,7 @@ def _build_dataset(
     levels_4h: Dict[str, Any],
     candles_1h: list,
     candles_4h: list,
+    chart_features: Dict[str, Any] | None = None,
     coin_profile: Dict[str, Any] | None = None,
     sentiment: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
@@ -479,6 +507,7 @@ def _build_dataset(
         "levels_4h": levels_4h,
         "candles_1h": candles_1h,
         "candles_4h": candles_4h,
+        "chart_features": chart_features or {},
         "coin_profile": coin_profile or {},
         "sentiment": sentiment or {},
     }
@@ -516,6 +545,7 @@ def get_gpt_decision(
     levels_4h: dict,
     candles_1h: list,
     candles_4h: list,
+    chart_features: dict | None = None,
     coin_profile: dict | None = None,
     sentiment: dict | None = None,
     *,
@@ -554,6 +584,7 @@ def get_gpt_decision(
         levels_4h=levels_4h,
         candles_1h=candles_1h,
         candles_4h=candles_4h,
+        chart_features=chart_features,
         coin_profile=coin_profile,
         sentiment=sentiment,
     )

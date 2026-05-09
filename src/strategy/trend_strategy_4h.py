@@ -728,6 +728,29 @@ class TrendStrategy4H:
                 ema_slow_col=f"ema_{self.ema_slow}",
                 limit=20
             )
+            intended_direction = "long" if algo_signal == "long_candidate" else "short"
+            chart_features = {
+                "1h": self._build_chart_features(
+                    df=df_1h,
+                    ema_fast_col=f"ema_{self.ema_fast}",
+                    ema_slow_col=f"ema_{self.ema_slow}",
+                    trend=trend_1h,
+                    levels=levels_1h,
+                    atr_value=atr_1h,
+                    timeframe="1h",
+                    intended_direction=intended_direction,
+                ),
+                "4h": self._build_chart_features(
+                    df=df_4h,
+                    ema_fast_col=f"ema_{self.ema_fast}",
+                    ema_slow_col=f"ema_{self.ema_slow}",
+                    trend=trend_4h,
+                    levels=levels_4h,
+                    atr_value=None,
+                    timeframe="4h",
+                    intended_direction=intended_direction,
+                ),
+            }
 
             # 6b) Coin profile inladen (DB)
             try:
@@ -769,8 +792,8 @@ class TrendStrategy4H:
                         algo_signal=algo_signal,
                         trend_1h=trend_1h,
                         trend_4h=trend_4h,
-                        structure_1h="unknown",
-                        structure_4h="unknown",
+                        structure_1h=chart_features.get("1h", {}).get("structure_label", "unknown"),
+                        structure_4h=chart_features.get("4h", {}).get("structure_label", "unknown"),
                         ema_1h=ema_1h,
                         ema_4h=ema_4h,
                         rsi_1h=rsi_1h,
@@ -783,6 +806,7 @@ class TrendStrategy4H:
                         levels_4h=levels_4h,
                         candles_1h=candles_1h,
                         candles_4h=candles_4h,
+                        chart_features=chart_features,
                         coin_profile=coin_profile,
                         sentiment=sentiment,  # ✅ juiste naam
                         db=self.db_manager,
@@ -817,6 +841,7 @@ class TrendStrategy4H:
                 "primary_veto": decision.get("primary_veto"),
                 "learning_effect": decision.get("learning_effect"),
                 "risk_notes": decision.get("risk_notes"),
+                "chart_features": chart_features,
             }
 
             # -------------------------------------------------
@@ -1280,6 +1305,243 @@ class TrendStrategy4H:
                 continue
 
         return candles
+
+    def _build_chart_features(
+        self,
+        df: pd.DataFrame,
+        ema_fast_col: str,
+        ema_slow_col: str,
+        trend: str,
+        levels: dict,
+        atr_value: Optional[float],
+        timeframe: str,
+        intended_direction: str,
+    ) -> dict:
+        """
+        Compacte chart-vision laag voor GPT: geen extra beslislogica, wel betere context.
+        """
+        default = {
+            "timeframe": timeframe,
+            "structure_label": "unknown",
+            "entry_timing": "unknown",
+        }
+        if df.empty or len(df) < 5:
+            return default
+
+        try:
+            recent = df.tail(8).copy()
+            last = df.iloc[-1]
+            close = float(last["close"])
+            high = float(last["high"])
+            low = float(last["low"])
+            open_ = float(last["open"])
+            ema_fast = float(last[ema_fast_col]) if ema_fast_col in df.columns else close
+            ema_slow = float(last[ema_slow_col]) if ema_slow_col in df.columns else close
+            rsi = float(last["rsi"]) if "rsi" in df.columns and pd.notna(last["rsi"]) else 50.0
+
+            macd_hist = 0.0
+            macd_hist_slope = 0.0
+            if "macd" in df.columns and "macd_signal" in df.columns:
+                macd_hist = float(last["macd"] - last["macd_signal"])
+                prev = df.iloc[-2]
+                macd_hist_slope = macd_hist - float(prev["macd"] - prev["macd_signal"])
+
+            total_range = max(high - low, 1e-9)
+            body = abs(close - open_)
+            close_location_pct = (close - low) / total_range * 100.0
+            body_pct = body / total_range * 100.0
+            top_wick_pct = max(high - close, high - open_) / total_range * 100.0
+            bot_wick_pct = max(close - low, open_ - low) / total_range * 100.0
+
+            ema20_distance_pct = (close - ema_fast) / close * 100.0 if close else 0.0
+            ema50_distance_pct = (close - ema_slow) / close * 100.0 if close else 0.0
+            ema_spread_pct = abs(ema_fast - ema_slow) / close * 100.0 if close else 0.0
+
+            computed_atr = atr_value
+            if computed_atr is None:
+                computed_atr = self._compute_atr(df, self.atr_window)
+            atr_pct = float(computed_atr) / close * 100.0 if computed_atr and close else 0.0
+
+            recent_high = float(recent["high"].max())
+            recent_low = float(recent["low"].min())
+            if trend == "bull":
+                pullback_depth_pct = (recent_high - close) / recent_high * 100.0 if recent_high else 0.0
+            elif trend == "bear":
+                pullback_depth_pct = (close - recent_low) / recent_low * 100.0 if recent_low else 0.0
+            else:
+                pullback_depth_pct = 0.0
+
+            trend_age_bars = self._trend_age_bars(df, ema_fast_col, ema_slow_col, trend)
+            support_distance_pct = self._distance_pct(close, levels.get("support"))
+            resistance_distance_pct = self._distance_pct(close, levels.get("resistance"))
+
+            recent_doji_count = 0
+            recent_opposing_wick_count = 0
+            for _, row in recent.tail(5).iterrows():
+                ro = float(row["open"])
+                rh = float(row["high"])
+                rl = float(row["low"])
+                rc = float(row["close"])
+                rr = max(rh - rl, 1e-9)
+                rbody_pct = abs(rc - ro) / rr * 100.0
+                rtop_wick_pct = max(rh - rc, rh - ro) / rr * 100.0
+                rbot_wick_pct = max(rc - rl, ro - rl) / rr * 100.0
+                if rbody_pct <= 25.0:
+                    recent_doji_count += 1
+                if intended_direction == "long" and rtop_wick_pct >= 45.0:
+                    recent_opposing_wick_count += 1
+                if intended_direction == "short" and rbot_wick_pct >= 45.0:
+                    recent_opposing_wick_count += 1
+
+            last_candle_quality = self._last_candle_quality(
+                close=close,
+                open_=open_,
+                body_pct=body_pct,
+                close_location_pct=close_location_pct,
+                top_wick_pct=top_wick_pct,
+                bot_wick_pct=bot_wick_pct,
+            )
+            structure_label = self._structure_label(
+                trend=trend,
+                rsi=rsi,
+                ema_spread_pct=ema_spread_pct,
+                atr_pct=atr_pct,
+                trend_age_bars=trend_age_bars,
+                pullback_depth_pct=pullback_depth_pct,
+                recent_doji_count=recent_doji_count,
+                recent_opposing_wick_count=recent_opposing_wick_count,
+                ema20_distance_pct=ema20_distance_pct,
+            )
+            entry_timing = self._entry_timing_label(
+                structure_label=structure_label,
+                intended_direction=intended_direction,
+                last_candle_quality=last_candle_quality,
+                ema20_distance_pct=ema20_distance_pct,
+                pullback_depth_pct=pullback_depth_pct,
+                recent_doji_count=recent_doji_count,
+                recent_opposing_wick_count=recent_opposing_wick_count,
+            )
+
+            return {
+                "timeframe": timeframe,
+                "structure_label": structure_label,
+                "entry_timing": entry_timing,
+                "ema20_distance_pct": round(ema20_distance_pct, 4),
+                "ema50_distance_pct": round(ema50_distance_pct, 4),
+                "ema_spread_pct": round(ema_spread_pct, 4),
+                "atr_pct": round(atr_pct, 4),
+                "trend_age_bars": int(trend_age_bars),
+                "pullback_depth_pct": round(pullback_depth_pct, 4),
+                "support_distance_pct": support_distance_pct,
+                "resistance_distance_pct": resistance_distance_pct,
+                "last_candle_quality": last_candle_quality,
+                "last_close_location_pct": round(close_location_pct, 2),
+                "last_body_pct": round(body_pct, 2),
+                "last_top_wick_pct": round(top_wick_pct, 2),
+                "last_bot_wick_pct": round(bot_wick_pct, 2),
+                "recent_doji_count": int(recent_doji_count),
+                "recent_opposing_wick_count": int(recent_opposing_wick_count),
+                "macd_hist": round(macd_hist, 8),
+                "macd_hist_slope": round(macd_hist_slope, 8),
+                "rsi": round(rsi, 2),
+            }
+        except Exception as e:
+            self.logger.debug("[chart_features] failed for %s: %s", timeframe, e)
+            return default
+
+    def _trend_age_bars(self, df: pd.DataFrame, ema_fast_col: str, ema_slow_col: str, trend: str) -> int:
+        age = 0
+        for _, row in df.tail(50).iloc[::-1].iterrows():
+            try:
+                close = float(row["close"])
+                ema_fast = float(row[ema_fast_col])
+                ema_slow = float(row[ema_slow_col])
+                if trend == "bull" and close > ema_fast > ema_slow:
+                    age += 1
+                elif trend == "bear" and close < ema_fast < ema_slow:
+                    age += 1
+                else:
+                    break
+            except Exception:
+                break
+        return age
+
+    def _distance_pct(self, close: float, level: Optional[float]) -> Optional[float]:
+        try:
+            if level is None or close <= 0:
+                return None
+            return round((float(level) - close) / close * 100.0, 4)
+        except Exception:
+            return None
+
+    def _last_candle_quality(
+        self,
+        close: float,
+        open_: float,
+        body_pct: float,
+        close_location_pct: float,
+        top_wick_pct: float,
+        bot_wick_pct: float,
+    ) -> str:
+        if body_pct <= 20.0:
+            return "doji"
+        if close > open_ and close_location_pct >= 65.0 and bot_wick_pct >= 20.0:
+            return "bull_rejection"
+        if close < open_ and close_location_pct <= 35.0 and top_wick_pct >= 20.0:
+            return "bear_rejection"
+        if close > open_ and close_location_pct >= 70.0:
+            return "strong_bull"
+        if close < open_ and close_location_pct <= 30.0:
+            return "strong_bear"
+        return "neutral"
+
+    def _structure_label(
+        self,
+        trend: str,
+        rsi: float,
+        ema_spread_pct: float,
+        atr_pct: float,
+        trend_age_bars: int,
+        pullback_depth_pct: float,
+        recent_doji_count: int,
+        recent_opposing_wick_count: int,
+        ema20_distance_pct: float,
+    ) -> str:
+        if trend == "range" or (ema_spread_pct < 0.15 and recent_doji_count >= 2):
+            return "chop"
+        if recent_doji_count >= 3 or recent_opposing_wick_count >= 3:
+            return "chop"
+        if trend_age_bars >= 8 and (abs(ema20_distance_pct) >= 3.0 or rsi >= 75.0 or rsi <= 25.0):
+            return "late_trend"
+        if 0.3 <= pullback_depth_pct <= max(3.0, atr_pct * 2.0):
+            return "pullback"
+        if trend in ("bull", "bear") and trend_age_bars >= 2:
+            return "clean_trend"
+        return "mixed"
+
+    def _entry_timing_label(
+        self,
+        structure_label: str,
+        intended_direction: str,
+        last_candle_quality: str,
+        ema20_distance_pct: float,
+        pullback_depth_pct: float,
+        recent_doji_count: int,
+        recent_opposing_wick_count: int,
+    ) -> str:
+        if structure_label == "chop" or recent_doji_count >= 3 or recent_opposing_wick_count >= 3:
+            return "noisy"
+        if structure_label == "late_trend" or abs(ema20_distance_pct) >= 3.5:
+            return "late"
+        supportive_long = intended_direction == "long" and last_candle_quality in ("bull_rejection", "strong_bull")
+        supportive_short = intended_direction == "short" and last_candle_quality in ("bear_rejection", "strong_bear")
+        if structure_label == "pullback" and (supportive_long or supportive_short):
+            return "clean"
+        if structure_label == "clean_trend" and pullback_depth_pct < 0.3:
+            return "early"
+        if supportive_long or supportive_short:
+            return "clean"
+        return "noisy"
 
     def _latest_price(self, symbol: str) -> Decimal:
         # 1) Verse WS tickerprijs. Voor exits mag deze niet te oud zijn.

@@ -134,7 +134,14 @@ When filled, it has a structure like:
     "missed_opportunity": int,
     "missed_rate_pct": float,
     "range_events": int,
-    "range_breakout_rate_pct": float
+    "range_breakout_rate_pct": float,
+    "cf_simulated": int,              // counterfactual trades simulated with bot-like SL/TP/trailing rules
+    "cf_positive_rate_pct": float,    // share of simulated outcomes with positive R
+    "cf_avg_r": float,                // average simulated R-multiple
+    "cf_loss": int,
+    "cf_win": int,
+    "cf_tp1_then_positive": int,
+    "cf_ambiguous_intrabar": int
   },
 
   "flags": [
@@ -146,7 +153,9 @@ When filled, it has a structure like:
     "HOLD_OK: ...",
     "FILTER_REVIEW: ...",
     "RANGE_BREAKOUT_CANDIDATE: ...",
-    "SAMPLE_LOW: ..."
+    "SAMPLE_LOW: ...",
+    "COUNTERFACTUAL_EDGE_POSITIVE: ...",
+    "COUNTERFACTUAL_EDGE_NEGATIVE: ..."
   ]
 }
 
@@ -168,6 +177,8 @@ Interpretation of coin_profile:
 - If flags contain "HOLD_OK", HOLD has historically been fine; in mixed or messy structures, HOLD is preferred.
 - If flags contain "FILTER_REVIEW", the learning layer found missed opportunities after skips/holds. Do not blindly open, but in a clean current setup be slightly less conservative.
 - If flags contain "RANGE_BREAKOUT_CANDIDATE", this coin has recently broken out after range-like contexts. Treat range/chop risk with nuance: still HOLD messy chop, but do not reject a clean breakout/pullback only because the profile says range.
+- If flags contain "COUNTERFACTUAL_EDGE_NEGATIVE", recent simulated bot-style outcomes were negative for this coin. Require unusually clean chart quality; in borderline cases choose HOLD.
+- If flags contain "COUNTERFACTUAL_EDGE_POSITIVE", recent simulated bot-style outcomes were positive for this coin. This can support confidence in a clean setup, but never creates a trade by itself.
 - If flags contain "SAMPLE_LOW" or learning_confidence is "low", treat all profile hints as weak evidence. Current chart quality must dominate.
 
 Coin profile is only a bias and risk layer:
@@ -294,75 +305,132 @@ Return STRICT JSON with keys:
       "coin_profile_conservative_hold",
       "coin_profile_filter_review",
       "coin_profile_range_breakout_candidate",
+      "coin_profile_counterfactual_positive",
+      "coin_profile_counterfactual_negative",
       "coin_profile_low_sample",
       "coin_profile_short_bias",
       "coin_profile_long_bias"
     ]
+- "scores": object with integer 0-100 values:
+    {
+      "trend": 0-100,
+      "entry": 0-100,
+      "risk": 0-100,
+      "learning": 0-100,
+      "sentiment": 0-100
+    }
+- "primary_veto": one of:
+    "none",
+    "trend_misaligned",
+    "weak_entry",
+    "local_chop",
+    "late_trend",
+    "counterfactual_negative",
+    "drawdown_risk",
+    "sentiment_risk",
+    "mixed_evidence"
+- "learning_effect": one of:
+    "none",
+    "reduced_confidence",
+    "increased_confidence",
+    "blocked_trade",
+    "allowed_clean_setup"
+- "risk_notes": short string, max 160 chars. Name the biggest invalidation risk.
 
 Never include any other top-level keys. No markdown.
 """
 
 _SYSTEM_PROMPT += """
 
---- DECISION HIERARCHY OVERRIDE ---
+--- DECISION HIERARCHY OVERRIDE V2 ---
 
 Use this hierarchy as the primary decision process. It takes precedence over
-any softer wording above.
+any softer wording above. Think like a risk manager first and a signal-taker
+second.
 
-Step 1 - Hard reject checks.
-Return HOLD if any hard reject is present:
-- The requested direction conflicts with the clear 4h trend.
-- 1h and 4h are materially misaligned and the latest candles do not show a clean reversal/pullback structure.
-- Clear local chop: overlapping candles, alternating wicks, RSI near 50, MACD histogram near zero, price whipsawing around EMA20/EMA50.
-- Clear late/exhausted trend: RSI extreme for several candles, weakening MACD histogram, repeated rejection wicks against the trade direction.
-- Coin profile has DRAWDOWN_RISK or risk_multiplier <= 0.5 and the current setup is not exceptionally clean.
+Step 1 - Direction and hard reject checks.
+Return HOLD immediately if any hard reject is present:
+- The requested action would conflict with algo_signal.
+- OPEN_LONG without trend_4h="bull".
+- OPEN_SHORT without trend_4h="bear".
+- The 1h chart is materially against the 4h trend and the latest candles do not show a controlled pullback/rejection back into the 4h direction.
+- Clear local chop: overlapping candles, alternating wicks, RSI near 50, flat MACD histogram, price whipsawing around EMA20/EMA50.
+- Clear exhaustion: RSI extreme for several candles, weakening MACD histogram, repeated rejection wicks against the intended direction.
 
-Step 2 - Direction confirmation.
-Only consider opening if algo_signal and trend context agree:
-- OPEN_LONG requires algo_signal="long_candidate" and trend_4h="bull".
-- OPEN_SHORT requires algo_signal="short_candidate" and trend_4h="bear".
-- If 1h is not aligned, require a visibly controlled pullback/rejection pattern in the intended direction.
+Step 2 - Chart quality gate.
+Only continue toward OPEN if the current chart itself is good enough:
+- A clean 4h trend exists in the intended direction.
+- The 1h entry is either trend-aligned or a controlled pullback into EMA/support/resistance with a fresh rejection in the intended direction.
+- Latest candles are not mostly dojis, not mostly opposing wicks, and not stretched far away from EMA20/EMA50.
+- MACD and RSI do not show obvious momentum decay against the trade.
 
-Step 3 - Entry quality.
-Assess the latest 1h candles:
-- Strong entry: rejection from EMA20/EMA50/support/resistance, close in the intended direction, healthy wick structure, no obvious exhaustion.
-- Weak entry: dojis, long opposing wicks, stretched far from EMA20/EMA50, weak/flat MACD, RSI extreme.
-- If entry quality is weak, HOLD even if the broader trend is valid.
+If chart quality is weak, HOLD. Coin profile and sentiment are not allowed to rescue a weak chart.
 
-Step 4 - Risk and learning nudges.
-Use coin_profile only after current chart quality is acceptable:
-- risk_multiplier <= 0.5: require A-grade chart quality and confidence >= 75.
-- risk_multiplier == 0.75: require cleaner-than-average entry and confidence >= 65.
-- DRAWDOWN_RISK: reduce willingness to open unless setup is very clean.
-- CONSERVATIVE_HOLD or FILTER_REVIEW: if the setup is clean, avoid unnecessary HOLD; confidence may be nudged up slightly.
-- HOLD_OK: in mixed conditions, prefer HOLD.
-- RANGE_BREAKOUT_CANDIDATE: do not reject a clean breakout/pullback only because broader structure recently looked range-like.
-- SAMPLE_LOW or learning_confidence="low": treat all profile hints as weak; chart quality dominates.
+Step 3 - Learning profile gate.
+Use coin_profile after the chart passes Step 2:
+- risk_multiplier <= 0.5: require an exceptional A-grade chart and confidence >= 80.
+- risk_multiplier == 0.75: require a cleaner-than-average chart and confidence >= 70.
+- DRAWDOWN_RISK or COUNTERFACTUAL_EDGE_NEGATIVE: treat the coin as hostile until proven otherwise. OPEN only when the technical setup is unusually clean; otherwise HOLD.
+- COUNTERFACTUAL_EDGE_POSITIVE: may add confidence to a clean setup, but never opens a trade by itself.
+- FILTER_REVIEW or CONSERVATIVE_HOLD: the bot may have been too conservative before. In a genuinely clean setup, avoid unnecessary HOLD.
+- HOLD_OK: in mixed or unclear conditions, HOLD is preferred.
+- RANGE_BREAKOUT_CANDIDATE: do not reject a clean breakout or clean pullback only because the broader context had range behavior. Still HOLD messy chop.
+- SAMPLE_LOW or learning_confidence="low": profile evidence is weak. Let current chart quality dominate.
 
-Step 5 - Sentiment nudges.
-Use sentiment only as a small adjustment:
-- Bearish macro + bearish coin sentiment makes LONGs harder to justify unless technicals are very strong.
+Use learning_metrics when present:
+- cf_avg_r < -0.25 or cf_positive_rate_pct < 45 means the simulated bot-style exits have been poor recently; lower confidence and prefer HOLD unless the setup is excellent.
+- cf_avg_r > 0.25 and cf_positive_rate_pct >= 55 supports the trade only after chart quality is already clean.
+- trade_open below 5 means real-trade evidence is still thin; do not overtrust winrate or pnl.
+
+Step 4 - Sentiment layer.
+Sentiment is a small adjustment only:
+- Bearish macro + bearish coin sentiment makes LONG harder to justify unless the technical setup is very strong.
 - Bullish macro + bullish coin sentiment can support a clean setup, but cannot rescue a messy one.
 - Mixed sentiment lowers confidence and favors HOLD in borderline cases.
 
-Step 6 - Final action rule.
-- OPEN only if direction, trend quality and entry quality are all acceptable.
-- HOLD if the case is mixed, late, choppy, weak, or mostly justified by profile/sentiment rather than price structure.
-- Confidence should reflect the full hierarchy:
-  - 80-90: clean trend, clean entry, no major risk flags.
-  - 65-79: valid but with minor concerns.
-  - 50-64: borderline; usually HOLD unless learning flags strongly support a clean setup.
-  - below 50: HOLD.
+Step 5 - Final action rule.
+OPEN only when all are true:
+- Direction agrees with algo_signal and 4h trend.
+- Entry quality is clean enough now, not just historically.
+- Learning profile does not strongly warn against this coin, or the chart is exceptional enough to override the warning.
+- The rationale can explain why entering now is better than waiting.
+
+HOLD when:
+- evidence is mixed,
+- chart is late/choppy,
+- entry is weak,
+- risk flags dominate,
+- or the case depends mostly on profile/sentiment instead of current price structure.
+
+Confidence scale:
+- 80-90: clean trend, clean entry, no major risk flags, learning not negative.
+- 70-79: valid setup with minor concerns, or risk_multiplier=0.75 but chart is strong.
+- 60-69: valid but borderline; usually HOLD unless learning and chart both support entry.
+- below 60: HOLD.
 
 Before finalizing, ask internally:
 - Why not HOLD here?
 - What is the biggest invalidation risk?
-- Is this opening because the chart is clean, or only because the profile nudges me?
-If the answer is mostly profile/sentiment instead of chart quality, choose HOLD.
+- Is the trade justified by the chart first, or mostly by learning/sentiment?
+If it is not chart-first, choose HOLD.
+
+Structured scoring discipline:
+- trend score: quality/alignment of 4h and 1h trend.
+- entry score: quality of the latest entry candles and rejection/pullback.
+- risk score: higher means cleaner risk, lower means drawdown/chop/exhaustion risk.
+- learning score: higher means coin_profile supports the setup, lower means profile warns against it.
+- sentiment score: higher means sentiment supports the setup, lower means sentiment warns against it.
+- For HOLD, primary_veto must name the main reason.
+- For OPEN, primary_veto should be "none" unless there is a minor risk you explicitly accepted.
+- learning_effect must explain whether profile data reduced, increased, blocked, or merely allowed the decision.
 
 Journal tag discipline:
-- Include at least one trend/entry tag such as trend_aligned, healthy_pullback, strong_rejection_candle, local_chop, or late_trend_risk.
-- Include profile tags when profile materially influenced the decision.
+- Include at least one chart tag: trend_aligned, healthy_pullback, strong_rejection_candle, local_chop, late_trend_risk, or weak_entry.
+- Include profile tags when profile materially influenced the decision:
+  coin_profile_drawdown_risk, coin_profile_counterfactual_negative,
+  coin_profile_counterfactual_positive, coin_profile_filter_review,
+  coin_profile_conservative_hold, coin_profile_range_breakout_candidate,
+  coin_profile_low_sample.
 - Include hold_default_mixed_evidence when choosing HOLD mainly because the case is unclear.
 """
 
@@ -626,6 +694,16 @@ def normalize_decision(raw: dict) -> dict:
         "confidence": 0,
         "rationale": "",
         "journal_tags": [],
+        "scores": {
+            "trend": 0,
+            "entry": 0,
+            "risk": 0,
+            "learning": 0,
+            "sentiment": 0,
+        },
+        "primary_veto": "mixed_evidence",
+        "learning_effect": "none",
+        "risk_notes": "",
     }
 
     if not isinstance(raw, dict):
@@ -650,15 +728,84 @@ def normalize_decision(raw: dict) -> dict:
         tags = [str(tags)]
     tags = [str(t) for t in tags][:5]
 
+    # Structured scores for later learning/debugging.
+    scores = raw.get("scores") or {}
+    if not isinstance(scores, dict):
+        scores = {}
+    normalized_scores = {
+        "trend": _score_0_100(scores.get("trend")),
+        "entry": _score_0_100(scores.get("entry")),
+        "risk": _score_0_100(scores.get("risk")),
+        "learning": _score_0_100(scores.get("learning")),
+        "sentiment": _score_0_100(scores.get("sentiment")),
+    }
+
+    primary_veto = _normalize_choice(
+        raw.get("primary_veto"),
+        allowed={
+            "none",
+            "trend_misaligned",
+            "weak_entry",
+            "local_chop",
+            "late_trend",
+            "counterfactual_negative",
+            "drawdown_risk",
+            "sentiment_risk",
+            "mixed_evidence",
+        },
+        default="mixed_evidence" if action == "HOLD" else "none",
+    )
+    if action != "HOLD" and primary_veto == "mixed_evidence":
+        primary_veto = "none"
+
+    learning_effect = _normalize_choice(
+        raw.get("learning_effect"),
+        allowed={
+            "none",
+            "reduced_confidence",
+            "increased_confidence",
+            "blocked_trade",
+            "allowed_clean_setup",
+        },
+        default="none",
+    )
+
+    risk_notes = str(raw.get("risk_notes", "")).strip()
+    if len(risk_notes) > 160:
+        risk_notes = risk_notes[:160]
+
     decision.update(
         {
             "action": action,
             "confidence": conf,
             "rationale": rationale,
             "journal_tags": tags,
+            "scores": normalized_scores,
+            "primary_veto": primary_veto,
+            "learning_effect": learning_effect,
+            "risk_notes": risk_notes,
         }
     )
     return decision
+
+
+def _score_0_100(value: Any) -> int:
+    try:
+        score = int(round(float(value)))
+    except (TypeError, ValueError):
+        return 0
+    if score < 0:
+        return 0
+    if score > 100:
+        return 100
+    return score
+
+
+def _normalize_choice(value: Any, allowed: set[str], default: str) -> str:
+    choice = str(value or "").strip()
+    if choice in allowed:
+        return choice
+    return default
 
 def get_gpt_action(
     *args,

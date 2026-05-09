@@ -810,6 +810,14 @@ class TrendStrategy4H:
             # === GPT-beslissing normaliseren ===
             conf = float(decision.get("confidence", 0))
             rationale = decision.get("rationale", "")
+            decision_features = {
+                "rationale": rationale,
+                "journal_tags": decision.get("journal_tags", []),
+                "scores": decision.get("scores", {}),
+                "primary_veto": decision.get("primary_veto"),
+                "learning_effect": decision.get("learning_effect"),
+                "risk_notes": decision.get("risk_notes"),
+            }
 
             # -------------------------------------------------
             # 1) HOLD-cases loggen (zonder echte trade_id)
@@ -844,7 +852,7 @@ class TrendStrategy4H:
             if action == "HOLD":
                 self._daily_stats["hold"] += 1
                 self._daily_stats["top"].append((conf, symbol, "HOLD"))
-                self._log_strategy_event(symbol=symbol, event_type="gpt_decision", decision_stage="gpt", skip_reason="gpt_hold", trend_dir=trend_dir, price=float(current_price), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h, rsi_1h=rsi_1h, rsi_4h=rsi_4h, macd_1h=macd_1h, atr_1h=atr_1h, algo_signal=algo_signal, gpt_action=action, gpt_confidence=conf, coin_profile=coin_profile, features={"rationale": rationale, "journal_tags": decision.get("journal_tags", [])})
+                self._log_strategy_event(symbol=symbol, event_type="gpt_decision", decision_stage="gpt", skip_reason="gpt_hold", trend_dir=trend_dir, price=float(current_price), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h, rsi_1h=rsi_1h, rsi_4h=rsi_4h, macd_1h=macd_1h, atr_1h=atr_1h, algo_signal=algo_signal, gpt_action=action, gpt_confidence=conf, coin_profile=coin_profile, features=decision_features)
                 self._notify_gpt_hold(
                     symbol=symbol,
                     conf=conf,
@@ -863,7 +871,7 @@ class TrendStrategy4H:
                     label = "OPEN SHORT"
 
                 self._daily_stats["top"].append((conf, symbol, action))
-                self._log_strategy_event(symbol=symbol, event_type="gpt_decision", decision_stage="gpt", trend_dir=trend_dir, price=float(current_price), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h, rsi_1h=rsi_1h, rsi_4h=rsi_4h, macd_1h=macd_1h, atr_1h=atr_1h, algo_signal=algo_signal, gpt_action=action, gpt_confidence=conf, coin_profile=coin_profile, features={"rationale": rationale, "journal_tags": decision.get("journal_tags", [])})
+                self._log_strategy_event(symbol=symbol, event_type="gpt_decision", decision_stage="gpt", trend_dir=trend_dir, price=float(current_price), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h, rsi_1h=rsi_1h, rsi_4h=rsi_4h, macd_1h=macd_1h, atr_1h=atr_1h, algo_signal=algo_signal, gpt_action=action, gpt_confidence=conf, coin_profile=coin_profile, features=decision_features)
                 self._notify_gpt_open(
                     symbol=symbol,
                     decision_label=label,

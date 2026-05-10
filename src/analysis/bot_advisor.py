@@ -161,6 +161,7 @@ class BotAdvisor:
         missing_scores_pct = _safe_float(totals.get("missing_scores_pct"))
         cf_avg_r = _safe_float(totals.get("cf_avg_r"))
         holds_positive = len((gpt_report.get("attention_cases") or {}).get("holds_with_positive_counterfactual", []) or [])
+        scored_events = max(0, loaded - _safe_int(totals.get("missing_scores")))
 
         if loaded < 100:
             items.append(self._rec(
@@ -195,10 +196,20 @@ class BotAdvisor:
             items.append(self._rec(
                 priority="low",
                 area="gpt_decision",
-                finding=f"Many GPT events are missing structured scores ({missing_scores_pct}%).",
-                recommendation="This is expected while older events dominate. Use newer structured-only reports for decisions.",
+                finding=f"Many historical GPT events are missing structured scores ({missing_scores_pct}%).",
+                recommendation="Treat this as transition noise from old events. Use structured-only/newer reports for decision quality.",
                 requires_human_approval=False,
-                evidence={"missing_scores_pct": missing_scores_pct},
+                evidence={"missing_scores_pct": missing_scores_pct, "scored_events": scored_events, "loaded_gpt_decisions": loaded},
+            ))
+
+        if scored_events < 100:
+            items.append(self._rec(
+                priority="medium",
+                area="gpt_decision",
+                finding=f"Structured GPT sample is still small ({scored_events} scored events).",
+                recommendation="Do not tune prompt thresholds from GPT analytics yet; collect at least 100 scored/labeled events.",
+                requires_human_approval=False,
+                evidence={"scored_events": scored_events, "target": 100},
             ))
 
         if holds_positive >= 10:

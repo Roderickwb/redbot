@@ -214,6 +214,9 @@ class BotAlertsReporter:
 
         zero_pct = _safe_float(gpt.get("zero_conf_pct"))
         missing_pct = _safe_float(gpt.get("missing_entry_score_pct"))
+        total = _safe_int(gpt.get("total"))
+        missing = _safe_int(gpt.get("missing_entry_score"))
+        scored = max(0, total - missing)
         if zero_pct >= 10.0:
             report["alerts"].append({"level": "ALERT", "code": "GPT_ZERO_CONF_HIGH", "message": f"GPT zero-confidence rate is {zero_pct}%."})
         elif zero_pct >= 5.0:
@@ -222,7 +225,7 @@ class BotAlertsReporter:
         if _safe_int(gpt.get("timeouts")) >= 3:
             report["alerts"].append({"level": "WARN", "code": "GPT_TIMEOUTS", "message": f"GPT timeouts in window: {gpt.get('timeouts')}."})
 
-        if missing_pct >= 10.0:
+        if missing_pct >= 10.0 and scored >= 100:
             report["alerts"].append({"level": "WARN", "code": "GPT_STRUCTURED_OUTPUT_MISSING", "message": f"Missing entry scores: {missing_pct}%."})
 
         five_min = data.get("candles_kraken", {}).get("5m", {})

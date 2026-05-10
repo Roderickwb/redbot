@@ -131,6 +131,28 @@ Doel:
 - expliciete waarschuwing als GPT timeouts of fallback-HOLDs te vaak voorkomen;
 - voorkomen dat technische problemen worden verward met inhoudelijke HOLD-beslissingen.
 
+## Advisor Layer
+
+Stap 2 is de advieslaag: de bot leest zijn eigen rapporten en maakt daar conclusies uit.
+
+Module:
+- `src.analysis.bot_advisor`
+
+Inputs:
+- learning report;
+- profile proposals;
+- GPT decision report;
+- chart vision QA report;
+- bot alerts report.
+
+Output:
+- `analysis/bot_advisor/latest_bot_advice.json`
+
+Principe:
+- advisor mag conclusies trekken en aanbevelingen doen;
+- advisor past nog niets automatisch aan;
+- adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
+
 De volgorde blijft:
 1. beter zien;
 2. beter meten;

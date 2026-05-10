@@ -14,7 +14,7 @@ import argparse
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 from dotenv import load_dotenv
@@ -51,6 +51,12 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value or 0.0)
     except Exception:
         return default
+
+
+def _utc_ms_to_str(timestamp_ms: int) -> Optional[str]:
+    if not timestamp_ms:
+        return None
+    return datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class BotAlertsReporter:
@@ -144,7 +150,7 @@ class BotAlertsReporter:
             latest_ts = _safe_int(latest_ts)
             candles[str(interval)] = {
                 "latest_ts": latest_ts,
-                "latest_utc": datetime.utcfromtimestamp(latest_ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if latest_ts else None,
+                "latest_utc": _utc_ms_to_str(latest_ts),
                 "age_min": round((now_ms - latest_ts) / 60000.0, 1) if latest_ts else None,
                 "count": _safe_int(count),
             }
@@ -159,7 +165,7 @@ class BotAlertsReporter:
         return {
             "candles_kraken": candles,
             "latest_strategy_event_ts": latest_event_ts,
-            "latest_strategy_event_utc": datetime.utcfromtimestamp(latest_event_ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if latest_event_ts else None,
+            "latest_strategy_event_utc": _utc_ms_to_str(latest_event_ts),
             "latest_strategy_event_age_min": round((now_ms - latest_event_ts) / 60000.0, 1) if latest_event_ts else None,
         }
 
@@ -186,7 +192,7 @@ class BotAlertsReporter:
             "strategy_events_by_status": by_status,
             "learning_profile_count": profile_count,
             "latest_profile_ts": latest_profile_ts,
-            "latest_profile_utc": datetime.utcfromtimestamp(latest_profile_ts / 1000).strftime("%Y-%m-%d %H:%M:%S") if latest_profile_ts else None,
+            "latest_profile_utc": _utc_ms_to_str(latest_profile_ts),
         }
 
     def _database_health(self) -> dict:

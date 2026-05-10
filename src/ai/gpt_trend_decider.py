@@ -342,6 +342,8 @@ Return STRICT JSON with keys:
     }
 - "primary_veto": one of:
     "none",
+    "gpt_error",
+    "parse_error",
     "trend_misaligned",
     "weak_entry",
     "local_chop",
@@ -616,6 +618,16 @@ def get_gpt_decision(
             "confidence": 0,
             "rationale": f"JSON parse error: {e}",
             "journal_tags": ["parse_error"],
+            "scores": {
+                "trend": 0,
+                "entry": 0,
+                "risk": 0,
+                "learning": 0,
+                "sentiment": 0,
+            },
+            "primary_veto": "parse_error",
+            "learning_effect": "none",
+            "risk_notes": "GPT response could not be parsed as JSON.",
         }
 
     # 2) Normaliseren
@@ -775,6 +787,8 @@ def normalize_decision(raw: dict) -> dict:
         raw.get("primary_veto"),
         allowed={
             "none",
+            "gpt_error",
+            "parse_error",
             "trend_misaligned",
             "weak_entry",
             "local_chop",

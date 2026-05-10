@@ -785,7 +785,9 @@ class TrendStrategy4H:
 
             last_error = None
             self._daily_stats["gpt_calls"] += 1
-            for attempt in range(2):
+            llm_max_attempts = int(self.config.get("llm_max_attempts", 3))
+            llm_retry_sleep_sec = float(self.config.get("llm_retry_sleep_sec", 1.5))
+            for attempt in range(max(1, llm_max_attempts)):
                 try:
                     action, decision = get_gpt_action(
                         symbol=symbol,
@@ -819,8 +821,8 @@ class TrendStrategy4H:
                         "[%s] GPT decision failed on attempt %d (%s)",
                         symbol, attempt + 1, e
                     )
-                    if attempt == 0:
-                        time.sleep(0.5)
+                    if attempt < llm_max_attempts - 1:
+                        time.sleep(llm_retry_sleep_sec * (attempt + 1))
             else:
                 # alleen als beide pogingen faalden:
                 action = "HOLD"
@@ -828,7 +830,17 @@ class TrendStrategy4H:
                     "action": "HOLD",
                     "confidence": 0,
                     "rationale": f"GPT error after retry: {last_error}",
-                    "journal_tags": []
+                    "journal_tags": ["gpt_error"],
+                    "scores": {
+                        "trend": 0,
+                        "entry": 0,
+                        "risk": 0,
+                        "learning": 0,
+                        "sentiment": 0,
+                    },
+                    "primary_veto": "gpt_error",
+                    "learning_effect": "none",
+                    "risk_notes": "GPT call failed after retry.",
                 }
 
             # === GPT-beslissing normaliseren ===

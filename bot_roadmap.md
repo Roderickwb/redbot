@@ -111,6 +111,26 @@ Waarom: zonder shadow/backtest voelt elke promptverbetering als hoop. Met shadow
 
 De bot moet niet te vroeg autonoom zijn in het aanpassen van regels. Eerst moeten observatie, labeling, rapportage en risk controls betrouwbaar zijn.
 
+## Operationele Monitoring
+
+Naast de learning-roadmap moet de bot dagelijks melden of de basis gezond is.
+
+Actieve/bedoelde checks:
+- GPT timeout / zero-confidence percentage;
+- ontbrekende structured GPT-output zoals scores of primary_veto;
+- stale candles;
+- learning profile count;
+- pending/labeled strategy events;
+- databasegrootte, WAL-bestand en vrije schijfruimte.
+
+Module:
+- `src.analysis.bot_alerts_reporter`
+
+Doel:
+- dagelijks Telegram-bericht met health digest;
+- expliciete waarschuwing als GPT timeouts of fallback-HOLDs te vaak voorkomen;
+- voorkomen dat technische problemen worden verward met inhoudelijke HOLD-beslissingen.
+
 De volgorde blijft:
 1. beter zien;
 2. beter meten;

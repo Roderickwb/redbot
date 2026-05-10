@@ -1,0 +1,437 @@
+# ============================================================
+# src/analysis/bot_advisor.py
+# ============================================================
+"""
+Bot advisor layer.
+
+This module combines the existing analysis reports and turns them into
+actionable recommendations. It does not change trading behavior.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from datetime import datetime
+from typing import Any, Iterable, Optional
+
+from dotenv import load_dotenv
+
+from src.analysis.bot_alerts_reporter import format_alert_message
+from src.notifier.telegram_notifier import TelegramNotifier
+
+
+DEFAULT_OUTPUT_DIR = os.path.join("analysis", "bot_advisor")
+DEFAULT_LATEST_FILE = "latest_bot_advice.json"
+
+DEFAULT_LEARNING_REPORT = os.path.join("analysis", "strategy_events", "latest_strategy_learning_report.json")
+DEFAULT_PROFILE_PROPOSALS = os.path.join("analysis", "strategy_events", "latest_strategy_profile_proposals.json")
+DEFAULT_GPT_REPORT = os.path.join("analysis", "gpt_decisions", "latest_gpt_decision_report.json")
+DEFAULT_CHART_REPORT = os.path.join("analysis", "chart_vision", "latest_chart_vision_report.json")
+DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value or 0.0)
+    except Exception:
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return default
+
+
+def load_json(path: str) -> dict:
+    if not os.path.exists(path):
+        return {"_missing": True, "_path": path}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        return {"_error": str(e), "_path": path}
+
+
+def write_json(path: str, payload: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+class BotAdvisor:
+    def __init__(
+        self,
+        learning_report_path: str = DEFAULT_LEARNING_REPORT,
+        profile_proposals_path: str = DEFAULT_PROFILE_PROPOSALS,
+        gpt_report_path: str = DEFAULT_GPT_REPORT,
+        chart_report_path: str = DEFAULT_CHART_REPORT,
+        alert_report_path: str = DEFAULT_ALERT_REPORT,
+    ):
+        self.learning_report_path = learning_report_path
+        self.profile_proposals_path = profile_proposals_path
+        self.gpt_report_path = gpt_report_path
+        self.chart_report_path = chart_report_path
+        self.alert_report_path = alert_report_path
+
+    def build_advice(self) -> dict:
+        reports = {
+            "learning": load_json(self.learning_report_path),
+            "profiles": load_json(self.profile_proposals_path),
+            "gpt": load_json(self.gpt_report_path),
+            "chart_vision": load_json(self.chart_report_path),
+            "alerts": load_json(self.alert_report_path),
+        }
+
+        recommendations = []
+        recommendations.extend(self._missing_report_recommendations(reports))
+        recommendations.extend(self._runtime_recommendations(reports["alerts"]))
+        recommendations.extend(self._gpt_decision_recommendations(reports["gpt"]))
+        recommendations.extend(self._chart_vision_recommendations(reports["chart_vision"]))
+        recommendations.extend(self._profile_recommendations(reports["profiles"]))
+        recommendations.extend(self._learning_recommendations(reports["learning"]))
+
+        recommendations.sort(key=lambda item: self._priority_rank(item.get("priority")), reverse=True)
+        return {
+            "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": self._overall_status(recommendations),
+            "summary": self._summary(recommendations),
+            "recommendations": recommendations,
+            "sources": {
+                "learning_report": self.learning_report_path,
+                "profile_proposals": self.profile_proposals_path,
+                "gpt_report": self.gpt_report_path,
+                "chart_vision_report": self.chart_report_path,
+                "alert_report": self.alert_report_path,
+            },
+        }
+
+    def _missing_report_recommendations(self, reports: dict) -> list[dict]:
+        items = []
+        for name, report in reports.items():
+            if report.get("_missing"):
+                items.append(self._rec(
+                    priority="high",
+                    area="pipeline",
+                    finding=f"{name} report is missing.",
+                    recommendation=f"Run or schedule the reporter that creates {report.get('_path')}.",
+                    requires_human_approval=False,
+                    evidence={"path": report.get("_path")},
+                ))
+            elif report.get("_error"):
+                items.append(self._rec(
+                    priority="high",
+                    area="pipeline",
+                    finding=f"{name} report could not be read.",
+                    recommendation="Inspect the JSON file and reporter logs.",
+                    requires_human_approval=False,
+                    evidence={"path": report.get("_path"), "error": report.get("_error")},
+                ))
+        return items
+
+    def _runtime_recommendations(self, alert_report: dict) -> list[dict]:
+        if alert_report.get("_missing") or alert_report.get("_error"):
+            return []
+        items = []
+        for alert in alert_report.get("alerts", []) or []:
+            code = alert.get("code")
+            level = alert.get("level")
+            priority = "high" if level == "ALERT" else "medium"
+            items.append(self._rec(
+                priority=priority,
+                area="runtime",
+                finding=f"{code}: {alert.get('message')}",
+                recommendation=self._runtime_recommendation_for(code),
+                requires_human_approval=False,
+                evidence=alert,
+            ))
+        return items
+
+    def _gpt_decision_recommendations(self, gpt_report: dict) -> list[dict]:
+        if gpt_report.get("_missing") or gpt_report.get("_error"):
+            return []
+        totals = gpt_report.get("totals", {}) or {}
+        meta = gpt_report.get("meta", {}) or {}
+        items = []
+        loaded = _safe_int(meta.get("loaded_gpt_decisions"))
+        zero_conf_pct = _safe_float(totals.get("zero_conf_pct"))
+        missing_scores_pct = _safe_float(totals.get("missing_scores_pct"))
+        cf_avg_r = _safe_float(totals.get("cf_avg_r"))
+        holds_positive = len((gpt_report.get("attention_cases") or {}).get("holds_with_positive_counterfactual", []) or [])
+
+        if loaded < 100:
+            items.append(self._rec(
+                priority="medium",
+                area="gpt_decision",
+                finding=f"GPT decision analytics sample is still small ({loaded} labeled decisions).",
+                recommendation="Keep collecting structured GPT decisions before changing prompt thresholds.",
+                requires_human_approval=False,
+                evidence={"loaded_gpt_decisions": loaded},
+            ))
+
+        if zero_conf_pct >= 10.0:
+            items.append(self._rec(
+                priority="high",
+                area="gpt_runtime",
+                finding=f"GPT zero-confidence rate is high ({zero_conf_pct}%).",
+                recommendation="Treat this as infrastructure noise first: inspect timeouts/API latency before evaluating strategy quality.",
+                requires_human_approval=False,
+                evidence={"zero_conf_pct": zero_conf_pct},
+            ))
+        elif zero_conf_pct >= 5.0:
+            items.append(self._rec(
+                priority="medium",
+                area="gpt_runtime",
+                finding=f"GPT zero-confidence rate is elevated ({zero_conf_pct}%).",
+                recommendation="Monitor after the timeout/retry change; expected target is below a few percent.",
+                requires_human_approval=False,
+                evidence={"zero_conf_pct": zero_conf_pct},
+            ))
+
+        if missing_scores_pct >= 25.0:
+            items.append(self._rec(
+                priority="low",
+                area="gpt_decision",
+                finding=f"Many GPT events are missing structured scores ({missing_scores_pct}%).",
+                recommendation="This is expected while older events dominate. Use newer structured-only reports for decisions.",
+                requires_human_approval=False,
+                evidence={"missing_scores_pct": missing_scores_pct},
+            ))
+
+        if holds_positive >= 10:
+            items.append(self._rec(
+                priority="medium",
+                area="gpt_decision",
+                finding=f"{holds_positive} HOLD decisions had strongly positive counterfactual outcomes.",
+                recommendation="Investigate whether GPT is too conservative for specific vetoes/coins before loosening rules.",
+                requires_human_approval=True,
+                evidence={"attention_case": "holds_with_positive_counterfactual", "count": holds_positive},
+            ))
+
+        if cf_avg_r < -0.25 and loaded >= 100:
+            items.append(self._rec(
+                priority="medium",
+                area="gpt_decision",
+                finding=f"Overall GPT decision counterfactual average R is negative ({cf_avg_r}).",
+                recommendation="Keep risk conservative and use per-veto/per-symbol breakdown before changing entry rules.",
+                requires_human_approval=True,
+                evidence={"cf_avg_r": cf_avg_r},
+            ))
+        return items
+
+    def _chart_vision_recommendations(self, chart_report: dict) -> list[dict]:
+        if chart_report.get("_missing") or chart_report.get("_error"):
+            return []
+        meta = chart_report.get("meta", {}) or {}
+        totals = chart_report.get("totals", {}) or {}
+        cases = chart_report.get("attention_cases", {}) or {}
+        items = []
+        loaded = _safe_int(meta.get("loaded_events"))
+        cf_avg_r = _safe_float(totals.get("cf_avg_r"))
+        noisy_positive = len(cases.get("chop_or_noisy_but_positive_cf", []) or [])
+        clean_negative = len(cases.get("clean_or_pullback_but_negative_cf", []) or [])
+
+        if loaded < 100:
+            items.append(self._rec(
+                priority="medium",
+                area="chart_vision",
+                finding=f"Chart Vision QA sample is still small ({loaded} structured/labeled events).",
+                recommendation="Do not recalibrate chart labels yet; wait for at least 100 structured labeled events.",
+                requires_human_approval=False,
+                evidence={"loaded_events": loaded},
+            ))
+
+        if noisy_positive >= 5 and cf_avg_r > 0:
+            items.append(self._rec(
+                priority="medium",
+                area="chart_vision",
+                finding=f"Chart Vision may be too strict: {noisy_positive} chop/noisy cases had positive counterfactual outcomes.",
+                recommendation="Collect more samples; then split noisy/chop into true range chop versus messy directional trend.",
+                requires_human_approval=True,
+                evidence={"chop_or_noisy_but_positive_cf": noisy_positive, "cf_avg_r": cf_avg_r},
+            ))
+
+        if clean_negative >= 5:
+            items.append(self._rec(
+                priority="medium",
+                area="chart_vision",
+                finding=f"Clean/pullback labels may be too optimistic: {clean_negative} cases had negative counterfactual outcomes.",
+                recommendation="Review candle quality and late-trend thresholds before allowing looser entries.",
+                requires_human_approval=True,
+                evidence={"clean_or_pullback_but_negative_cf": clean_negative},
+            ))
+        return items
+
+    def _profile_recommendations(self, profiles_report: dict) -> list[dict]:
+        if profiles_report.get("_missing") or profiles_report.get("_error"):
+            return []
+        summary = profiles_report.get("summary", {}) or {}
+        items = []
+        risk_down = summary.get("risk_down_symbols", []) or []
+        filter_review = summary.get("filter_review_symbols", []) or []
+        range_candidates = summary.get("range_breakout_candidates", []) or []
+
+        if risk_down:
+            items.append(self._rec(
+                priority="medium",
+                area="risk",
+                finding=f"{len(risk_down)} symbols are proposed for risk-down.",
+                recommendation="Risk-down is safe to keep enabled; inspect only if major coins are repeatedly capped.",
+                requires_human_approval=False,
+                evidence={"symbols": [r.get("symbol") for r in risk_down[:10]]},
+            ))
+
+        if filter_review:
+            items.append(self._rec(
+                priority="medium",
+                area="filters",
+                finding=f"{len(filter_review)} symbols show possible over-filtering.",
+                recommendation="Use GPT/chart reports to determine whether filter strictness or chart vision labels caused missed opportunities.",
+                requires_human_approval=True,
+                evidence={"symbols": [r.get("symbol") for r in filter_review[:10]]},
+            ))
+
+        if range_candidates:
+            items.append(self._rec(
+                priority="low",
+                area="chart_vision",
+                finding=f"{len(range_candidates)} range breakout candidates detected.",
+                recommendation="Do not trade range blindly; use this as input for a future range-breakout submode.",
+                requires_human_approval=True,
+                evidence={"symbols": [r.get("symbol") for r in range_candidates[:10]]},
+            ))
+        return items
+
+    def _learning_recommendations(self, learning_report: dict) -> list[dict]:
+        if learning_report.get("_missing") or learning_report.get("_error"):
+            return []
+        label_stats = learning_report.get("label_stats", {}) or {}
+        report = learning_report.get("report", {}) or {}
+        loaded = _safe_int((report.get("meta") or {}).get("loaded_labeled_events"))
+        waiting = _safe_int(label_stats.get("waiting_for_candles"))
+        items = []
+
+        if waiting > 0:
+            items.append(self._rec(
+                priority="low",
+                area="learning",
+                finding=f"{waiting} events are waiting for enough future candles.",
+                recommendation="Normal if recent events are inside the lookahead window; investigate only if it keeps growing.",
+                requires_human_approval=False,
+                evidence={"waiting_for_candles": waiting},
+            ))
+
+        if loaded < 500:
+            items.append(self._rec(
+                priority="medium",
+                area="learning",
+                finding=f"Learning sample is still limited ({loaded} labeled events).",
+                recommendation="Keep changes conservative until labeled event count grows.",
+                requires_human_approval=False,
+                evidence={"loaded_labeled_events": loaded},
+            ))
+        return items
+
+    def _runtime_recommendation_for(self, code: Optional[str]) -> str:
+        mapping = {
+            "GPT_ZERO_CONF_HIGH": "Inspect OpenAI latency/timeouts and reduce prompt payload only if timeout change is insufficient.",
+            "GPT_ZERO_CONF_WARN": "Monitor next daily digest after timeout/retry change.",
+            "GPT_TIMEOUTS": "Check if timeouts cluster around hourly candle processing.",
+            "GPT_STRUCTURED_OUTPUT_MISSING": "Use structured-only reports for recent decisions; older events may miss scores.",
+            "CANDLES_STALE": "Check Kraken data client and candle polling immediately.",
+            "DISK_LOW": "Free disk space before running long backfills or analysis.",
+            "WAL_EXISTS": "Confirm DB journal mode and investigate unexpected WAL file growth.",
+            "LEARNING_PROFILES_LOW": "Run strategy learning job and verify coin_profiles writes.",
+        }
+        return mapping.get(str(code), "Inspect the related report and logs.")
+
+    def _summary(self, recommendations: list[dict]) -> dict:
+        return {
+            "total": len(recommendations),
+            "high": sum(1 for r in recommendations if r.get("priority") == "high"),
+            "medium": sum(1 for r in recommendations if r.get("priority") == "medium"),
+            "low": sum(1 for r in recommendations if r.get("priority") == "low"),
+            "requires_human_approval": sum(1 for r in recommendations if r.get("requires_human_approval")),
+        }
+
+    def _overall_status(self, recommendations: list[dict]) -> str:
+        if any(r.get("priority") == "high" for r in recommendations):
+            return "ACTION_NEEDED"
+        if any(r.get("priority") == "medium" for r in recommendations):
+            return "WATCH"
+        return "OK"
+
+    def _priority_rank(self, priority: Any) -> int:
+        return {"high": 3, "medium": 2, "low": 1}.get(str(priority), 0)
+
+    def _rec(
+        self,
+        priority: str,
+        area: str,
+        finding: str,
+        recommendation: str,
+        requires_human_approval: bool,
+        evidence: Optional[dict] = None,
+    ) -> dict:
+        return {
+            "priority": priority,
+            "area": area,
+            "finding": finding,
+            "recommendation": recommendation,
+            "requires_human_approval": requires_human_approval,
+            "evidence": evidence or {},
+        }
+
+
+def format_advice_message(advice: dict, max_items: int = 8) -> str:
+    summary = advice.get("summary", {}) or {}
+    lines = [
+        f"Bot Advisor [{advice.get('status')}]",
+        f"Findings: total={summary.get('total', 0)} | high={summary.get('high', 0)} | medium={summary.get('medium', 0)} | approval={summary.get('requires_human_approval', 0)}",
+    ]
+    for rec in (advice.get("recommendations") or [])[:max_items]:
+        lines.append(
+            f"- {str(rec.get('priority', '')).upper()} {rec.get('area')}: {rec.get('finding')} -> {rec.get('recommendation')}"
+        )
+    if not advice.get("recommendations"):
+        lines.append("- No recommendations.")
+    return "\n".join(lines)
+
+
+def send_telegram(advice: dict) -> bool:
+    load_dotenv()
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return False
+    TelegramNotifier(token, chat_id).safe_send(format_advice_message(advice))
+    return True
+
+
+def main(argv: Optional[Iterable[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Build combined bot advisor report.")
+    parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Output directory.")
+    parser.add_argument("--send", action="store_true", help="Send advice summary to Telegram.")
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    advisor = BotAdvisor()
+    advice = advisor.build_advice()
+    output_path = os.path.join(args.output_dir, DEFAULT_LATEST_FILE)
+    write_json(output_path, advice)
+    sent = send_telegram(advice) if args.send else False
+
+    result = {
+        "status": advice.get("status"),
+        "summary": advice.get("summary"),
+        "output_path": output_path,
+        "telegram_sent": sent,
+    }
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

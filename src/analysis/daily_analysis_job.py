@@ -45,6 +45,12 @@ from src.analysis.gpt_decision_reporter import (
     DEFAULT_OUTPUT_DIR as GPT_OUTPUT_DIR,
     write_json as write_gpt_json,
 )
+from src.analysis.market_regime import (
+    MarketRegimeAnalyzer,
+    DEFAULT_LATEST_FILE as REGIME_LATEST_FILE,
+    DEFAULT_OUTPUT_DIR as REGIME_OUTPUT_DIR,
+    write_json as write_regime_json,
+)
 from src.analysis.strategy_learning_job import run_strategy_learning_job
 from src.config.config import DB_FILE
 from src.database_manager.database_manager import DatabaseManager
@@ -154,6 +160,26 @@ def _build_alerts_report(hours: int, send_health: bool, force_health_send: bool)
     }
 
 
+def _build_market_regime_report() -> dict:
+    db = DatabaseManager(db_path=DB_FILE)
+    try:
+        report = MarketRegimeAnalyzer(db=db).build_regime()
+    finally:
+        db.close_connection()
+
+    output_path = os.path.join(REGIME_OUTPUT_DIR, REGIME_LATEST_FILE)
+    write_regime_json(output_path, report)
+    return {
+        "regime": report.get("regime"),
+        "risk_mode": report.get("risk_mode"),
+        "directional_bias": report.get("directional_bias"),
+        "risk_multiplier": report.get("risk_multiplier"),
+        "breadth": report.get("breadth"),
+        "flags": report.get("flags"),
+        "output_path": output_path,
+    }
+
+
 def _build_advisor(send_advice: bool) -> dict:
     advice = BotAdvisor().build_advice()
     output_path = os.path.join(ADVISOR_OUTPUT_DIR, ADVISOR_LATEST_FILE)
@@ -206,6 +232,9 @@ def run_daily_analysis_job(
             send_health=send_health,
             force_health_send=force_health_send,
         ),
+    )
+    steps["market_regime"] = _run_step(
+        lambda: _build_market_regime_report(),
     )
     steps["bot_advisor"] = _run_step(
         lambda: _build_advisor(send_advice=send_advice),

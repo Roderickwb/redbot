@@ -122,6 +122,18 @@ You get a JSON object with at least:
     "4h": { "... same idea ..." }
   }
 
+- market_regime: compact market-wide context from Kraken candles:
+  {
+    "regime": "risk_on" | "risk_off" | "chop" | "mixed" | "unknown",
+    "risk_mode": "normal" | "cautious" | "defensive",
+    "directional_bias": "long" | "short_or_cash" | "neutral",
+    "risk_multiplier": float,
+    "breadth": {"bull_pct": float, "bear_pct": float, "range_pct": float},
+    "anchors": {"XBT-EUR": {...}, "ETH-EUR": {...}},
+    "current_symbol": {...},
+    "flags": ["MARKET_RISK_ON", "MARKET_RISK_OFF", "MARKET_CHOP", "..."]
+  }
+
 --- COIN PROFILE (LEARNING LAYER) ---
 
 You also receive a field "coin_profile". It is always present, but it can be empty {}.
@@ -412,7 +424,12 @@ Use learning_metrics when present:
 - trade_open below 5 means real-trade evidence is still thin; do not overtrust winrate or pnl.
 
 Step 4 - Sentiment layer.
-Sentiment is a small adjustment only:
+Market regime and sentiment are adjustment layers only:
+- market_regime risk_off makes new LONGs harder to justify unless the coin is clearly strong and the chart is excellent.
+- market_regime risk_on can support clean LONG setups, but cannot rescue weak chart quality.
+- market_regime chop lowers entry confidence and favors HOLD on noisy or late entries.
+- COIN_STRONG_AGAINST_WEAK_MARKET can support a clean setup, but it is not enough by itself.
+- COIN_WEAK_AGAINST_STRONG_MARKET is a warning flag.
 - Bearish macro + bearish coin sentiment makes LONG harder to justify unless the technical setup is very strong.
 - Bullish macro + bullish coin sentiment can support a clean setup, but cannot rescue a messy one.
 - Mixed sentiment lowers confidence and favors HOLD in borderline cases.
@@ -483,6 +500,7 @@ def _build_dataset(
     candles_1h: list,
     candles_4h: list,
     chart_features: Dict[str, Any] | None = None,
+    market_regime: Dict[str, Any] | None = None,
     coin_profile: Dict[str, Any] | None = None,
     sentiment: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
@@ -510,6 +528,7 @@ def _build_dataset(
         "candles_1h": candles_1h,
         "candles_4h": candles_4h,
         "chart_features": chart_features or {},
+        "market_regime": market_regime or {},
         "coin_profile": coin_profile or {},
         "sentiment": sentiment or {},
     }
@@ -548,6 +567,7 @@ def get_gpt_decision(
     candles_1h: list,
     candles_4h: list,
     chart_features: dict | None = None,
+    market_regime: dict | None = None,
     coin_profile: dict | None = None,
     sentiment: dict | None = None,
     *,
@@ -587,6 +607,7 @@ def get_gpt_decision(
         candles_1h=candles_1h,
         candles_4h=candles_4h,
         chart_features=chart_features,
+        market_regime=market_regime,
         coin_profile=coin_profile,
         sentiment=sentiment,
     )

@@ -30,6 +30,7 @@ DEFAULT_PROFILE_PROPOSALS = os.path.join("analysis", "strategy_events", "latest_
 DEFAULT_GPT_REPORT = os.path.join("analysis", "gpt_decisions", "latest_gpt_decision_report.json")
 DEFAULT_CHART_REPORT = os.path.join("analysis", "chart_vision", "latest_chart_vision_report.json")
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
+DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -70,12 +71,14 @@ class BotAdvisor:
         gpt_report_path: str = DEFAULT_GPT_REPORT,
         chart_report_path: str = DEFAULT_CHART_REPORT,
         alert_report_path: str = DEFAULT_ALERT_REPORT,
+        market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
     ):
         self.learning_report_path = learning_report_path
         self.profile_proposals_path = profile_proposals_path
         self.gpt_report_path = gpt_report_path
         self.chart_report_path = chart_report_path
         self.alert_report_path = alert_report_path
+        self.market_regime_path = market_regime_path
 
     def build_advice(self) -> dict:
         reports = {
@@ -84,6 +87,7 @@ class BotAdvisor:
             "gpt": load_json(self.gpt_report_path),
             "chart_vision": load_json(self.chart_report_path),
             "alerts": load_json(self.alert_report_path),
+            "market_regime": load_json(self.market_regime_path),
         }
 
         recommendations = []
@@ -91,6 +95,7 @@ class BotAdvisor:
         recommendations.extend(self._runtime_recommendations(reports["alerts"]))
         recommendations.extend(self._gpt_decision_recommendations(reports["gpt"]))
         recommendations.extend(self._chart_vision_recommendations(reports["chart_vision"]))
+        recommendations.extend(self._market_regime_recommendations(reports["market_regime"]))
         recommendations.extend(self._profile_recommendations(reports["profiles"]))
         recommendations.extend(self._learning_recommendations(reports["learning"]))
 
@@ -106,6 +111,7 @@ class BotAdvisor:
                 "gpt_report": self.gpt_report_path,
                 "chart_vision_report": self.chart_report_path,
                 "alert_report": self.alert_report_path,
+                "market_regime_report": self.market_regime_path,
             },
         }
 
@@ -273,6 +279,44 @@ class BotAdvisor:
                 recommendation="Review candle quality and late-trend thresholds before allowing looser entries.",
                 requires_human_approval=True,
                 evidence={"clean_or_pullback_but_negative_cf": clean_negative},
+            ))
+        return items
+
+    def _market_regime_recommendations(self, regime_report: dict) -> list[dict]:
+        if regime_report.get("_missing") or regime_report.get("_error"):
+            return []
+        regime = regime_report.get("regime", "unknown")
+        risk_mode = regime_report.get("risk_mode", "normal")
+        breadth = regime_report.get("breadth", {}) or {}
+        flags = regime_report.get("flags", []) or []
+        items = []
+
+        if regime == "risk_off":
+            items.append(self._rec(
+                priority="medium",
+                area="market_regime",
+                finding="Market regime is risk_off.",
+                recommendation="Keep long entries selective; review whether future risk engine should cap new longs in this regime.",
+                requires_human_approval=True,
+                evidence={"risk_mode": risk_mode, "breadth": breadth, "flags": flags},
+            ))
+        elif regime == "chop":
+            items.append(self._rec(
+                priority="medium",
+                area="market_regime",
+                finding="Market regime is chop.",
+                recommendation="Expect more false starts; use chart vision and GPT veto analytics before loosening entries.",
+                requires_human_approval=False,
+                evidence={"risk_mode": risk_mode, "breadth": breadth, "flags": flags},
+            ))
+        elif regime == "unknown":
+            items.append(self._rec(
+                priority="low",
+                area="market_regime",
+                finding="Market regime has insufficient data.",
+                recommendation="Verify candles_kraken has enough 4h candles for anchors and tracked pairs.",
+                requires_human_approval=False,
+                evidence={"breadth": breadth, "flags": flags},
             ))
         return items
 

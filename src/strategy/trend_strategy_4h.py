@@ -43,6 +43,7 @@ from datetime import datetime
 from collections import defaultdict
 from src.sentiment.external_sentiment import get_external_sentiment
 from src.analysis.coin_profile_loader import load_coin_profile_json
+from src.analysis.market_regime import MarketRegimeAnalyzer
 from src.meltdown_manager.meltdown_manager import MeltdownManager
 
 
@@ -128,6 +129,7 @@ class TrendStrategy4H:
         :param config_path:    niet gebruikt; we lezen rechtstreeks uit yaml_config
         """
         cfg = yaml_config.get("trend_strategy_4h", {})
+        self.config = cfg
         log_file = cfg.get("log_file", "logs/trend_strategy_4h.log")
         self.logger = setup_logger("trend_strategy_4h", log_file, logging.INFO)
 
@@ -141,6 +143,7 @@ class TrendStrategy4H:
             if self.meltdown_enabled
             else None
         )
+        self.market_regime_analyzer = MarketRegimeAnalyzer(db=self.db_manager)
         # === YAML settings ===
         self.enabled = bool(cfg.get("enabled", False))
 
@@ -783,6 +786,22 @@ class TrendStrategy4H:
                     "chain": {"label": "neutral", "score": None, "source": "sentiment_error"},
                 }
 
+            try:
+                market_regime = self.market_regime_analyzer.build_regime(current_symbol=symbol)
+            except Exception as e:
+                self.logger.warning("[%s] market_regime build failed: %s", symbol, e)
+                market_regime = {
+                    "source": "error",
+                    "regime": "unknown",
+                    "risk_mode": "normal",
+                    "directional_bias": "neutral",
+                    "risk_multiplier": 1.0,
+                    "breadth": {},
+                    "anchors": {},
+                    "current_symbol": {"symbol": symbol},
+                    "flags": ["MARKET_REGIME_ERROR"],
+                }
+
             last_error = None
             self._daily_stats["gpt_calls"] += 1
             llm_max_attempts = int(self.config.get("llm_max_attempts", 3))
@@ -809,6 +828,7 @@ class TrendStrategy4H:
                         candles_1h=candles_1h,
                         candles_4h=candles_4h,
                         chart_features=chart_features,
+                        market_regime=market_regime,
                         coin_profile=coin_profile,
                         sentiment=sentiment,  # ✅ juiste naam
                         db=self.db_manager,
@@ -854,6 +874,7 @@ class TrendStrategy4H:
                 "learning_effect": decision.get("learning_effect"),
                 "risk_notes": decision.get("risk_notes"),
                 "chart_features": chart_features,
+                "market_regime": market_regime,
             }
 
             # -------------------------------------------------

@@ -54,6 +54,16 @@ Voorbeelden:
 
 Doel: marktbreed bepalen of de bot agressief, normaal of defensief moet zijn.
 
+Module:
+- `src.analysis.market_regime`
+
+Status:
+- V1 leest Kraken 4h candles voor BTC/ETH anchors en alle Kraken pairs;
+- bepaalt `risk_on`, `risk_off`, `chop`, `mixed` of `unknown`;
+- schrijft `analysis/market_regime/latest_market_regime.json`;
+- wordt meegestuurd naar GPT en gelogd in `strategy_events.features_json`;
+- daily advisor gebruikt dit als advieslaag, nog niet als autonome hard block.
+
 Te bouwen signalen:
 - risk-on / risk-off;
 - BTC/ETH trend als marktanker;

@@ -164,6 +164,11 @@ trend_strategy_4h:
     macro_provider: "fear_greed"   # of "dummy"
     http_timeout_sec: 4
 
+  market_regime:
+    enabled: true
+    cache_ttl_sec: 300
+    anchor_symbols: ["XBT-EUR", "ETH-EUR"]
+
   sideways_filter:
     enabled: true
 

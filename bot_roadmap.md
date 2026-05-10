@@ -137,6 +137,7 @@ Stap 2 is de advieslaag: de bot leest zijn eigen rapporten en maakt daar conclus
 
 Module:
 - `src.analysis.bot_advisor`
+- `src.analysis.daily_analysis_job` als centrale dagrun die learning, GPT-decision report, chart-vision QA, health alerts en advisor achter elkaar ververst.
 
 Inputs:
 - learning report;
@@ -147,6 +148,7 @@ Inputs:
 
 Output:
 - `analysis/bot_advisor/latest_bot_advice.json`
+- `analysis/daily/latest_daily_analysis_job.json`
 
 Principe:
 - advisor mag conclusies trekken en aanbevelingen doen;

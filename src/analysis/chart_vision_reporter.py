@@ -71,23 +71,30 @@ class ChartVisionReporter:
     def __init__(self, db: Optional[DatabaseManager] = None):
         self.db = db or DatabaseManager(db_path=DB_FILE)
 
-    def build_report(self, limit: int = 5000, symbol: Optional[str] = None) -> dict:
-        events = self._load_events(limit=limit, symbol=symbol)
+    def build_report(self, limit: int = 5000, symbol: Optional[str] = None, structured_only: bool = False) -> dict:
+        events = self._load_events(limit=limit, symbol=symbol, structured_only=structured_only)
         report = self._summarize(events)
         report["meta"] = {
             "loaded_events": len(events),
             "limit": limit,
             "symbol": symbol,
+            "structured_only": structured_only,
         }
         return report
 
-    def _load_events(self, limit: int, symbol: Optional[str]) -> list[dict]:
+    def _load_events(self, limit: int, symbol: Optional[str], structured_only: bool) -> list[dict]:
         params: list[Any] = []
         where = [
             "event_type='gpt_decision'",
             "outcome_status='labeled'",
             "json_extract(features_json,'$.chart_features.1h.structure_label') IS NOT NULL",
         ]
+        if structured_only:
+            where.extend([
+                "json_extract(features_json,'$.scores.entry') IS NOT NULL",
+                "json_extract(features_json,'$.primary_veto') IS NOT NULL",
+                "gpt_confidence > 0",
+            ])
         if symbol:
             where.append("symbol = ?")
             params.append(symbol)
@@ -297,12 +304,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--limit", type=int, default=5000, help="Max labeled GPT events to read.")
     parser.add_argument("--symbol", type=str, default=None, help="Optional symbol filter.")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Output directory.")
+    parser.add_argument("--structured-only", action="store_true", help="Only include events with structured GPT scores/veto.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     db = DatabaseManager(db_path=DB_FILE)
     try:
         reporter = ChartVisionReporter(db=db)
-        report = reporter.build_report(limit=args.limit, symbol=args.symbol)
+        report = reporter.build_report(
+            limit=args.limit,
+            symbol=args.symbol,
+            structured_only=args.structured_only,
+        )
     finally:
         db.close_connection()
 

@@ -19,6 +19,7 @@ from typing import Any, Iterable, Optional
 from dotenv import load_dotenv
 
 from src.analysis.bot_alerts_reporter import format_alert_message
+from src.analysis.recommendation_registry import RecommendationRegistry
 from src.notifier.telegram_notifier import TelegramNotifier
 
 
@@ -807,16 +808,26 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     advice = advisor.build_advice()
     output_path = os.path.join(args.output_dir, DEFAULT_LATEST_FILE)
     write_json(output_path, advice)
+    registry_summary = sync_registry(advice)
     sent = send_telegram(advice) if args.send else False
 
     result = {
         "status": advice.get("status"),
         "summary": advice.get("summary"),
         "output_path": output_path,
+        "registry": {
+            "total": registry_summary.get("total", 0),
+            "by_status": registry_summary.get("by_status", {}),
+            "active": len(registry_summary.get("active", [])),
+        },
         "telegram_sent": sent,
     }
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
+
+
+def sync_registry(advice: dict) -> dict:
+    return RecommendationRegistry().sync_from_advice(advice)
 
 
 if __name__ == "__main__":

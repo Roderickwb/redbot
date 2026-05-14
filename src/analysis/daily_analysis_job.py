@@ -24,6 +24,7 @@ from src.analysis.bot_advisor import (
     DEFAULT_LATEST_FILE as ADVISOR_LATEST_FILE,
     DEFAULT_OUTPUT_DIR as ADVISOR_OUTPUT_DIR,
     send_telegram as send_advice_telegram,
+    sync_registry as sync_advice_registry,
     write_json as write_advisor_json,
 )
 from src.analysis.bot_alerts_reporter import (
@@ -282,12 +283,18 @@ def _build_advisor(send_advice: bool) -> dict:
     advice = BotAdvisor().build_advice()
     output_path = os.path.join(ADVISOR_OUTPUT_DIR, ADVISOR_LATEST_FILE)
     write_advisor_json(output_path, advice)
+    registry_summary = sync_advice_registry(advice)
     sent = send_advice_telegram(advice) if send_advice else False
 
     return {
         "status": advice.get("status"),
         "summary": advice.get("summary"),
         "output_path": output_path,
+        "registry": {
+            "total": registry_summary.get("total", 0),
+            "by_status": registry_summary.get("by_status", {}),
+            "active": len(registry_summary.get("active", [])),
+        },
         "telegram_sent": sent,
     }
 

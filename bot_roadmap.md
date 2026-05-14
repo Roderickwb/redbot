@@ -217,6 +217,7 @@ Stap 2 is de advieslaag: de bot leest zijn eigen rapporten en maakt daar conclus
 Module:
 - `src.analysis.bot_advisor`
 - `src.analysis.daily_analysis_job` als centrale dagrun die learning, GPT-decision report, chart-vision QA, health alerts en advisor achter elkaar ververst.
+- `src.analysis.recommendation_registry` als approval gate voor voorgestelde verbeteringen.
 
 Inputs:
 - learning report;
@@ -230,11 +231,14 @@ Inputs:
 Output:
 - `analysis/bot_advisor/latest_bot_advice.json`
 - `analysis/daily/latest_daily_analysis_job.json`
+- `analysis/recommendations/recommendation_registry.json`
+- `analysis/recommendations/latest_recommendation_registry_summary.json`
 
 Principe:
 - advisor mag conclusies trekken en aanbevelingen doen;
 - advisor leest ook shadow-model resultaten en vertaalt die naar promote/reject/wait adviezen;
 - advisor leest ML Edge Model readiness en metrics;
+- recommendation registry bewaart aanbevelingen met status `proposed`, `approved`, `rejected` of `auto_applied`;
 - advisor past nog niets automatisch aan;
 - adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
 

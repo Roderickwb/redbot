@@ -50,6 +50,16 @@ Voorbeelden:
 - OPEN ondanks `COUNTERFACTUAL_EDGE_NEGATIVE`, daarna verlies;
 - `FILTER_REVIEW` cases die toch goede kansen bleken.
 
+Aanvullende module:
+- `src.analysis.opportunity_reporter`
+
+Doel:
+- alle long- en short-kandidaten analyseren;
+- zien wanneer GPT HOLD of OPEN kiest;
+- meten of HOLD achteraf beschermend was of juist gemiste R opleverde;
+- meten of OPEN achteraf goed of slecht was;
+- patronen vinden per coin, richting, regime, veto, chart-label en entry timing.
+
 ## 3. Market Regime Layer
 
 Doel: marktbreed bepalen of de bot agressief, normaal of defensief moet zijn.

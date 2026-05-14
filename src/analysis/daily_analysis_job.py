@@ -51,6 +51,12 @@ from src.analysis.market_regime import (
     DEFAULT_OUTPUT_DIR as REGIME_OUTPUT_DIR,
     write_json as write_regime_json,
 )
+from src.analysis.opportunity_reporter import (
+    OpportunityReporter,
+    DEFAULT_LATEST_FILE as OPPORTUNITY_LATEST_FILE,
+    DEFAULT_OUTPUT_DIR as OPPORTUNITY_OUTPUT_DIR,
+    write_json as write_opportunity_json,
+)
 from src.analysis.strategy_learning_job import run_strategy_learning_job
 from src.config.config import DB_FILE
 from src.database_manager.database_manager import DatabaseManager
@@ -180,6 +186,28 @@ def _build_market_regime_report() -> dict:
     }
 
 
+def _build_opportunity_report(limit: int) -> dict:
+    db = DatabaseManager(db_path=DB_FILE)
+    try:
+        report = OpportunityReporter(db=db).build_report(limit=limit)
+    finally:
+        db.close_connection()
+
+    output_path = os.path.join(OPPORTUNITY_OUTPUT_DIR, OPPORTUNITY_LATEST_FILE)
+    write_opportunity_json(output_path, report)
+    return {
+        "loaded_candidates": report.get("meta", {}).get("loaded_candidates", 0),
+        "output_path": output_path,
+        "hold_rate_pct": report.get("totals", {}).get("hold_rate_pct", 0),
+        "open_rate_pct": report.get("totals", {}).get("open_rate_pct", 0),
+        "cf_avg_r": report.get("totals", {}).get("cf_avg_r", 0),
+        "attention_cases": {
+            key: len(value)
+            for key, value in (report.get("attention_cases") or {}).items()
+        },
+    }
+
+
 def _build_advisor(send_advice: bool) -> dict:
     advice = BotAdvisor().build_advice()
     output_path = os.path.join(ADVISOR_OUTPUT_DIR, ADVISOR_LATEST_FILE)
@@ -235,6 +263,9 @@ def run_daily_analysis_job(
     )
     steps["market_regime"] = _run_step(
         lambda: _build_market_regime_report(),
+    )
+    steps["opportunity_report"] = _run_step(
+        lambda: _build_opportunity_report(limit=report_limit),
     )
     steps["bot_advisor"] = _run_step(
         lambda: _build_advisor(send_advice=send_advice),

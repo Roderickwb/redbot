@@ -31,6 +31,7 @@ DEFAULT_GPT_REPORT = os.path.join("analysis", "gpt_decisions", "latest_gpt_decis
 DEFAULT_CHART_REPORT = os.path.join("analysis", "chart_vision", "latest_chart_vision_report.json")
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
+DEFAULT_OPPORTUNITY_REPORT = os.path.join("analysis", "opportunities", "latest_opportunity_report.json")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -72,6 +73,7 @@ class BotAdvisor:
         chart_report_path: str = DEFAULT_CHART_REPORT,
         alert_report_path: str = DEFAULT_ALERT_REPORT,
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
+        opportunity_path: str = DEFAULT_OPPORTUNITY_REPORT,
     ):
         self.learning_report_path = learning_report_path
         self.profile_proposals_path = profile_proposals_path
@@ -79,6 +81,7 @@ class BotAdvisor:
         self.chart_report_path = chart_report_path
         self.alert_report_path = alert_report_path
         self.market_regime_path = market_regime_path
+        self.opportunity_path = opportunity_path
 
     def build_advice(self) -> dict:
         reports = {
@@ -88,6 +91,7 @@ class BotAdvisor:
             "chart_vision": load_json(self.chart_report_path),
             "alerts": load_json(self.alert_report_path),
             "market_regime": load_json(self.market_regime_path),
+            "opportunities": load_json(self.opportunity_path),
         }
 
         recommendations = []
@@ -96,6 +100,7 @@ class BotAdvisor:
         recommendations.extend(self._gpt_decision_recommendations(reports["gpt"]))
         recommendations.extend(self._chart_vision_recommendations(reports["chart_vision"]))
         recommendations.extend(self._market_regime_recommendations(reports["market_regime"]))
+        recommendations.extend(self._opportunity_recommendations(reports["opportunities"]))
         recommendations.extend(self._profile_recommendations(reports["profiles"]))
         recommendations.extend(self._learning_recommendations(reports["learning"]))
 
@@ -112,6 +117,7 @@ class BotAdvisor:
                 "chart_vision_report": self.chart_report_path,
                 "alert_report": self.alert_report_path,
                 "market_regime_report": self.market_regime_path,
+                "opportunity_report": self.opportunity_path,
             },
         }
 
@@ -318,6 +324,76 @@ class BotAdvisor:
                 requires_human_approval=False,
                 evidence={"breadth": breadth, "flags": flags},
             ))
+        return items
+
+    def _opportunity_recommendations(self, opportunity_report: dict) -> list[dict]:
+        if opportunity_report.get("_missing") or opportunity_report.get("_error"):
+            return []
+        meta = opportunity_report.get("meta", {}) or {}
+        totals = opportunity_report.get("totals", {}) or {}
+        cases = opportunity_report.get("attention_cases", {}) or {}
+        by_regime_direction = opportunity_report.get("by_regime_direction", {}) or {}
+        items = []
+
+        loaded = _safe_int(meta.get("loaded_candidates"))
+        hold_rate = _safe_float(totals.get("hold_rate_pct"))
+        cf_avg_r = _safe_float(totals.get("cf_avg_r"))
+        held_positive = len(cases.get("held_positive_opportunities", []) or [])
+        held_large = len(cases.get("held_large_positive_opportunities", []) or [])
+        risk_off_short = by_regime_direction.get("risk_off|short", {}) or {}
+
+        if loaded < 100:
+            items.append(self._rec(
+                priority="medium",
+                area="opportunities",
+                finding=f"Opportunity sample is still small ({loaded} labeled candidates).",
+                recommendation="Use this report for diagnostics, but wait for more labeled long/short candidates before loosening live rules.",
+                requires_human_approval=False,
+                evidence={"loaded_candidates": loaded},
+            ))
+
+        if loaded >= 20 and hold_rate >= 90.0 and cf_avg_r > 0.25:
+            items.append(self._rec(
+                priority="medium",
+                area="opportunities",
+                finding=f"Candidates are mostly held ({hold_rate}%) while counterfactual average R is positive ({cf_avg_r}).",
+                recommendation="Review vetoes/chart labels by direction and regime before changing live rules.",
+                requires_human_approval=True,
+                evidence={"hold_rate_pct": hold_rate, "cf_avg_r": cf_avg_r},
+            ))
+
+        if held_large >= 5:
+            items.append(self._rec(
+                priority="medium",
+                area="opportunities",
+                finding=f"{held_large} held candidates later had >= 1.0R counterfactual outcomes.",
+                recommendation="Inspect common veto/structure/regime patterns; likely candidate for shadow prompt or chart-label tuning.",
+                requires_human_approval=True,
+                evidence={"held_large_positive_opportunities": held_large},
+            ))
+        elif held_positive >= 10:
+            items.append(self._rec(
+                priority="low",
+                area="opportunities",
+                finding=f"{held_positive} held candidates later had positive counterfactual outcomes.",
+                recommendation="Track whether this persists after chart-label and prompt changes.",
+                requires_human_approval=False,
+                evidence={"held_positive_opportunities": held_positive},
+            ))
+
+        if risk_off_short:
+            ro_short_events = _safe_int(risk_off_short.get("events"))
+            ro_short_hold_rate = _safe_float(risk_off_short.get("hold_rate_pct"))
+            ro_short_cf = _safe_float(risk_off_short.get("cf_avg_r"))
+            if ro_short_events >= 20 and ro_short_hold_rate >= 90.0 and ro_short_cf > 0.25:
+                items.append(self._rec(
+                    priority="medium",
+                    area="opportunities",
+                    finding=f"Risk-off shorts are mostly held ({ro_short_hold_rate}%) while cf_avg_r is positive ({ro_short_cf}).",
+                    recommendation="Investigate short-specific vetoes and chart labels; this is the first place to tune after enough samples.",
+                    requires_human_approval=True,
+                    evidence={"regime_direction": "risk_off|short", "events": ro_short_events, "cf_avg_r": ro_short_cf},
+                ))
         return items
 
     def _profile_recommendations(self, profiles_report: dict) -> list[dict]:

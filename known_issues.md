@@ -1,5 +1,9 @@
 # Known Issues
 
+
+## “End-state check: bouwt dit richting een autonome trading bot die per coin/richting/regime leert, of lossen we alleen het symptoom van vandaag op?” ##
+
+
 ## Executor restart around hourly candle
 
 After a bot restart around an hourly boundary, `Executor.last_closed_ts` is empty because it is in-memory state.

@@ -334,6 +334,7 @@ class BotAdvisor:
         cases = opportunity_report.get("attention_cases", {}) or {}
         by_regime_direction = opportunity_report.get("by_regime_direction", {}) or {}
         pattern_summary = opportunity_report.get("pattern_summary", {}) or {}
+        pattern_contrast = opportunity_report.get("pattern_contrast", []) or []
         items = []
 
         loaded = _safe_int(meta.get("loaded_candidates"))
@@ -410,6 +411,33 @@ class BotAdvisor:
                     "top_held_large_positive": large_patterns[:3],
                     "top_protected_holds": protected_patterns[:3],
                 },
+            ))
+
+        mixed_patterns = [
+            row for row in pattern_contrast
+            if row.get("interpretation") == "mixed_high_value_high_risk"
+        ]
+        conservative_patterns = [
+            row for row in pattern_contrast
+            if row.get("interpretation") == "possible_too_conservative"
+        ]
+        if mixed_patterns:
+            items.append(self._rec(
+                priority="medium",
+                area="opportunities",
+                finding="Top missed-opportunity patterns are mixed: they also protected the bot often.",
+                recommendation="Do not loosen these patterns globally; add finer chart features such as directional continuation, breakdown quality and retest quality.",
+                requires_human_approval=True,
+                evidence={"patterns": mixed_patterns[:5]},
+            ))
+        if conservative_patterns:
+            items.append(self._rec(
+                priority="medium",
+                area="opportunities",
+                finding="Some patterns look possibly too conservative.",
+                recommendation="Review these first for shadow-rule or prompt experiments.",
+                requires_human_approval=True,
+                evidence={"patterns": conservative_patterns[:5]},
             ))
         return items
 

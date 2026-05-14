@@ -204,6 +204,7 @@ class OpportunityReporter:
             "by_regime_direction": self._finalize_mapping(by_regime_direction),
             "top_attention": self._top_attention(by_symbol_direction, by_veto, by_structure_1h, by_entry_timing_1h),
             "pattern_summary": self._pattern_summary(pattern_buckets),
+            "pattern_contrast": self._pattern_contrast(pattern_buckets),
             "attention_cases": attention_cases,
         }
 
@@ -313,9 +314,53 @@ class OpportunityReporter:
 
     def _pattern_summary(self, pattern_buckets: dict) -> dict:
         return {
-            name: self._top(self._finalize_mapping(bucket), "events", reverse=True)
+            name: self._top_full(self._finalize_mapping(bucket), "events", reverse=True)
             for name, bucket in pattern_buckets.items()
         }
+
+    def _pattern_contrast(self, pattern_buckets: dict) -> list[dict]:
+        held_large = self._finalize_mapping(pattern_buckets.get("held_large_positive", {}))
+        protected = self._finalize_mapping(pattern_buckets.get("protected_holds", {}))
+        held_positive = self._finalize_mapping(pattern_buckets.get("held_positive", {}))
+
+        keys = sorted(set(held_large) | set(protected) | set(held_positive))
+        rows = []
+        for key in keys:
+            large_n = _safe_int((held_large.get(key) or {}).get("events"))
+            protected_n = _safe_int((protected.get(key) or {}).get("events"))
+            positive_n = _safe_int((held_positive.get(key) or {}).get("events"))
+            total_signal = large_n + protected_n
+            if total_signal == 0:
+                continue
+
+            rows.append({
+                "pattern": key,
+                "held_positive": positive_n,
+                "held_large_positive": large_n,
+                "protected_holds": protected_n,
+                "large_vs_protected_ratio": round(large_n / protected_n, 4) if protected_n else None,
+                "large_share_pct": _pct(large_n, total_signal),
+                "interpretation": self._interpret_pattern_contrast(large_n, protected_n),
+            })
+
+        rows.sort(
+            key=lambda row: (
+                row["held_large_positive"],
+                row["large_share_pct"],
+                -row["protected_holds"],
+            ),
+            reverse=True,
+        )
+        return rows[:25]
+
+    def _interpret_pattern_contrast(self, large_n: int, protected_n: int) -> str:
+        if large_n >= 5 and protected_n >= 5:
+            return "mixed_high_value_high_risk"
+        if large_n >= 5 and protected_n < 3:
+            return "possible_too_conservative"
+        if protected_n >= 5 and large_n < 3:
+            return "protective_hold_pattern"
+        return "insufficient_or_mixed"
 
     def _direction_for(self, event: dict) -> str:
         signal = str(event.get("algo_signal") or "")
@@ -370,6 +415,14 @@ class OpportunityReporter:
         ]
         rows.sort(key=lambda row: row[metric], reverse=reverse)
         return [row for row in rows if row[metric] != 0][:10]
+
+    def _top_full(self, mapping: dict, metric: str, reverse: bool = True) -> list[dict]:
+        rows = [
+            {"name": name, **values}
+            for name, values in mapping.items()
+        ]
+        rows.sort(key=lambda row: row.get(metric, 0), reverse=reverse)
+        return [row for row in rows if row.get(metric, 0) != 0][:10]
 
     def _parse_json(self, raw: Any) -> dict:
         if not raw:

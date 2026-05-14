@@ -71,6 +71,7 @@ from src.analysis.opportunity_reporter import (
     DEFAULT_OUTPUT_DIR as OPPORTUNITY_OUTPUT_DIR,
     write_json as write_opportunity_json,
 )
+from src.analysis.recommendation_registry import RecommendationRegistry
 from src.analysis.shadow_model_evaluator import (
     ShadowModelEvaluator,
     DEFAULT_LATEST_FILE as SHADOW_LATEST_FILE,
@@ -282,11 +283,24 @@ def _build_opportunity_report(limit: int) -> dict:
     }
 
 
-def _build_advisor(send_advice: bool) -> dict:
+def _build_advisor(
+    send_advice: bool,
+    cleanup_registry: bool,
+    cleanup_missing_count: int,
+    cleanup_stale_days: int,
+) -> dict:
     advice = BotAdvisor().build_advice()
     output_path = os.path.join(ADVISOR_OUTPUT_DIR, ADVISOR_LATEST_FILE)
     write_advisor_json(output_path, advice)
     registry_summary = sync_advice_registry(advice)
+    cleanup_result = None
+    if cleanup_registry:
+        cleanup_result = RecommendationRegistry().cleanup(
+            apply=True,
+            missing_count=cleanup_missing_count,
+            stale_days=cleanup_stale_days,
+        )
+        registry_summary = RecommendationRegistry().summary()
     sent = send_advice_telegram(advice) if send_advice else False
 
     return {
@@ -298,6 +312,7 @@ def _build_advisor(send_advice: bool) -> dict:
             "by_status": registry_summary.get("by_status", {}),
             "active": len(registry_summary.get("active", [])),
         },
+        "registry_cleanup": cleanup_result,
         "telegram_sent": sent,
     }
 
@@ -344,6 +359,9 @@ def run_daily_analysis_job(
     send_health: bool = False,
     send_experiments: bool = False,
     send_control: bool = False,
+    cleanup_registry: bool = False,
+    cleanup_missing_count: int = 2,
+    cleanup_stale_days: int = 14,
     force_health_send: bool = False,
     structured_chart_only: bool = True,
     output_dir: str = DEFAULT_OUTPUT_DIR,
@@ -399,7 +417,12 @@ def run_daily_analysis_job(
         lambda: _build_shadow_experiment_results(hours=hours),
     )
     steps["bot_advisor"] = _run_step(
-        lambda: _build_advisor(send_advice=send_advice),
+        lambda: _build_advisor(
+            send_advice=send_advice,
+            cleanup_registry=cleanup_registry,
+            cleanup_missing_count=cleanup_missing_count,
+            cleanup_stale_days=cleanup_stale_days,
+        ),
     )
 
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]
@@ -425,6 +448,9 @@ def run_daily_analysis_job(
             "send_health": send_health,
             "send_experiments": send_experiments,
             "send_control": send_control,
+            "cleanup_registry": cleanup_registry,
+            "cleanup_missing_count": cleanup_missing_count,
+            "cleanup_stale_days": cleanup_stale_days,
             "force_health_send": force_health_send,
         },
         "steps": steps,
@@ -476,6 +502,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--send-health", action="store_true", help="Also send the health digest once per day.")
     parser.add_argument("--send-experiments", action="store_true", help="Also send experiment planner digest to Telegram.")
     parser.add_argument("--send-control", action="store_true", help="Also send compact daily control report to Telegram.")
+    parser.add_argument("--cleanup-registry", action="store_true", help="Archive stale/missing proposed recommendations after advisor sync.")
+    parser.add_argument("--cleanup-missing-count", type=int, default=2, help="Archive proposed recommendations missing from this many syncs.")
+    parser.add_argument("--cleanup-stale-days", type=int, default=14, help="Archive proposed recommendations not seen for this many days.")
     parser.add_argument("--force-health-send", action="store_true", help="Ignore daily health digest send marker.")
     parser.add_argument("--include-unstructured-chart", action="store_true", help="Include older/fallback chart events without structured scores.")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Output directory for the daily job summary.")
@@ -492,6 +521,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         send_health=args.send_health,
         send_experiments=args.send_experiments,
         send_control=args.send_control,
+        cleanup_registry=args.cleanup_registry,
+        cleanup_missing_count=args.cleanup_missing_count,
+        cleanup_stale_days=args.cleanup_stale_days,
         force_health_send=args.force_health_send,
         structured_chart_only=not args.include_unstructured_chart,
         output_dir=args.output_dir,

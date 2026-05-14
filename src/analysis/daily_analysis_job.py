@@ -51,6 +51,11 @@ from src.analysis.market_regime import (
     DEFAULT_OUTPUT_DIR as REGIME_OUTPUT_DIR,
     write_json as write_regime_json,
 )
+from src.analysis.ml_training_dataset import (
+    MlTrainingDatasetBuilder,
+    DEFAULT_OUTPUT_DIR as ML_DATASET_OUTPUT_DIR,
+    write_dataset as write_ml_dataset,
+)
 from src.analysis.opportunity_reporter import (
     OpportunityReporter,
     DEFAULT_LATEST_FILE as OPPORTUNITY_LATEST_FILE,
@@ -186,6 +191,27 @@ def _build_market_regime_report() -> dict:
     }
 
 
+def _build_ml_training_dataset(limit: int, structured_only: bool) -> dict:
+    db = DatabaseManager(db_path=DB_FILE)
+    try:
+        payload = MlTrainingDatasetBuilder(db=db).build_dataset(
+            limit=limit,
+            event_type="gpt_decision",
+            structured_only=structured_only,
+        )
+    finally:
+        db.close_connection()
+
+    jsonl_path, summary_path = write_ml_dataset(ML_DATASET_OUTPUT_DIR, payload)
+    return {
+        "rows": payload.get("meta", {}).get("rows", 0),
+        "jsonl_path": jsonl_path,
+        "summary_path": summary_path,
+        "by_action": payload.get("summary", {}).get("by_action", {}),
+        "by_direction": payload.get("summary", {}).get("by_direction", {}),
+    }
+
+
 def _build_opportunity_report(limit: int) -> dict:
     db = DatabaseManager(db_path=DB_FILE)
     try:
@@ -263,6 +289,12 @@ def run_daily_analysis_job(
     )
     steps["market_regime"] = _run_step(
         lambda: _build_market_regime_report(),
+    )
+    steps["ml_training_dataset"] = _run_step(
+        lambda: _build_ml_training_dataset(
+            limit=report_limit,
+            structured_only=structured_chart_only,
+        ),
     )
     steps["opportunity_report"] = _run_step(
         lambda: _build_opportunity_report(limit=report_limit),

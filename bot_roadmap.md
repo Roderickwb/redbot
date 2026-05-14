@@ -127,6 +127,25 @@ Te bouwen:
 
 Waarom: zonder shadow/backtest voelt elke promptverbetering als hoop. Met shadow/backtest kunnen we meten of een nieuwe brain echt beter is.
 
+## 7. ML Training Dataset Layer
+
+Doel: alle gelabelde beslissingen omzetten naar een stabiele dataset voor toekomstige ML.
+
+Module:
+- `src.analysis.ml_training_dataset`
+
+Status:
+- leest gelabelde `strategy_events`;
+- bouwt per event een ML-ready rij met action, outcome, counterfactual R, GPT-scores, market regime, chart features en coin-profile snapshot;
+- schrijft `analysis/ml_training/latest_strategy_event_dataset.jsonl`;
+- schrijft `analysis/ml_training/latest_strategy_event_dataset_summary.json`;
+- draait mee in `src.analysis.daily_analysis_job`.
+
+Waarom:
+- de huidige learning maakt al profielen en adviezen;
+- echte ML heeft een consistente trainingsset nodig;
+- deze laag maakt later shadow models mogelijk zonder live trading gedrag te wijzigen.
+
 ## Belangrijk Principe
 
 De bot moet niet te vroeg autonoom zijn in het aanpassen van regels. Eerst moeten observatie, labeling, rapportage en risk controls betrouwbaar zijn.
@@ -165,6 +184,7 @@ Inputs:
 - GPT decision report;
 - chart vision QA report;
 - bot alerts report.
+- ML training dataset summary.
 
 Output:
 - `analysis/bot_advisor/latest_bot_advice.json`
@@ -182,4 +202,5 @@ De volgorde blijft:
 4. beter risico beheren;
 5. sentiment/nieuws uitbreiden;
 6. prompt/strategy versies objectief vergelijken;
-7. pas daarna gecontroleerde autonome verbeteradviezen of rule updates.
+7. ML-ready dataset en shadow models bouwen;
+8. pas daarna gecontroleerde autonome verbeteradviezen of rule updates.

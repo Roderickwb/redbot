@@ -272,6 +272,23 @@ class TrendStrategy4H:
         except Exception as e:
             self.logger.warning("[strategy_event] kon event niet opslaan: %s", e)
 
+    def _coin_profile_snapshot(self, profile: Optional[dict]) -> dict:
+        """
+        Compacte audit-snapshot voor strategy_events.features_json.
+        Zo kunnen reporters later exact verklaren welke learning-flags GPT zag.
+        """
+        profile = profile or {}
+        return {
+            "source": profile.get("source") or profile.get("_source"),
+            "generated_at_utc": profile.get("generated_at_utc"),
+            "learning_confidence": profile.get("learning_confidence"),
+            "risk_multiplier": profile.get("risk_multiplier"),
+            "bias": profile.get("bias"),
+            "n_trades": profile.get("n_trades"),
+            "expectancy_R": profile.get("expectancy_R"),
+            "flags": profile.get("flags", []),
+            "learning_metrics": profile.get("learning_metrics", {}),
+        }
 
     def _log_strategy_event(
         self,
@@ -299,6 +316,8 @@ class TrendStrategy4H:
         features: Optional[dict] = None,
     ):
         profile = coin_profile or {}
+        event_features = dict(features or {})
+        event_features.setdefault("coin_profile", self._coin_profile_snapshot(profile))
         now_ms = int(time.time() * 1000)
         self._save_strategy_event({
             "timestamp": now_ms,
@@ -329,7 +348,7 @@ class TrendStrategy4H:
             "coin_profile_risk": profile.get("risk_multiplier"),
             "coin_profile_expectancy": profile.get("expectancy_R"),
             "coin_profile_n_trades": profile.get("n_trades"),
-            "features_json": features,
+            "features_json": event_features,
             "outcome_status": "pending",
         })
     # ---------------------------------------------------------

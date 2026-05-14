@@ -253,6 +253,7 @@ Principe:
 - experiment planner maakt experimenten bestuurbaar met approve/reject commands per experiment-id, gekoppeld aan de recommendation registry;
 - experiment planner kan een compacte Telegram digest sturen zodat de verbeterpipeline zonder JSON-inspectie te volgen is;
 - shadow experiment runner meet experimenten apart op historische replay en recente forward-shadow rows;
+- shadow experiment runner geeft verdicts en overlap-groepen, zodat dubbele patronen niet als onafhankelijk bewijs worden geteld;
 - advisor past nog niets automatisch aan;
 - adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
 

@@ -14,6 +14,7 @@ modify live trades.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import time
@@ -105,6 +106,8 @@ class ShadowExperimentRunner:
                 row for row in replay_rows
                 if _safe_int(row.get("timestamp")) >= forward_cutoff_ms
             ]
+            replay_results = self._metrics(replay_rows, exp)
+            forward_results = self._metrics(forward_rows, exp)
             results.append({
                 "experiment_id": exp.get("id"),
                 "status": exp.get("status"),
@@ -113,8 +116,11 @@ class ShadowExperimentRunner:
                 "pattern": (exp.get("evidence") or {}).get("pattern"),
                 "source": exp.get("source"),
                 "guardrails": exp.get("guardrails", []),
-                "replay_results": self._metrics(replay_rows, exp),
-                "forward_shadow_results": self._metrics(forward_rows, exp),
+                "verdict": self._verdict(exp, replay_results, forward_results),
+                "replay_signature": self._match_signature(replay_rows),
+                "forward_signature": self._match_signature(forward_rows),
+                "replay_results": replay_results,
+                "forward_shadow_results": forward_results,
             })
 
         return {
@@ -128,6 +134,7 @@ class ShadowExperimentRunner:
                 "include_waiting": include_waiting,
             },
             "summary": self._summary(results),
+            "overlap_groups": self._overlap_groups(results),
             "results": results,
         }
 
@@ -217,6 +224,59 @@ class ShadowExperimentRunner:
             "sample_event_ids": [row.get("id") for row in rows[:10]],
         }
 
+    def _match_signature(self, rows: list[dict]) -> str:
+        ids = sorted(str(row.get("id")) for row in rows if row.get("id") is not None)
+        if not ids:
+            return "empty"
+        raw = "|".join(ids)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+    def _verdict(self, experiment: dict, replay: dict, forward: dict) -> dict:
+        exp_type = experiment.get("experiment_type")
+        replay_verdict = self._window_verdict(exp_type, replay, min_matches=10)
+        forward_verdict = self._window_verdict(exp_type, forward, min_matches=10)
+        if forward.get("matches", 0) >= 10:
+            primary = forward_verdict
+            basis = "forward_shadow"
+        else:
+            primary = self._replay_only_verdict(replay_verdict)
+            basis = "replay_only"
+        return {
+            "primary": primary,
+            "basis": basis,
+            "replay": replay_verdict,
+            "forward": forward_verdict,
+        }
+
+    def _window_verdict(self, exp_type: Any, metrics: dict, min_matches: int) -> str:
+        matches = _safe_int(metrics.get("matches"))
+        avg_r = _safe_float(metrics.get("cf_avg_r"))
+        loss_rate = _safe_float(metrics.get("cf_loss_rate_pct"))
+        positive_rate = _safe_float(metrics.get("cf_positive_rate_pct"))
+        if matches < min_matches:
+            return "insufficient_sample"
+        if exp_type == "shadow_relax_entry_rule":
+            if avg_r >= 0.5 and positive_rate >= 60.0 and loss_rate <= 25.0:
+                return "promising_relax"
+            if avg_r <= 0.0 or loss_rate >= 45.0:
+                return "reject_relax"
+            return "mixed_relax"
+        if exp_type == "shadow_protection_rule":
+            if avg_r <= -0.15 and loss_rate >= 50.0:
+                return "protection_confirmed"
+            if avg_r >= 0.5 and positive_rate >= 60.0:
+                return "possibly_too_protective"
+            return "mixed_protection"
+        return "observed"
+
+    def _replay_only_verdict(self, replay_verdict: str) -> str:
+        mapping = {
+            "promising_relax": "promising_replay_needs_forward",
+            "protection_confirmed": "protective_replay_needs_forward",
+            "possibly_too_protective": "possible_overprotection_needs_forward",
+        }
+        return mapping.get(replay_verdict, replay_verdict)
+
     def _simulated_action(self, experiment: dict) -> str:
         exp_type = experiment.get("experiment_type")
         if exp_type == "shadow_relax_entry_rule":
@@ -228,15 +288,47 @@ class ShadowExperimentRunner:
     def _summary(self, results: list[dict]) -> dict:
         by_status = Counter(result.get("status") or "unknown" for result in results)
         by_type = Counter(result.get("experiment_type") or "unknown" for result in results)
+        by_verdict = Counter((result.get("verdict") or {}).get("primary") or "unknown" for result in results)
         replay_matches = sum(_safe_int((result.get("replay_results") or {}).get("matches")) for result in results)
         forward_matches = sum(_safe_int((result.get("forward_shadow_results") or {}).get("matches")) for result in results)
         return {
             "experiments": len(results),
             "by_status": dict(by_status),
             "by_type": dict(by_type),
+            "by_verdict": dict(by_verdict),
             "replay_matches": replay_matches,
             "forward_matches": forward_matches,
         }
+
+    def _overlap_groups(self, results: list[dict]) -> list[dict]:
+        grouped: dict[tuple[str, str], list[dict]] = {}
+        for result in results:
+            key = (
+                result.get("replay_signature") or "empty",
+                result.get("forward_signature") or "empty",
+            )
+            grouped.setdefault(key, []).append(result)
+
+        groups = []
+        for (replay_sig, forward_sig), items in grouped.items():
+            if len(items) <= 1:
+                continue
+            groups.append({
+                "replay_signature": replay_sig,
+                "forward_signature": forward_sig,
+                "experiments": len(items),
+                "experiment_ids": [item.get("experiment_id") for item in items],
+                "patterns": [item.get("pattern") for item in items],
+                "replay_matches": (items[0].get("replay_results") or {}).get("matches", 0),
+                "forward_matches": (items[0].get("forward_shadow_results") or {}).get("matches", 0),
+                "verdicts": [
+                    (item.get("verdict") or {}).get("primary")
+                    for item in items
+                ],
+                "interpretation": "same_event_set_do_not_count_independently",
+            })
+        groups.sort(key=lambda item: (item.get("experiments", 0), item.get("replay_matches", 0)), reverse=True)
+        return groups
 
 
 def run_shadow_experiment_runner(

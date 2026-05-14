@@ -32,6 +32,7 @@ DEFAULT_CHART_REPORT = os.path.join("analysis", "chart_vision", "latest_chart_vi
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
 DEFAULT_OPPORTUNITY_REPORT = os.path.join("analysis", "opportunities", "latest_opportunity_report.json")
+DEFAULT_SHADOW_REPORT = os.path.join("analysis", "shadow_models", "latest_shadow_model_report.json")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -74,6 +75,7 @@ class BotAdvisor:
         alert_report_path: str = DEFAULT_ALERT_REPORT,
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
         opportunity_path: str = DEFAULT_OPPORTUNITY_REPORT,
+        shadow_report_path: str = DEFAULT_SHADOW_REPORT,
     ):
         self.learning_report_path = learning_report_path
         self.profile_proposals_path = profile_proposals_path
@@ -82,6 +84,7 @@ class BotAdvisor:
         self.alert_report_path = alert_report_path
         self.market_regime_path = market_regime_path
         self.opportunity_path = opportunity_path
+        self.shadow_report_path = shadow_report_path
 
     def build_advice(self) -> dict:
         reports = {
@@ -92,6 +95,7 @@ class BotAdvisor:
             "alerts": load_json(self.alert_report_path),
             "market_regime": load_json(self.market_regime_path),
             "opportunities": load_json(self.opportunity_path),
+            "shadow_models": load_json(self.shadow_report_path),
         }
 
         recommendations = []
@@ -101,6 +105,7 @@ class BotAdvisor:
         recommendations.extend(self._chart_vision_recommendations(reports["chart_vision"]))
         recommendations.extend(self._market_regime_recommendations(reports["market_regime"]))
         recommendations.extend(self._opportunity_recommendations(reports["opportunities"]))
+        recommendations.extend(self._shadow_model_recommendations(reports["shadow_models"]))
         recommendations.extend(self._profile_recommendations(reports["profiles"]))
         recommendations.extend(self._learning_recommendations(reports["learning"]))
 
@@ -118,6 +123,7 @@ class BotAdvisor:
                 "alert_report": self.alert_report_path,
                 "market_regime_report": self.market_regime_path,
                 "opportunity_report": self.opportunity_path,
+                "shadow_model_report": self.shadow_report_path,
             },
         }
 
@@ -455,6 +461,85 @@ class BotAdvisor:
                     "protected_holds": first.get("protected_holds"),
                     "numeric": first.get("numeric"),
                 },
+            ))
+        return items
+
+    def _shadow_model_recommendations(self, shadow_report: dict) -> list[dict]:
+        if shadow_report.get("_missing") or shadow_report.get("_error"):
+            return []
+        meta = shadow_report.get("meta", {}) or {}
+        rules = shadow_report.get("rules", {}) or {}
+        recs = shadow_report.get("recommendations", []) or []
+        items = []
+
+        loaded = _safe_int(meta.get("loaded_rows"))
+        if loaded < 100:
+            items.append(self._rec(
+                priority="medium",
+                area="shadow_models",
+                finding=f"Shadow model sample is still limited ({loaded} rows).",
+                recommendation="Keep shadow rules observational only until the structured dataset grows.",
+                requires_human_approval=False,
+                evidence={"loaded_rows": loaded},
+            ))
+
+        promising = [
+            rec for rec in recs
+            if rec.get("verdict") == "promising_shadow_rule"
+        ]
+        rejected = [
+            rec for rec in recs
+            if rec.get("verdict") == "reject_or_tighten"
+        ]
+        mixed = [
+            rec for rec in recs
+            if rec.get("verdict") == "mixed"
+        ]
+
+        for rec in promising[:3]:
+            items.append(self._rec(
+                priority="medium",
+                area="shadow_models",
+                finding=(
+                    f"Shadow rule looks promising: {rec.get('rule')} "
+                    f"(matches={rec.get('matches')}, cf_avg_r={rec.get('cf_avg_r')})."
+                ),
+                recommendation="Do not enable live yet; inspect sample cases and require more out-of-sample matches.",
+                requires_human_approval=True,
+                evidence=rec,
+            ))
+
+        for rec in rejected[:3]:
+            items.append(self._rec(
+                priority="medium",
+                area="shadow_models",
+                finding=(
+                    f"Shadow rule likely hurts performance: {rec.get('rule')} "
+                    f"(matches={rec.get('matches')}, cf_avg_r={rec.get('cf_avg_r')}, loss_rate={rec.get('cf_loss_rate_pct')}%)."
+                ),
+                recommendation="Keep this protection in place or tighten it; do not promote this rule.",
+                requires_human_approval=False,
+                evidence=rec,
+            ))
+
+        if mixed:
+            items.append(self._rec(
+                priority="low",
+                area="shadow_models",
+                finding=f"{len(mixed)} shadow rules are mixed.",
+                recommendation="Split mixed rules by symbol, market regime and chop subtype before considering changes.",
+                requires_human_approval=True,
+                evidence={"rules": mixed[:5]},
+            ))
+
+        if rules and not items:
+            items.append(self._rec(
+                priority="low",
+                area="shadow_models",
+                finding=f"Shadow evaluator ran {len(rules)} rules without strong action signals.",
+                recommendation="Keep collecting structured events and review again after the next daily cycle.",
+                requires_human_approval=False,
+                evidence={"loaded_rows": loaded, "rule_count": len(rules)},
             ))
         return items
 

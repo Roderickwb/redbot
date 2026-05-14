@@ -62,6 +62,12 @@ from src.analysis.opportunity_reporter import (
     DEFAULT_OUTPUT_DIR as OPPORTUNITY_OUTPUT_DIR,
     write_json as write_opportunity_json,
 )
+from src.analysis.shadow_model_evaluator import (
+    ShadowModelEvaluator,
+    DEFAULT_LATEST_FILE as SHADOW_LATEST_FILE,
+    DEFAULT_OUTPUT_DIR as SHADOW_OUTPUT_DIR,
+    write_json as write_shadow_json,
+)
 from src.analysis.strategy_learning_job import run_strategy_learning_job
 from src.config.config import DB_FILE
 from src.database_manager.database_manager import DatabaseManager
@@ -212,6 +218,25 @@ def _build_ml_training_dataset(limit: int, structured_only: bool) -> dict:
     }
 
 
+def _build_shadow_model_report(limit: int) -> dict:
+    report = ShadowModelEvaluator().build_report(limit=limit)
+    output_path = os.path.join(SHADOW_OUTPUT_DIR, SHADOW_LATEST_FILE)
+    write_shadow_json(output_path, report)
+    return {
+        "loaded_rows": report.get("meta", {}).get("loaded_rows", 0),
+        "output_path": output_path,
+        "rules": {
+            name: {
+                "matches": values.get("matches", 0),
+                "cf_avg_r": values.get("cf_avg_r", 0),
+                "cf_loss_rate_pct": values.get("cf_loss_rate_pct", 0),
+            }
+            for name, values in (report.get("rules") or {}).items()
+        },
+        "recommendations": report.get("recommendations", [])[:5],
+    }
+
+
 def _build_opportunity_report(limit: int) -> dict:
     db = DatabaseManager(db_path=DB_FILE)
     try:
@@ -295,6 +320,9 @@ def run_daily_analysis_job(
             limit=report_limit,
             structured_only=structured_chart_only,
         ),
+    )
+    steps["shadow_model_report"] = _run_step(
+        lambda: _build_shadow_model_report(limit=report_limit),
     )
     steps["opportunity_report"] = _run_step(
         lambda: _build_opportunity_report(limit=report_limit),

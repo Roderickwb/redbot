@@ -146,6 +146,25 @@ Waarom:
 - echte ML heeft een consistente trainingsset nodig;
 - deze laag maakt later shadow models mogelijk zonder live trading gedrag te wijzigen.
 
+## 8. Shadow Model Evaluator
+
+Doel: mogelijke rule/prompt/ML-aanpassingen objectief testen voordat ze live gedrag sturen.
+
+Module:
+- `src.analysis.shadow_model_evaluator`
+
+Status:
+- leest `analysis/ml_training/latest_strategy_event_dataset.jsonl`;
+- test kandidaatregels zoals "allow short breakdown when pressure is high" of "relax local_chop only when continuation pressure is high";
+- rapporteert matches, gemiddelde counterfactual R, win/loss-rate en voorbeeldcases;
+- schrijft `analysis/shadow_models/latest_shadow_model_report.json`;
+- draait mee in `src.analysis.daily_analysis_job`.
+
+Principe:
+- shadow-regels zijn meetinstrumenten, geen live regels;
+- een positieve shadow-score mag hoogstens leiden tot een voorstel;
+- live activeren gebeurt pas na voldoende sample, review en human approval.
+
 ## Belangrijk Principe
 
 De bot moet niet te vroeg autonoom zijn in het aanpassen van regels. Eerst moeten observatie, labeling, rapportage en risk controls betrouwbaar zijn.
@@ -192,6 +211,7 @@ Output:
 
 Principe:
 - advisor mag conclusies trekken en aanbevelingen doen;
+- advisor leest ook shadow-model resultaten en vertaalt die naar promote/reject/wait adviezen;
 - advisor past nog niets automatisch aan;
 - adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
 

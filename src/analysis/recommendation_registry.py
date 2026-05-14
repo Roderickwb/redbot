@@ -63,6 +63,11 @@ def _stable_id(rec: dict) -> str:
             "area": rec.get("area"),
             "hypothesis_rule_id": hypotheses[0].get("rule_id"),
         }
+    elif evidence_key := _evidence_stable_key(rec, evidence):
+        payload = {
+            "area": rec.get("area"),
+            "evidence_key": evidence_key,
+        }
     else:
         payload = {
             "area": rec.get("area"),
@@ -71,6 +76,65 @@ def _stable_id(rec: dict) -> str:
         }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _evidence_stable_key(rec: dict, evidence: dict) -> Optional[str]:
+    area = str(rec.get("area") or "")
+    recommendation = str(rec.get("recommendation") or "")
+
+    if "missing_scores_pct" in evidence:
+        return "gpt_missing_structured_scores"
+    if "readiness" in evidence and area == "ml_edge_model":
+        status = (evidence.get("readiness") or {}).get("status", "unknown")
+        return f"ml_edge_readiness_{status}"
+    if "dataset_summary" in evidence and area == "ml_edge_model":
+        return "ml_edge_dataset_summary"
+    if "zero_conf_pct" in evidence:
+        return "gpt_zero_confidence_rate"
+    if "scored_events" in evidence:
+        return "gpt_scored_sample_size"
+    if "cf_avg_r" in evidence and area == "gpt_decision":
+        return "gpt_counterfactual_avg_r"
+    if "symbols" in evidence:
+        return f"{area}_symbols_{_hash_key(evidence.get('symbols'))}"
+    if "loaded_events" in evidence and area == "chart_vision":
+        return "chart_vision_sample_size"
+    if "loaded_candidates" in evidence and area == "opportunities":
+        return "opportunity_sample_size"
+    if "hold_rate_pct" in evidence and "cf_avg_r" in evidence:
+        return "opportunity_hold_rate_positive_cf"
+    if "held_large_positive_opportunities" in evidence:
+        return "opportunity_held_large_positive"
+    if "patterns" in evidence:
+        return f"{area}_patterns_{_pattern_key(evidence.get('patterns'))}"
+    if "top_patterns" in evidence:
+        return f"{area}_top_patterns_{_pattern_key(evidence.get('top_patterns'))}"
+    if "pattern" in evidence and "numeric" in evidence:
+        return f"{area}_feature_contrast_{_hash_key(evidence.get('pattern'))}"
+    if "risk_mode" in evidence and "breadth" in evidence:
+        return f"market_regime_{area}_{_hash_key(rec.get('finding'))}"
+    if "attention_case" in evidence:
+        return f"{area}_{evidence.get('attention_case')}"
+    if recommendation.startswith("Treat this as transition noise"):
+        return f"{area}_transition_noise"
+    return None
+
+
+def _hash_key(value: Any) -> str:
+    raw = json.dumps(value, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+
+
+def _pattern_key(patterns: Any) -> str:
+    if not isinstance(patterns, list) or not patterns:
+        return "none"
+    first = patterns[0] if isinstance(patterns[0], dict) else {}
+    payload = {
+        "group": first.get("group"),
+        "pattern": first.get("pattern") or first.get("name"),
+        "interpretation": first.get("interpretation"),
+    }
+    return _hash_key(payload)
 
 
 def _stable_hypothesis_id(hypothesis: dict) -> str:

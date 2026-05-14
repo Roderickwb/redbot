@@ -146,6 +146,13 @@ class OpportunityReporter:
         by_entry_timing_1h = defaultdict(_new_bucket)
         by_market_regime = defaultdict(_new_bucket)
         by_regime_direction = defaultdict(_new_bucket)
+        pattern_buckets = {
+            "held_positive": defaultdict(_new_bucket),
+            "held_large_positive": defaultdict(_new_bucket),
+            "protected_holds": defaultdict(_new_bucket),
+            "bad_opens": defaultdict(_new_bucket),
+            "good_opens": defaultdict(_new_bucket),
+        }
 
         attention_cases = {
             "held_positive_opportunities": [],
@@ -182,6 +189,7 @@ class OpportunityReporter:
             for bucket in buckets:
                 self._add_event(bucket, event, outcome)
 
+            self._add_pattern_buckets(pattern_buckets, event, features, outcome)
             self._collect_attention_cases(attention_cases, event, features, outcome)
 
         return {
@@ -195,6 +203,7 @@ class OpportunityReporter:
             "by_market_regime": self._finalize_mapping(by_market_regime),
             "by_regime_direction": self._finalize_mapping(by_regime_direction),
             "top_attention": self._top_attention(by_symbol_direction, by_veto, by_structure_1h, by_entry_timing_1h),
+            "pattern_summary": self._pattern_summary(pattern_buckets),
             "attention_cases": attention_cases,
         }
 
@@ -268,6 +277,45 @@ class OpportunityReporter:
 
         for key in cases:
             cases[key] = cases[key][:25]
+
+    def _add_pattern_buckets(self, pattern_buckets: dict, event: dict, features: dict, outcome: dict) -> None:
+        action = event.get("gpt_action")
+        counterfactual = outcome.get("counterfactual_trade") or {}
+        cf_r = _safe_float(counterfactual.get("r_multiple"))
+
+        key = self._pattern_key(event, features)
+        targets = []
+        if action == "HOLD" and cf_r >= 0.5:
+            targets.append("held_positive")
+        if action == "HOLD" and cf_r >= 1.0:
+            targets.append("held_large_positive")
+        if action == "HOLD" and cf_r <= -0.5:
+            targets.append("protected_holds")
+        if action in ("OPEN_LONG", "OPEN_SHORT") and cf_r <= -0.5:
+            targets.append("bad_opens")
+        if action in ("OPEN_LONG", "OPEN_SHORT") and cf_r >= 0.5:
+            targets.append("good_opens")
+
+        for target in targets:
+            self._add_event(pattern_buckets[target][key], event, outcome)
+
+    def _pattern_key(self, event: dict, features: dict) -> str:
+        chart_1h = ((features.get("chart_features") or {}).get("1h") or {})
+        regime = features.get("market_regime") or {}
+        parts = [
+            self._direction_for(event),
+            str(regime.get("regime") or "missing"),
+            str(features.get("primary_veto") or "missing"),
+            str(chart_1h.get("structure_label") or "missing"),
+            str(chart_1h.get("entry_timing") or "missing"),
+        ]
+        return "|".join(parts)
+
+    def _pattern_summary(self, pattern_buckets: dict) -> dict:
+        return {
+            name: self._top(self._finalize_mapping(bucket), "events", reverse=True)
+            for name, bucket in pattern_buckets.items()
+        }
 
     def _direction_for(self, event: dict) -> str:
         signal = str(event.get("algo_signal") or "")

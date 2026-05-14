@@ -333,6 +333,7 @@ class BotAdvisor:
         totals = opportunity_report.get("totals", {}) or {}
         cases = opportunity_report.get("attention_cases", {}) or {}
         by_regime_direction = opportunity_report.get("by_regime_direction", {}) or {}
+        pattern_summary = opportunity_report.get("pattern_summary", {}) or {}
         items = []
 
         loaded = _safe_int(meta.get("loaded_candidates"))
@@ -363,13 +364,14 @@ class BotAdvisor:
             ))
 
         if held_large >= 5:
+            top_pattern = (pattern_summary.get("held_large_positive") or [{}])[0]
             items.append(self._rec(
                 priority="medium",
                 area="opportunities",
                 finding=f"{held_large} held candidates later had >= 1.0R counterfactual outcomes.",
                 recommendation="Inspect common veto/structure/regime patterns; likely candidate for shadow prompt or chart-label tuning.",
                 requires_human_approval=True,
-                evidence={"held_large_positive_opportunities": held_large},
+                evidence={"held_large_positive_opportunities": held_large, "top_pattern": top_pattern},
             ))
         elif held_positive >= 10:
             items.append(self._rec(
@@ -394,6 +396,21 @@ class BotAdvisor:
                     requires_human_approval=True,
                     evidence={"regime_direction": "risk_off|short", "events": ro_short_events, "cf_avg_r": ro_short_cf},
                 ))
+
+        protected_patterns = pattern_summary.get("protected_holds") or []
+        large_patterns = pattern_summary.get("held_large_positive") or []
+        if protected_patterns and large_patterns:
+            items.append(self._rec(
+                priority="low",
+                area="opportunities",
+                finding="Opportunity report now has contrast patterns for missed winners and protected holds.",
+                recommendation="Use pattern_summary to tune only patterns with positive edge, not the whole direction/regime.",
+                requires_human_approval=False,
+                evidence={
+                    "top_held_large_positive": large_patterns[:3],
+                    "top_protected_holds": protected_patterns[:3],
+                },
+            ))
         return items
 
     def _profile_recommendations(self, profiles_report: dict) -> list[dict]:

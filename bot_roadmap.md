@@ -248,6 +248,7 @@ Principe:
 - hypotheses worden pas promotable als ze herhaald terugkomen, minimaal oud genoeg zijn en minimaal medium confidence hebben;
 - recommendation registry markeert actieve voorstellen die niet meer in nieuwe advisor-runs voorkomen als `missing` en kan oude voorstellen via dry-run cleanup archiveren;
 - experiment planner zet stabiele/promotable/approved hypotheses om naar een experimentstatus zoals `waiting_for_more_days`, `ready_for_approval` of `approved_for_shadow`;
+- experiment planner maakt experimenten bestuurbaar met approve/reject commands per experiment-id, gekoppeld aan de recommendation registry;
 - advisor past nog niets automatisch aan;
 - adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
 

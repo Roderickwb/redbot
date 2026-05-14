@@ -18,6 +18,8 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
+from src.analysis.recommendation_registry import RecommendationRegistry
+
 
 DEFAULT_OUTPUT_DIR = os.path.join("analysis", "experiments")
 DEFAULT_LATEST_FILE = "latest_experiment_plan.json"
@@ -145,6 +147,12 @@ class ExperimentPlanner:
             },
             "guardrails": self._guardrails(hypothesis),
             "next_action": self._next_action(status),
+            "decision": {
+                "approve_command": f"python -m src.analysis.experiment_planner approve {exp_id}",
+                "reject_command": f"python -m src.analysis.experiment_planner reject {exp_id}",
+                "approval_target": "source_recommendation",
+                "approval_target_id": item.get("id"),
+            },
         }
 
     def _experiment_status(self, item: dict, hypothesis: dict) -> str:
@@ -232,11 +240,87 @@ def run_experiment_planner(
     return report
 
 
+def decide_experiment(
+    experiment_id: str,
+    decision: str,
+    note: str = "",
+    registry_path: str = DEFAULT_REGISTRY_PATH,
+    output_dir: str = DEFAULT_OUTPUT_DIR,
+) -> dict:
+    report = run_experiment_planner(registry_path=registry_path, output_dir=output_dir)
+    experiment = next(
+        (
+            item for item in report.get("experiments", [])
+            if item.get("id") == experiment_id
+        ),
+        None,
+    )
+    if not experiment:
+        return {
+            "ok": False,
+            "error": f"unknown experiment id: {experiment_id}",
+            "output_path": report.get("output_path"),
+        }
+
+    rec_id = (experiment.get("source") or {}).get("recommendation_id")
+    if not rec_id:
+        return {
+            "ok": False,
+            "error": f"experiment has no source recommendation id: {experiment_id}",
+            "experiment": experiment,
+        }
+
+    registry = RecommendationRegistry(output_dir=os.path.dirname(registry_path))
+    if decision == "approve":
+        registry_result = registry.approve(
+            rec_id,
+            note=note or f"approved via experiment {experiment_id}",
+        )
+    elif decision == "reject":
+        registry_result = registry.reject(
+            rec_id,
+            note=note or f"rejected via experiment {experiment_id}",
+        )
+    else:
+        return {"ok": False, "error": f"unknown decision: {decision}"}
+
+    updated_report = run_experiment_planner(registry_path=registry_path, output_dir=output_dir)
+    return {
+        "ok": bool(registry_result.get("ok")),
+        "decision": decision,
+        "experiment_id": experiment_id,
+        "recommendation_id": rec_id,
+        "registry_result": {
+            "ok": registry_result.get("ok"),
+            "status": registry_result.get("status"),
+        },
+        "experiment_summary": updated_report.get("summary", {}),
+        "output_path": updated_report.get("output_path"),
+    }
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Build experiment plan from recommendation registry.")
+    parser.add_argument("command", nargs="?", choices=["plan", "approve", "reject"], default="plan")
+    parser.add_argument("experiment_id", nargs="?")
     parser.add_argument("--registry", type=str, default=DEFAULT_REGISTRY_PATH, help="Recommendation registry path.")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Output directory.")
+    parser.add_argument("--note", type=str, default="", help="Decision note for approve/reject.")
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if args.command in {"approve", "reject"}:
+        if not args.experiment_id:
+            print(json.dumps({"ok": False, "error": "experiment_id is required"}, indent=2, ensure_ascii=False))
+            return 1
+        result = decide_experiment(
+            experiment_id=args.experiment_id,
+            decision=args.command,
+            note=args.note,
+            registry_path=args.registry,
+            output_dir=args.output_dir,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
 
     report = run_experiment_planner(
         registry_path=args.registry,

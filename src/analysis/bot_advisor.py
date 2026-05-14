@@ -470,6 +470,7 @@ class BotAdvisor:
         meta = shadow_report.get("meta", {}) or {}
         rules = shadow_report.get("rules", {}) or {}
         recs = shadow_report.get("recommendations", []) or []
+        discovered = shadow_report.get("discovered_patterns", {}) or {}
         items = []
 
         loaded = _safe_int(meta.get("loaded_rows"))
@@ -530,6 +531,47 @@ class BotAdvisor:
                 recommendation="Split mixed rules by symbol, market regime and chop subtype before considering changes.",
                 requires_human_approval=True,
                 evidence={"rules": mixed[:5]},
+            ))
+
+        promising_patterns = []
+        protective_patterns = []
+        for group_name, patterns in discovered.items():
+            for pattern in patterns or []:
+                row = {"group": group_name, **pattern}
+                if pattern.get("interpretation") == "promising_pattern":
+                    promising_patterns.append(row)
+                elif pattern.get("interpretation") == "protective_hold_pattern":
+                    protective_patterns.append(row)
+
+        promising_patterns.sort(key=lambda row: (row.get("cf_avg_r", 0), row.get("matches", 0)), reverse=True)
+        protective_patterns.sort(key=lambda row: (row.get("cf_loss_rate_pct", 0), -row.get("cf_avg_r", 0)), reverse=True)
+
+        if promising_patterns:
+            top = promising_patterns[0]
+            items.append(self._rec(
+                priority="medium",
+                area="shadow_models",
+                finding=(
+                    f"Discovered promising HOLD pattern: {top.get('pattern')} "
+                    f"(matches={top.get('matches')}, cf_avg_r={top.get('cf_avg_r')})."
+                ),
+                recommendation="Use this pattern as a candidate for a future shadow rule; require more samples before live changes.",
+                requires_human_approval=True,
+                evidence={"top_patterns": promising_patterns[:5]},
+            ))
+
+        if protective_patterns:
+            top = protective_patterns[0]
+            items.append(self._rec(
+                priority="low",
+                area="shadow_models",
+                finding=(
+                    f"Discovered protective HOLD pattern: {top.get('pattern')} "
+                    f"(loss_rate={top.get('cf_loss_rate_pct')}%, cf_avg_r={top.get('cf_avg_r')})."
+                ),
+                recommendation="Keep this protection; do not loosen broad rules that include this pattern.",
+                requires_human_approval=False,
+                evidence={"top_patterns": protective_patterns[:5]},
             ))
 
         if rules and not items:

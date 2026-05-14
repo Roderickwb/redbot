@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections import defaultdict
 from typing import Any, Callable, Iterable, Optional
 
 from src.analysis.ml_training_dataset import (
@@ -104,6 +105,27 @@ def _risk_multiplier(row: dict) -> float:
     return _safe_float(_profile(row).get("risk_multiplier"), 1.0)
 
 
+def _pressure(row: dict) -> int:
+    c1 = _chart(row, "1h")
+    return max(
+        _safe_int(c1.get("breakout_pressure")),
+        _safe_int(c1.get("breakdown_pressure")),
+        _safe_int(c1.get("continuation_pressure")),
+    )
+
+
+def _pressure_band(value: int) -> str:
+    if value >= 80:
+        return "p80_plus"
+    if value >= 60:
+        return "p60_79"
+    if value >= 40:
+        return "p40_59"
+    if value > 0:
+        return "p1_39"
+    return "p0"
+
+
 def _rule_short_breakdown_v1(row: dict) -> bool:
     c1 = _chart(row, "1h")
     return (
@@ -185,6 +207,7 @@ class ShadowModelEvaluator:
             name: self._evaluate_rule(name, fn, rows)
             for name, fn in RULES.items()
         }
+        discovered = self._discover_patterns(rows, min_matches=min_matches)
         recommendations = self._recommendations(evaluations, min_matches=min_matches)
         return {
             "meta": {
@@ -194,6 +217,7 @@ class ShadowModelEvaluator:
                 "min_matches": min_matches,
             },
             "rules": evaluations,
+            "discovered_patterns": discovered,
             "recommendations": recommendations,
         }
 
@@ -289,6 +313,94 @@ class ShadowModelEvaluator:
         )
         return recs
 
+    def _discover_patterns(self, rows: list[dict], min_matches: int) -> dict:
+        held_rows = [row for row in rows if _is_hold(row)]
+        pattern_sets = {
+            "direction_regime_veto": lambda row: [
+                row.get("direction") or "missing",
+                _regime(row).get("regime") or "missing",
+                row.get("primary_veto") or "missing",
+            ],
+            "chart_context": lambda row: [
+                row.get("direction") or "missing",
+                _regime(row).get("regime") or "missing",
+                _chart(row).get("structure_label") or "missing",
+                _chart(row).get("chop_subtype") or "missing",
+                _chart(row).get("entry_timing") or "missing",
+            ],
+            "pressure_context": lambda row: [
+                row.get("direction") or "missing",
+                _regime(row).get("regime") or "missing",
+                row.get("primary_veto") or "missing",
+                _pressure_band(_pressure(row)),
+            ],
+            "profile_risk_context": lambda row: [
+                row.get("direction") or "missing",
+                row.get("primary_veto") or "missing",
+                f"risk_mult_{_risk_multiplier(row):.2f}",
+                "drawdown" if _has_flag(row, "drawdown") else "no_drawdown_flag",
+                "cf_negative" if _has_flag(row, "counterfactual_edge_negative") else "no_cf_negative_flag",
+            ],
+        }
+
+        return {
+            name: self._discover_pattern_set(held_rows, builder, min_matches)
+            for name, builder in pattern_sets.items()
+        }
+
+    def _discover_pattern_set(
+        self,
+        rows: list[dict],
+        key_builder: Callable[[dict], list[str]],
+        min_matches: int,
+    ) -> list[dict]:
+        buckets = defaultdict(list)
+        for row in rows:
+            key = "|".join(str(part) for part in key_builder(row))
+            buckets[key].append(row)
+
+        patterns = []
+        for key, bucket_rows in buckets.items():
+            if len(bucket_rows) < min_matches:
+                continue
+            total_r = sum(_cf_r(row) for row in bucket_rows)
+            positives = [row for row in bucket_rows if _cf_r(row) > 0]
+            large_positive = [row for row in bucket_rows if _cf_r(row) >= 1.0]
+            losses = [row for row in bucket_rows if _cf_r(row) <= -0.5]
+            avg_r = total_r / len(bucket_rows)
+            loss_rate = len(losses) / len(bucket_rows) * 100.0
+            positive_rate = len(positives) / len(bucket_rows) * 100.0
+            patterns.append({
+                "pattern": key,
+                "matches": len(bucket_rows),
+                "cf_total_r": round(total_r, 4),
+                "cf_avg_r": round(avg_r, 4),
+                "cf_positive_rate_pct": round(positive_rate, 2),
+                "cf_loss_rate_pct": round(loss_rate, 2),
+                "cf_large_positive": len(large_positive),
+                "interpretation": self._interpret_discovered(avg_r, loss_rate, len(bucket_rows)),
+                "sample_cases": [self._sample_case(row) for row in bucket_rows[:8]],
+            })
+
+        patterns.sort(
+            key=lambda item: (
+                item["cf_avg_r"],
+                item["matches"],
+                -item["cf_loss_rate_pct"],
+            ),
+            reverse=True,
+        )
+        return patterns[:15]
+
+    def _interpret_discovered(self, avg_r: float, loss_rate: float, matches: int) -> str:
+        if matches < 5:
+            return "small_sample"
+        if avg_r >= 0.35 and loss_rate <= 45:
+            return "promising_pattern"
+        if avg_r <= -0.15 or loss_rate >= 55:
+            return "protective_hold_pattern"
+        return "mixed_pattern"
+
 
 def write_json(path: str, payload: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -323,6 +435,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             for name, values in (report.get("rules") or {}).items()
         },
         "recommendations": report.get("recommendations", [])[:5],
+        "top_discovered_patterns": {
+            name: values[:3]
+            for name, values in (report.get("discovered_patterns") or {}).items()
+        },
     }
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0

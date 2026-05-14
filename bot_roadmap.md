@@ -156,6 +156,8 @@ Module:
 Status:
 - leest `analysis/ml_training/latest_strategy_event_dataset.jsonl`;
 - test kandidaatregels zoals "allow short breakdown when pressure is high" of "relax local_chop only when continuation pressure is high";
+- ontdekt automatisch patronen per richting, regime, veto, chart context, pressure en profile-risk context;
+- genereert automatisch hypotheses zoals `allow_or_relax_hold` of `protect_or_block`;
 - rapporteert matches, gemiddelde counterfactual R, win/loss-rate en voorbeeldcases;
 - schrijft `analysis/shadow_models/latest_shadow_model_report.json`;
 - draait mee in `src.analysis.daily_analysis_job`.
@@ -163,6 +165,7 @@ Status:
 Principe:
 - shadow-regels zijn meetinstrumenten, geen live regels;
 - een positieve shadow-score mag hoogstens leiden tot een voorstel;
+- automatisch gegenereerde hypotheses blijven shadow-only totdat ze herhaald terugkomen en goedgekeurd zijn;
 - live activeren gebeurt pas na voldoende sample, review en human approval.
 
 ## 9. ML Edge Model

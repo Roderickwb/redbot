@@ -478,6 +478,7 @@ class BotAdvisor:
         rules = shadow_report.get("rules", {}) or {}
         recs = shadow_report.get("recommendations", []) or []
         discovered = shadow_report.get("discovered_patterns", {}) or {}
+        hypotheses = shadow_report.get("generated_hypotheses", []) or []
         items = []
 
         loaded = _safe_int(meta.get("loaded_rows"))
@@ -579,6 +580,43 @@ class BotAdvisor:
                 recommendation="Keep this protection; do not loosen broad rules that include this pattern.",
                 requires_human_approval=False,
                 evidence={"top_patterns": protective_patterns[:5]},
+            ))
+
+        relax_hypotheses = [
+            item for item in hypotheses
+            if item.get("hypothesis_type") == "allow_or_relax_hold"
+        ]
+        protect_hypotheses = [
+            item for item in hypotheses
+            if item.get("hypothesis_type") == "protect_or_block"
+        ]
+
+        if relax_hypotheses:
+            top = relax_hypotheses[0]
+            items.append(self._rec(
+                priority="medium",
+                area="shadow_hypotheses",
+                finding=(
+                    f"Generated relax/allow hypothesis: {top.get('rule_id')} "
+                    f"(confidence={top.get('confidence')}, matches={top.get('matches')}, cf_avg_r={top.get('cf_avg_r')})."
+                ),
+                recommendation="Keep this as shadow-only until it repeats; then consider approving a controlled dry-run experiment.",
+                requires_human_approval=True,
+                evidence={"hypotheses": relax_hypotheses[:5]},
+            ))
+
+        if protect_hypotheses:
+            top = protect_hypotheses[0]
+            items.append(self._rec(
+                priority="low",
+                area="shadow_hypotheses",
+                finding=(
+                    f"Generated protection hypothesis: {top.get('rule_id')} "
+                    f"(confidence={top.get('confidence')}, matches={top.get('matches')}, loss_rate={top.get('cf_loss_rate_pct')}%)."
+                ),
+                recommendation="Use this to avoid loosening broad rules that include this risky pattern.",
+                requires_human_approval=False,
+                evidence={"hypotheses": protect_hypotheses[:5]},
             ))
 
         if rules and not items:

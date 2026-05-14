@@ -208,6 +208,7 @@ class ShadowModelEvaluator:
             for name, fn in RULES.items()
         }
         discovered = self._discover_patterns(rows, min_matches=min_matches)
+        hypotheses = self._generate_hypotheses(discovered, min_matches=min_matches)
         recommendations = self._recommendations(evaluations, min_matches=min_matches)
         return {
             "meta": {
@@ -218,6 +219,7 @@ class ShadowModelEvaluator:
             },
             "rules": evaluations,
             "discovered_patterns": discovered,
+            "generated_hypotheses": hypotheses,
             "recommendations": recommendations,
         }
 
@@ -401,6 +403,124 @@ class ShadowModelEvaluator:
             return "protective_hold_pattern"
         return "mixed_pattern"
 
+    def _generate_hypotheses(self, discovered: dict, min_matches: int) -> list[dict]:
+        hypotheses = []
+        for group_name, patterns in discovered.items():
+            for pattern in patterns or []:
+                matches = _safe_int(pattern.get("matches"))
+                if matches < min_matches:
+                    continue
+                interpretation = pattern.get("interpretation")
+                if interpretation == "promising_pattern":
+                    hypotheses.append(self._hypothesis_from_pattern(
+                        group_name=group_name,
+                        pattern=pattern,
+                        hypothesis_type="allow_or_relax_hold",
+                    ))
+                elif interpretation == "protective_hold_pattern":
+                    hypotheses.append(self._hypothesis_from_pattern(
+                        group_name=group_name,
+                        pattern=pattern,
+                        hypothesis_type="protect_or_block",
+                    ))
+
+        hypotheses.sort(
+            key=lambda item: (
+                self._hypothesis_rank(item),
+                item.get("confidence_score", 0),
+                item.get("matches", 0),
+            ),
+            reverse=True,
+        )
+        return hypotheses[:25]
+
+    def _hypothesis_from_pattern(self, group_name: str, pattern: dict, hypothesis_type: str) -> dict:
+        avg_r = _safe_float(pattern.get("cf_avg_r"))
+        loss_rate = _safe_float(pattern.get("cf_loss_rate_pct"))
+        pos_rate = _safe_float(pattern.get("cf_positive_rate_pct"))
+        matches = _safe_int(pattern.get("matches"))
+        confidence = self._hypothesis_confidence(matches, avg_r, loss_rate, hypothesis_type)
+        rule_id = self._hypothesis_rule_id(group_name, pattern.get("pattern"), hypothesis_type)
+
+        if hypothesis_type == "allow_or_relax_hold":
+            proposed_action = "shadow_test_relaxed_hold"
+            description = (
+                f"Test whether HOLD can be relaxed for pattern {pattern.get('pattern')} "
+                f"because historical counterfactuals look positive."
+            )
+            guardrails = [
+                "shadow-only",
+                "do_not_enable_live_from_single_report",
+                "require_repeat_occurrence",
+                "require_human_approval",
+                "split_by_symbol_before_live",
+            ]
+        else:
+            proposed_action = "preserve_or_strengthen_block"
+            description = (
+                f"Keep or strengthen protection for pattern {pattern.get('pattern')} "
+                f"because historical counterfactuals look risky."
+            )
+            guardrails = [
+                "safe_to_keep_as_protection",
+                "do_not_loosen_broad_rules_covering_this_pattern",
+                "require_human_approval_for_new_hard_blocks",
+            ]
+
+        return {
+            "rule_id": rule_id,
+            "hypothesis_type": hypothesis_type,
+            "group": group_name,
+            "pattern": pattern.get("pattern"),
+            "proposed_action": proposed_action,
+            "description": description,
+            "matches": matches,
+            "cf_avg_r": avg_r,
+            "cf_positive_rate_pct": pos_rate,
+            "cf_loss_rate_pct": loss_rate,
+            "confidence": confidence,
+            "confidence_score": self._confidence_score(confidence),
+            "requires_human_approval": True,
+            "guardrails": guardrails,
+            "sample_cases": pattern.get("sample_cases", [])[:5],
+        }
+
+    def _hypothesis_rule_id(self, group_name: str, pattern: Any, hypothesis_type: str) -> str:
+        raw = f"{hypothesis_type}|{group_name}|{pattern}"
+        safe = "".join(ch if ch.isalnum() else "_" for ch in raw.lower())
+        while "__" in safe:
+            safe = safe.replace("__", "_")
+        return safe.strip("_")[:96]
+
+    def _hypothesis_confidence(self, matches: int, avg_r: float, loss_rate: float, hypothesis_type: str) -> str:
+        if matches >= 30:
+            sample_score = 2
+        elif matches >= 10:
+            sample_score = 1
+        else:
+            sample_score = 0
+
+        if hypothesis_type == "allow_or_relax_hold":
+            edge_score = 2 if avg_r >= 0.75 and loss_rate <= 25 else 1 if avg_r >= 0.35 and loss_rate <= 45 else 0
+        else:
+            edge_score = 2 if avg_r <= -0.35 and loss_rate >= 60 else 1 if avg_r <= -0.15 or loss_rate >= 55 else 0
+
+        total = sample_score + edge_score
+        if total >= 4:
+            return "high"
+        if total >= 2:
+            return "medium"
+        return "low"
+
+    def _confidence_score(self, confidence: str) -> int:
+        return {"high": 3, "medium": 2, "low": 1}.get(confidence, 0)
+
+    def _hypothesis_rank(self, item: dict) -> int:
+        return {
+            "allow_or_relax_hold": 2,
+            "protect_or_block": 1,
+        }.get(str(item.get("hypothesis_type")), 0)
+
 
 def write_json(path: str, payload: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -435,6 +555,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             for name, values in (report.get("rules") or {}).items()
         },
         "recommendations": report.get("recommendations", [])[:5],
+        "generated_hypotheses": (report.get("generated_hypotheses") or [])[:8],
         "top_discovered_patterns": {
             name: values[:3]
             for name, values in (report.get("discovered_patterns") or {}).items()

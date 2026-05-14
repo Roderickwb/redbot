@@ -76,6 +76,7 @@ from src.analysis.shadow_model_evaluator import (
     DEFAULT_OUTPUT_DIR as SHADOW_OUTPUT_DIR,
     write_json as write_shadow_json,
 )
+from src.analysis.shadow_experiment_runner import run_shadow_experiment_runner
 from src.analysis.strategy_learning_job import run_strategy_learning_job
 from src.config.config import DB_FILE
 from src.database_manager.database_manager import DatabaseManager
@@ -311,6 +312,14 @@ def _build_experiment_plan(send_experiments: bool) -> dict:
     }
 
 
+def _build_shadow_experiment_results(hours: int) -> dict:
+    report = run_shadow_experiment_runner(forward_hours=hours)
+    return {
+        "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
+    }
+
+
 def run_daily_analysis_job(
     apply_labels: bool = True,
     relabel_existing: bool = False,
@@ -374,6 +383,9 @@ def run_daily_analysis_job(
     )
     steps["experiment_plan"] = _run_step(
         lambda: _build_experiment_plan(send_experiments=send_experiments),
+    )
+    steps["shadow_experiment_results"] = _run_step(
+        lambda: _build_shadow_experiment_results(hours=hours),
     )
 
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]

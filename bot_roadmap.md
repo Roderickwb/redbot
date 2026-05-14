@@ -222,6 +222,7 @@ Module:
 - `src.analysis.daily_analysis_job` als centrale dagrun die learning, GPT-decision report, chart-vision QA, health alerts en advisor achter elkaar ververst.
 - `src.analysis.recommendation_registry` als approval gate voor voorgestelde verbeteringen.
 - `src.analysis.experiment_planner` als gecontroleerde experiment-queue bovenop stabiele hypotheses en approvals.
+- `src.analysis.shadow_experiment_runner` als replay/forward runner voor experimenten zonder live trading impact.
 
 Inputs:
 - learning report;
@@ -238,6 +239,7 @@ Output:
 - `analysis/recommendations/recommendation_registry.json`
 - `analysis/recommendations/latest_recommendation_registry_summary.json`
 - `analysis/experiments/latest_experiment_plan.json`
+- `analysis/experiments/latest_shadow_experiment_results.json`
 
 Principe:
 - advisor mag conclusies trekken en aanbevelingen doen;
@@ -250,6 +252,7 @@ Principe:
 - experiment planner zet stabiele/promotable/approved hypotheses om naar een experimentstatus zoals `waiting_for_more_days`, `ready_for_approval` of `approved_for_shadow`;
 - experiment planner maakt experimenten bestuurbaar met approve/reject commands per experiment-id, gekoppeld aan de recommendation registry;
 - experiment planner kan een compacte Telegram digest sturen zodat de verbeterpipeline zonder JSON-inspectie te volgen is;
+- shadow experiment runner meet experimenten apart op historische replay en recente forward-shadow rows;
 - advisor past nog niets automatisch aan;
 - adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
 

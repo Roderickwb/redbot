@@ -224,6 +224,7 @@ Module:
 - `src.analysis.experiment_planner` als gecontroleerde experiment-queue bovenop stabiele hypotheses en approvals.
 - `src.analysis.shadow_experiment_runner` als replay/forward runner voor experimenten zonder live trading impact.
 - `src.analysis.promotion_gate` als objectieve safety gate tussen shadow-resultaten en menselijke approval.
+- `src.analysis.approval_inbox` als compacte beslisqueue met approve/reject commands per experiment.
 - `src.analysis.daily_control_report` als compacte operatorlaag bovenop alle analyses.
 
 Inputs:
@@ -243,6 +244,7 @@ Output:
 - `analysis/experiments/latest_experiment_plan.json`
 - `analysis/experiments/latest_shadow_experiment_results.json`
 - `analysis/promotion_gate/latest_promotion_gate_report.json`
+- `analysis/approvals/latest_approval_inbox.json`
 - `analysis/daily_control/latest_daily_control_report.json`
 
 Principe:
@@ -260,6 +262,7 @@ Principe:
 - shadow experiment runner meet experimenten apart op historische replay en recente forward-shadow rows;
 - shadow experiment runner geeft verdicts en overlap-groepen, zodat dubbele patronen niet als onafhankelijk bewijs worden geteld;
 - promotion gate bepaalt per experiment of het `blocked`, `waiting_for_forward`, `confirmed_protection` of `ready_for_human_review` is;
+- approval inbox vertaalt experimenten en promotion-gate uitkomsten naar `review_for_approval`, `review_for_rejection`, `wait` of `no_action_keep_protection`;
 - advisor leest shadow experiment verdicts en overlap-groepen terug, zodat replay-only, forward-confirmed en duplicate evidence automatisch worden samengevat;
 - advisor leest promotion gate uitkomsten terug en zet blocked/confirmed/ready experimenten om naar registry-stabiele aanbevelingen;
 - daily job draait de advisor pas na experiment plan en shadow experiment results, zodat advisor altijd de nieuwste experiment-uitkomsten gebruikt;

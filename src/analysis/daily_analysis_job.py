@@ -27,6 +27,7 @@ from src.analysis.bot_advisor import (
     sync_registry as sync_advice_registry,
     write_json as write_advisor_json,
 )
+from src.analysis.approval_inbox import run_approval_inbox
 from src.analysis.bot_alerts_reporter import (
     BotAlertsReporter,
     DEFAULT_LATEST_FILE as ALERTS_LATEST_FILE,
@@ -345,6 +346,15 @@ def _build_promotion_gate() -> dict:
     }
 
 
+def _build_approval_inbox() -> dict:
+    report = run_approval_inbox()
+    return {
+        "status": report.get("status"),
+        "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
+    }
+
+
 def _build_daily_control(send_control: bool) -> dict:
     report = run_daily_control_report(send=send_control)
     return {
@@ -427,6 +437,9 @@ def run_daily_analysis_job(
     )
     steps["promotion_gate"] = _run_step(
         lambda: _build_promotion_gate(),
+    )
+    steps["approval_inbox"] = _run_step(
+        lambda: _build_approval_inbox(),
     )
     steps["bot_advisor"] = _run_step(
         lambda: _build_advisor(

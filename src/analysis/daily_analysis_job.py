@@ -46,7 +46,7 @@ from src.analysis.gpt_decision_reporter import (
     DEFAULT_OUTPUT_DIR as GPT_OUTPUT_DIR,
     write_json as write_gpt_json,
 )
-from src.analysis.experiment_planner import run_experiment_planner
+from src.analysis.experiment_planner import run_experiment_planner, send_experiment_digest
 from src.analysis.market_regime import (
     MarketRegimeAnalyzer,
     DEFAULT_LATEST_FILE as REGIME_LATEST_FILE,
@@ -300,12 +300,14 @@ def _build_advisor(send_advice: bool) -> dict:
     }
 
 
-def _build_experiment_plan() -> dict:
+def _build_experiment_plan(send_experiments: bool) -> dict:
     report = run_experiment_planner()
+    sent = send_experiment_digest(report) if send_experiments else False
     return {
         "status": report.get("meta", {}).get("status"),
         "summary": report.get("summary", {}),
         "output_path": report.get("output_path"),
+        "telegram_sent": sent,
     }
 
 
@@ -318,6 +320,7 @@ def run_daily_analysis_job(
     hours: int = 24,
     send_advice: bool = False,
     send_health: bool = False,
+    send_experiments: bool = False,
     force_health_send: bool = False,
     structured_chart_only: bool = True,
     output_dir: str = DEFAULT_OUTPUT_DIR,
@@ -370,7 +373,7 @@ def run_daily_analysis_job(
         lambda: _build_advisor(send_advice=send_advice),
     )
     steps["experiment_plan"] = _run_step(
-        lambda: _build_experiment_plan(),
+        lambda: _build_experiment_plan(send_experiments=send_experiments),
     )
 
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]
@@ -394,6 +397,7 @@ def run_daily_analysis_job(
             "structured_chart_only": structured_chart_only,
             "send_advice": send_advice,
             "send_health": send_health,
+            "send_experiments": send_experiments,
             "force_health_send": force_health_send,
         },
         "steps": steps,
@@ -434,6 +438,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--hours", type=int, default=24, help="Bot-alert lookback window.")
     parser.add_argument("--send-advice", action="store_true", help="Send the combined advisor message to Telegram.")
     parser.add_argument("--send-health", action="store_true", help="Also send the health digest once per day.")
+    parser.add_argument("--send-experiments", action="store_true", help="Also send experiment planner digest to Telegram.")
     parser.add_argument("--force-health-send", action="store_true", help="Ignore daily health digest send marker.")
     parser.add_argument("--include-unstructured-chart", action="store_true", help="Include older/fallback chart events without structured scores.")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Output directory for the daily job summary.")
@@ -448,6 +453,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         hours=args.hours,
         send_advice=args.send_advice,
         send_health=args.send_health,
+        send_experiments=args.send_experiments,
         force_health_send=args.force_health_send,
         structured_chart_only=not args.include_unstructured_chart,
         output_dir=args.output_dir,

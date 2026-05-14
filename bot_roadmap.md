@@ -249,6 +249,7 @@ Principe:
 - recommendation registry markeert actieve voorstellen die niet meer in nieuwe advisor-runs voorkomen als `missing` en kan oude voorstellen via dry-run cleanup archiveren;
 - experiment planner zet stabiele/promotable/approved hypotheses om naar een experimentstatus zoals `waiting_for_more_days`, `ready_for_approval` of `approved_for_shadow`;
 - experiment planner maakt experimenten bestuurbaar met approve/reject commands per experiment-id, gekoppeld aan de recommendation registry;
+- experiment planner kan een compacte Telegram digest sturen zodat de verbeterpipeline zonder JSON-inspectie te volgen is;
 - advisor past nog niets automatisch aan;
 - adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
 

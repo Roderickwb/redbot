@@ -18,7 +18,10 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
+from dotenv import load_dotenv
+
 from src.analysis.recommendation_registry import RecommendationRegistry
+from src.notifier.telegram_notifier import TelegramNotifier
 
 
 DEFAULT_OUTPUT_DIR = os.path.join("analysis", "experiments")
@@ -240,6 +243,64 @@ def run_experiment_planner(
     return report
 
 
+def format_experiment_digest(report: dict, max_items: int = 5) -> str:
+    summary = report.get("summary", {}) or {}
+    lines = [
+        "Experiment Planner",
+        (
+            f"Tracked={summary.get('total', 0)} | "
+            f"ready={summary.get('ready_for_approval', 0)} | "
+            f"shadow={summary.get('approved_for_shadow', 0)}"
+        ),
+    ]
+
+    by_status = summary.get("by_status", {}) or {}
+    if by_status:
+        status_bits = [
+            f"{key}={value}"
+            for key, value in sorted(by_status.items())
+        ]
+        lines.append("Status: " + " | ".join(status_bits))
+
+    experiments = report.get("experiments", []) or []
+    ready = [
+        item for item in experiments
+        if item.get("status") in {"ready_for_approval", "approved_for_shadow"}
+    ]
+    waiting = [
+        item for item in experiments
+        if item.get("status") == "waiting_for_more_days"
+    ]
+    selected = (ready + waiting)[:max_items]
+
+    for item in selected:
+        evidence = item.get("evidence", {}) or {}
+        lines.append(
+            (
+                f"- {item.get('status')} {item.get('experiment_type')}: "
+                f"{evidence.get('pattern')} "
+                f"(seen={evidence.get('seen_count')}, age={evidence.get('age_days')}d, "
+                f"avgR={evidence.get('cf_avg_r')}, loss={evidence.get('cf_loss_rate_pct')}%)"
+            )
+        )
+        if item.get("status") == "ready_for_approval":
+            lines.append(f"  approve: {item.get('decision', {}).get('approve_command')}")
+
+    if not selected:
+        lines.append("- No tracked experiments.")
+    return "\n".join(lines)
+
+
+def send_experiment_digest(report: dict) -> bool:
+    load_dotenv()
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return False
+    TelegramNotifier(token, chat_id).safe_send(format_experiment_digest(report))
+    return True
+
+
 def decide_experiment(
     experiment_id: str,
     decision: str,
@@ -306,6 +367,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--registry", type=str, default=DEFAULT_REGISTRY_PATH, help="Recommendation registry path.")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Output directory.")
     parser.add_argument("--note", type=str, default="", help="Decision note for approve/reject.")
+    parser.add_argument("--send", action="store_true", help="Send experiment digest to Telegram.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     if args.command in {"approve", "reject"}:
@@ -326,10 +388,12 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         registry_path=args.registry,
         output_dir=args.output_dir,
     )
+    sent = send_experiment_digest(report) if args.send else False
     result = {
         "status": report.get("meta", {}).get("status"),
         "summary": report.get("summary", {}),
         "output_path": report.get("output_path"),
+        "telegram_sent": sent,
     }
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if result.get("status") == "OK" else 1

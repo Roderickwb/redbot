@@ -244,6 +244,7 @@ Principe:
 - recommendation registry bewaart aanbevelingen met status `proposed`, `approved`, `rejected` of `auto_applied`;
 - recommendation registry volgt automatisch gegenereerde hypotheses over meerdere runs/dagen met `seen_count`, `age_days`, `stability` en `promotable`;
 - hypotheses worden pas promotable als ze herhaald terugkomen, minimaal oud genoeg zijn en minimaal medium confidence hebben;
+- recommendation registry markeert actieve voorstellen die niet meer in nieuwe advisor-runs voorkomen als `missing` en kan oude voorstellen via dry-run cleanup archiveren;
 - advisor past nog niets automatisch aan;
 - adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
 

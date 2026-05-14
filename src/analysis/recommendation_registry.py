@@ -29,7 +29,7 @@ DEFAULT_OUTPUT_DIR = os.path.join("analysis", "recommendations")
 DEFAULT_REGISTRY_FILE = "recommendation_registry.json"
 DEFAULT_LATEST_FILE = "latest_recommendation_registry_summary.json"
 ACTIVE_STATUSES = {"proposed", "approved"}
-FINAL_STATUSES = {"rejected", "auto_applied"}
+FINAL_STATUSES = {"rejected", "auto_applied", "archived"}
 PROMOTABLE_SEEN_COUNT = 3
 PROMOTABLE_MIN_DAYS = 2
 DAY_MS = 24 * 60 * 60 * 1000
@@ -129,6 +129,7 @@ class RecommendationRegistry:
                 existing["latest_evidence"] = rec.get("evidence", {})
                 existing["latest_recommendation"] = rec.get("recommendation")
                 existing["requires_human_approval"] = bool(rec.get("requires_human_approval"))
+                existing["missing_count"] = 0
                 self._sync_hypotheses(existing, rec, now_ms=now_ms, now_utc=now_utc)
                 updated += 1
             else:
@@ -147,10 +148,13 @@ class RecommendationRegistry:
                     "requires_human_approval": bool(rec.get("requires_human_approval")),
                     "latest_evidence": rec.get("evidence", {}),
                     "decision_history": [],
+                    "missing_count": 0,
                 }
                 self._sync_hypotheses(item, rec, now_ms=now_ms, now_utc=now_utc)
                 registry["items"][rec_id] = item
                 created += 1
+
+        missing = self._mark_missing_items(registry, seen_ids, now_ms=now_ms, now_utc=now_utc)
 
         registry["meta"] = {
             "updated_ts": now_ms,
@@ -161,6 +165,7 @@ class RecommendationRegistry:
                 "seen": len(seen_ids),
                 "created": created,
                 "updated": updated,
+                "missing_active": missing,
             },
         }
         self._save_registry(registry)
@@ -176,6 +181,83 @@ class RecommendationRegistry:
 
     def mark_auto_applied(self, rec_id: str, note: str = "") -> dict:
         return self._set_status(rec_id=rec_id, status="auto_applied", note=note)
+
+    def cleanup(
+        self,
+        apply: bool = False,
+        missing_count: int = 2,
+        stale_days: int = 14,
+    ) -> dict:
+        registry = self._load_registry()
+        now_ms = int(time.time() * 1000)
+        now_utc = _utc_now()
+        candidates = []
+
+        for item in (registry.get("items") or {}).values():
+            if item.get("status") != "proposed":
+                continue
+            reasons = []
+            item_missing_count = int(item.get("missing_count", 0) or 0)
+            last_seen_ts = int(item.get("last_seen_ts", 0) or 0)
+            days_since_seen = _age_days(last_seen_ts, now_ms) if last_seen_ts else 999
+
+            if item_missing_count >= missing_count:
+                reasons.append(f"missing_count>={missing_count}")
+            if days_since_seen >= stale_days:
+                reasons.append(f"stale_days>={stale_days}")
+
+            if not reasons:
+                continue
+            candidates.append({
+                "id": item.get("id"),
+                "area": item.get("area"),
+                "priority": item.get("priority"),
+                "finding": item.get("finding"),
+                "missing_count": item_missing_count,
+                "days_since_seen": days_since_seen,
+                "reasons": reasons,
+            })
+
+            if apply:
+                item["status"] = "archived"
+                item.setdefault("decision_history", []).append({
+                    "ts": now_ms,
+                    "utc": now_utc,
+                    "status": "archived",
+                    "note": "registry cleanup: " + ", ".join(reasons),
+                })
+
+        if apply:
+            registry["meta"] = {
+                **(registry.get("meta") or {}),
+                "updated_ts": now_ms,
+                "updated_utc": now_utc,
+                "last_cleanup": {
+                    "applied": True,
+                    "archived": len(candidates),
+                    "missing_count": missing_count,
+                    "stale_days": stale_days,
+                },
+            }
+            self._save_registry(registry)
+            summary = self.summary(registry=registry)
+            _write_json(self.summary_path, summary)
+        else:
+            summary = self.summary(registry=registry)
+
+        return {
+            "ok": True,
+            "applied": apply,
+            "candidates": len(candidates),
+            "missing_count": missing_count,
+            "stale_days": stale_days,
+            "items": candidates[:50],
+            "summary": {
+                "total": summary.get("total"),
+                "by_status": summary.get("by_status", {}),
+                "hypothesis_summary": summary.get("hypothesis_summary", {}),
+            },
+        }
 
     def summary(self, registry: Optional[dict] = None) -> dict:
         registry = registry or self._load_registry()
@@ -237,6 +319,19 @@ class RecommendationRegistry:
     def _save_registry(self, registry: dict) -> None:
         _write_json(self.registry_path, registry)
 
+    def _mark_missing_items(self, registry: dict, seen_ids: set[str], now_ms: int, now_utc: str) -> int:
+        missing = 0
+        for rec_id, item in (registry.get("items") or {}).items():
+            if rec_id in seen_ids:
+                continue
+            if item.get("status") not in ACTIVE_STATUSES:
+                continue
+            item["missing_count"] = int(item.get("missing_count", 0) or 0) + 1
+            item["last_missing_ts"] = now_ms
+            item["last_missing_utc"] = now_utc
+            missing += 1
+        return missing
+
     def _compact_item(self, item: dict) -> dict:
         compact = {
             "id": item.get("id"),
@@ -247,6 +342,7 @@ class RecommendationRegistry:
             "recommendation": item.get("latest_recommendation"),
             "requires_human_approval": item.get("requires_human_approval"),
             "seen_count": item.get("seen_count"),
+            "missing_count": item.get("missing_count", 0),
             "last_seen_utc": item.get("last_seen_utc"),
         }
         hypotheses = self._compact_hypotheses(item)
@@ -429,6 +525,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     auto.add_argument("id")
     auto.add_argument("--note", type=str, default="")
 
+    cleanup = sub.add_parser("cleanup", help="Find or archive stale proposed recommendations.")
+    cleanup.add_argument("--apply", action="store_true", help="Archive cleanup candidates.")
+    cleanup.add_argument("--missing-count", type=int, default=2, help="Archive proposals missing from this many syncs.")
+    cleanup.add_argument("--stale-days", type=int, default=14, help="Archive proposals not seen for this many days.")
+
     args = parser.parse_args(list(argv) if argv is not None else None)
     registry = RecommendationRegistry(output_dir=args.output_dir)
 
@@ -441,6 +542,12 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         result = registry.reject(args.id, note=args.note)
     elif args.command == "auto-applied":
         result = registry.mark_auto_applied(args.id, note=args.note)
+    elif args.command == "cleanup":
+        result = registry.cleanup(
+            apply=args.apply,
+            missing_count=args.missing_count,
+            stale_days=args.stale_days,
+        )
     else:
         result = registry.summary()
 

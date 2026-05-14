@@ -46,6 +46,7 @@ from src.analysis.gpt_decision_reporter import (
     DEFAULT_OUTPUT_DIR as GPT_OUTPUT_DIR,
     write_json as write_gpt_json,
 )
+from src.analysis.experiment_planner import run_experiment_planner
 from src.analysis.market_regime import (
     MarketRegimeAnalyzer,
     DEFAULT_LATEST_FILE as REGIME_LATEST_FILE,
@@ -299,6 +300,15 @@ def _build_advisor(send_advice: bool) -> dict:
     }
 
 
+def _build_experiment_plan() -> dict:
+    report = run_experiment_planner()
+    return {
+        "status": report.get("meta", {}).get("status"),
+        "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
+    }
+
+
 def run_daily_analysis_job(
     apply_labels: bool = True,
     relabel_existing: bool = False,
@@ -358,6 +368,9 @@ def run_daily_analysis_job(
     )
     steps["bot_advisor"] = _run_step(
         lambda: _build_advisor(send_advice=send_advice),
+    )
+    steps["experiment_plan"] = _run_step(
+        lambda: _build_experiment_plan(),
     )
 
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]

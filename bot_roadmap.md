@@ -221,6 +221,7 @@ Module:
 - `src.analysis.bot_advisor`
 - `src.analysis.daily_analysis_job` als centrale dagrun die learning, GPT-decision report, chart-vision QA, health alerts en advisor achter elkaar ververst.
 - `src.analysis.recommendation_registry` als approval gate voor voorgestelde verbeteringen.
+- `src.analysis.experiment_planner` als gecontroleerde experiment-queue bovenop stabiele hypotheses en approvals.
 
 Inputs:
 - learning report;
@@ -236,6 +237,7 @@ Output:
 - `analysis/daily/latest_daily_analysis_job.json`
 - `analysis/recommendations/recommendation_registry.json`
 - `analysis/recommendations/latest_recommendation_registry_summary.json`
+- `analysis/experiments/latest_experiment_plan.json`
 
 Principe:
 - advisor mag conclusies trekken en aanbevelingen doen;
@@ -245,6 +247,7 @@ Principe:
 - recommendation registry volgt automatisch gegenereerde hypotheses over meerdere runs/dagen met `seen_count`, `age_days`, `stability` en `promotable`;
 - hypotheses worden pas promotable als ze herhaald terugkomen, minimaal oud genoeg zijn en minimaal medium confidence hebben;
 - recommendation registry markeert actieve voorstellen die niet meer in nieuwe advisor-runs voorkomen als `missing` en kan oude voorstellen via dry-run cleanup archiveren;
+- experiment planner zet stabiele/promotable/approved hypotheses om naar een experimentstatus zoals `waiting_for_more_days`, `ready_for_approval` of `approved_for_shadow`;
 - advisor past nog niets automatisch aan;
 - adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
 

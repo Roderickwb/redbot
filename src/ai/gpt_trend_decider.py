@@ -104,8 +104,8 @@ You get a JSON object with at least:
 - chart_features: compact computed market-structure summary, for example:
   {
     "1h": {
-      "structure_label": "clean_trend" | "pullback" | "late_trend" | "chop" | "mixed",
-      "entry_timing": "early" | "clean" | "late" | "noisy",
+      "structure_label": "clean_trend" | "trend_continuation" | "pullback" | "late_trend" | "chop" | "mixed",
+      "entry_timing": "early" | "clean" | "continuation" | "late" | "noisy",
       "ema20_distance_pct": float,
       "ema50_distance_pct": float,
       "ema_spread_pct": float,
@@ -117,7 +117,10 @@ You get a JSON object with at least:
       "last_candle_quality": "bull_rejection" | "bear_rejection" | "strong_bull" | "strong_bear" | "doji" | "neutral",
       "last_close_location_pct": float,
       "recent_doji_count": int,
-      "recent_opposing_wick_count": int
+      "recent_opposing_wick_count": int,
+      "recent_directional_body_count": int,
+      "recent_directional_close_count": int,
+      "directional_continuation": bool
     },
     "4h": { "... same idea ..." }
   }
@@ -400,6 +403,7 @@ Only continue toward OPEN if the current chart itself is good enough:
 - MACD and RSI do not show obvious momentum decay against the trade.
 - Use chart_features as the compact trader summary:
   - structure_label="chop" or entry_timing="noisy" is a strong HOLD signal.
+  - structure_label="trend_continuation" means recent candles still move with the intended direction despite some wicks/dojis. In risk_off, bearish trend_continuation can be a valid SHORT context if not overextended.
   - structure_label="late_trend" or entry_timing="late" lowers confidence sharply.
   - structure_label="pullback" with a supportive rejection candle is often better than chasing extension.
   - high trend_age_bars plus large EMA distance means late-entry risk.
@@ -426,6 +430,7 @@ Use learning_metrics when present:
 Step 4 - Sentiment layer.
 Market regime and sentiment are adjustment layers only:
 - market_regime risk_off makes new LONGs harder to justify unless the coin is clearly strong and the chart is excellent.
+- market_regime risk_off can support clean SHORT setups when trend_4h="bear", algo_signal="short_candidate", and chart_features show pullback or trend_continuation rather than true chop.
 - market_regime risk_on can support clean LONG setups, but cannot rescue weak chart quality.
 - market_regime chop lowers entry confidence and favors HOLD on noisy or late entries.
 - COIN_STRONG_AGAINST_WEAK_MARKET can support a clean setup, but it is not enough by itself.

@@ -1410,7 +1410,11 @@ class TrendStrategy4H:
 
             recent_doji_count = 0
             recent_opposing_wick_count = 0
-            for _, row in recent.tail(5).iterrows():
+            recent_directional_body_count = 0
+            recent_directional_close_count = 0
+            recent_rows = list(recent.tail(5).iterrows())
+            prev_close = None
+            for _, row in recent_rows:
                 ro = float(row["open"])
                 rh = float(row["high"])
                 rl = float(row["low"])
@@ -1425,6 +1429,30 @@ class TrendStrategy4H:
                     recent_opposing_wick_count += 1
                 if intended_direction == "short" and rbot_wick_pct >= 45.0:
                     recent_opposing_wick_count += 1
+                if intended_direction == "long":
+                    if rc > ro and rbody_pct >= 30.0:
+                        recent_directional_body_count += 1
+                    if prev_close is not None and rc > prev_close:
+                        recent_directional_close_count += 1
+                elif intended_direction == "short":
+                    if rc < ro and rbody_pct >= 30.0:
+                        recent_directional_body_count += 1
+                    if prev_close is not None and rc < prev_close:
+                        recent_directional_close_count += 1
+                prev_close = rc
+
+            direction_aligned_ema = False
+            if intended_direction == "long":
+                direction_aligned_ema = close > ema_fast > ema_slow
+            elif intended_direction == "short":
+                direction_aligned_ema = close < ema_fast < ema_slow
+
+            directional_continuation = (
+                trend in ("bull", "bear")
+                and direction_aligned_ema
+                and recent_directional_body_count >= 2
+                and recent_directional_close_count >= 2
+            )
 
             last_candle_quality = self._last_candle_quality(
                 close=close,
@@ -1444,6 +1472,7 @@ class TrendStrategy4H:
                 recent_doji_count=recent_doji_count,
                 recent_opposing_wick_count=recent_opposing_wick_count,
                 ema20_distance_pct=ema20_distance_pct,
+                directional_continuation=directional_continuation,
             )
             entry_timing = self._entry_timing_label(
                 structure_label=structure_label,
@@ -1453,6 +1482,7 @@ class TrendStrategy4H:
                 pullback_depth_pct=pullback_depth_pct,
                 recent_doji_count=recent_doji_count,
                 recent_opposing_wick_count=recent_opposing_wick_count,
+                directional_continuation=directional_continuation,
             )
 
             return {
@@ -1474,6 +1504,9 @@ class TrendStrategy4H:
                 "last_bot_wick_pct": round(bot_wick_pct, 2),
                 "recent_doji_count": int(recent_doji_count),
                 "recent_opposing_wick_count": int(recent_opposing_wick_count),
+                "recent_directional_body_count": int(recent_directional_body_count),
+                "recent_directional_close_count": int(recent_directional_close_count),
+                "directional_continuation": bool(directional_continuation),
                 "macd_hist": round(macd_hist, 8),
                 "macd_hist_slope": round(macd_hist_slope, 8),
                 "rsi": round(rsi, 2),
@@ -1539,15 +1572,20 @@ class TrendStrategy4H:
         recent_doji_count: int,
         recent_opposing_wick_count: int,
         ema20_distance_pct: float,
+        directional_continuation: bool,
     ) -> str:
         if trend == "range" or (ema_spread_pct < 0.15 and recent_doji_count >= 2):
             return "chop"
         if recent_doji_count >= 3 or recent_opposing_wick_count >= 3:
-            return "chop"
+            if not directional_continuation:
+                return "chop"
         if trend_age_bars >= 8 and (abs(ema20_distance_pct) >= 3.0 or rsi >= 75.0 or rsi <= 25.0):
-            return "late_trend"
+            if not directional_continuation or abs(ema20_distance_pct) >= 4.5:
+                return "late_trend"
         if 0.3 <= pullback_depth_pct <= max(3.0, atr_pct * 2.0):
             return "pullback"
+        if directional_continuation:
+            return "trend_continuation"
         if trend in ("bull", "bear") and trend_age_bars >= 2:
             return "clean_trend"
         return "mixed"
@@ -1561,8 +1599,11 @@ class TrendStrategy4H:
         pullback_depth_pct: float,
         recent_doji_count: int,
         recent_opposing_wick_count: int,
+        directional_continuation: bool,
     ) -> str:
-        if structure_label == "chop" or recent_doji_count >= 3 or recent_opposing_wick_count >= 3:
+        if structure_label == "chop" or (
+            not directional_continuation and (recent_doji_count >= 3 or recent_opposing_wick_count >= 3)
+        ):
             return "noisy"
         if structure_label == "late_trend" or abs(ema20_distance_pct) >= 3.5:
             return "late"
@@ -1570,6 +1611,10 @@ class TrendStrategy4H:
         supportive_short = intended_direction == "short" and last_candle_quality in ("bear_rejection", "strong_bear")
         if structure_label == "pullback" and (supportive_long or supportive_short):
             return "clean"
+        if structure_label == "trend_continuation" and (supportive_long or supportive_short):
+            return "clean"
+        if structure_label == "trend_continuation":
+            return "continuation"
         if structure_label == "clean_trend" and pullback_depth_pct < 0.3:
             return "early"
         if supportive_long or supportive_short:

@@ -40,6 +40,7 @@ from src.analysis.chart_vision_reporter import (
     DEFAULT_OUTPUT_DIR as CHART_OUTPUT_DIR,
     write_json as write_chart_json,
 )
+from src.analysis.daily_control_report import run_daily_control_report
 from src.analysis.gpt_decision_reporter import (
     GptDecisionReporter,
     DEFAULT_LATEST_FILE as GPT_LATEST_FILE,
@@ -320,6 +321,18 @@ def _build_shadow_experiment_results(hours: int) -> dict:
     }
 
 
+def _build_daily_control(send_control: bool) -> dict:
+    report = run_daily_control_report(send=send_control)
+    return {
+        "status": report.get("status"),
+        "blockers": len(report.get("blockers", []) or []),
+        "approval_queue": len(report.get("approval_queue", []) or []),
+        "next_actions": report.get("next_actions", []),
+        "output_path": report.get("output_path"),
+        "telegram_sent": report.get("telegram_sent", False),
+    }
+
+
 def run_daily_analysis_job(
     apply_labels: bool = True,
     relabel_existing: bool = False,
@@ -330,6 +343,7 @@ def run_daily_analysis_job(
     send_advice: bool = False,
     send_health: bool = False,
     send_experiments: bool = False,
+    send_control: bool = False,
     force_health_send: bool = False,
     structured_chart_only: bool = True,
     output_dir: str = DEFAULT_OUTPUT_DIR,
@@ -410,6 +424,7 @@ def run_daily_analysis_job(
             "send_advice": send_advice,
             "send_health": send_health,
             "send_experiments": send_experiments,
+            "send_control": send_control,
             "force_health_send": force_health_send,
         },
         "steps": steps,
@@ -417,6 +432,15 @@ def run_daily_analysis_job(
 
     output_path = os.path.join(output_dir, DEFAULT_LATEST_FILE)
     payload["output_path"] = output_path
+    _write_json(output_path, payload)
+
+    steps["daily_control_report"] = _run_step(
+        lambda: _build_daily_control(send_control=send_control),
+    )
+    failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]
+    payload["failed_steps"] = failed_steps
+    payload["status"] = "FAILED" if failed_steps else advisor_status
+    payload["duration_sec"] = round(time.time() - started, 3)
     _write_json(output_path, payload)
     return payload
 
@@ -451,6 +475,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--send-advice", action="store_true", help="Send the combined advisor message to Telegram.")
     parser.add_argument("--send-health", action="store_true", help="Also send the health digest once per day.")
     parser.add_argument("--send-experiments", action="store_true", help="Also send experiment planner digest to Telegram.")
+    parser.add_argument("--send-control", action="store_true", help="Also send compact daily control report to Telegram.")
     parser.add_argument("--force-health-send", action="store_true", help="Ignore daily health digest send marker.")
     parser.add_argument("--include-unstructured-chart", action="store_true", help="Include older/fallback chart events without structured scores.")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Output directory for the daily job summary.")
@@ -466,6 +491,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         send_advice=args.send_advice,
         send_health=args.send_health,
         send_experiments=args.send_experiments,
+        send_control=args.send_control,
         force_health_send=args.force_health_send,
         structured_chart_only=not args.include_unstructured_chart,
         output_dir=args.output_dir,

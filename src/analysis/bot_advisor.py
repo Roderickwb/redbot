@@ -35,6 +35,7 @@ DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest
 DEFAULT_OPPORTUNITY_REPORT = os.path.join("analysis", "opportunities", "latest_opportunity_report.json")
 DEFAULT_SHADOW_REPORT = os.path.join("analysis", "shadow_models", "latest_shadow_model_report.json")
 DEFAULT_SHADOW_EXPERIMENT_REPORT = os.path.join("analysis", "experiments", "latest_shadow_experiment_results.json")
+DEFAULT_PROMOTION_GATE_REPORT = os.path.join("analysis", "promotion_gate", "latest_promotion_gate_report.json")
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 
 
@@ -80,6 +81,7 @@ class BotAdvisor:
         opportunity_path: str = DEFAULT_OPPORTUNITY_REPORT,
         shadow_report_path: str = DEFAULT_SHADOW_REPORT,
         shadow_experiment_path: str = DEFAULT_SHADOW_EXPERIMENT_REPORT,
+        promotion_gate_path: str = DEFAULT_PROMOTION_GATE_REPORT,
         ml_edge_report_path: str = DEFAULT_ML_EDGE_REPORT,
     ):
         self.learning_report_path = learning_report_path
@@ -91,6 +93,7 @@ class BotAdvisor:
         self.opportunity_path = opportunity_path
         self.shadow_report_path = shadow_report_path
         self.shadow_experiment_path = shadow_experiment_path
+        self.promotion_gate_path = promotion_gate_path
         self.ml_edge_report_path = ml_edge_report_path
 
     def build_advice(self) -> dict:
@@ -104,6 +107,7 @@ class BotAdvisor:
             "opportunities": load_json(self.opportunity_path),
             "shadow_models": load_json(self.shadow_report_path),
             "shadow_experiments": load_json(self.shadow_experiment_path),
+            "promotion_gate": load_json(self.promotion_gate_path),
             "ml_edge_model": load_json(self.ml_edge_report_path),
         }
 
@@ -116,6 +120,7 @@ class BotAdvisor:
         recommendations.extend(self._opportunity_recommendations(reports["opportunities"]))
         recommendations.extend(self._shadow_model_recommendations(reports["shadow_models"]))
         recommendations.extend(self._shadow_experiment_recommendations(reports["shadow_experiments"]))
+        recommendations.extend(self._promotion_gate_recommendations(reports["promotion_gate"]))
         recommendations.extend(self._ml_edge_model_recommendations(reports["ml_edge_model"]))
         recommendations.extend(self._profile_recommendations(reports["profiles"]))
         recommendations.extend(self._learning_recommendations(reports["learning"]))
@@ -136,6 +141,7 @@ class BotAdvisor:
                 "opportunity_report": self.opportunity_path,
                 "shadow_model_report": self.shadow_report_path,
                 "shadow_experiment_report": self.shadow_experiment_path,
+                "promotion_gate_report": self.promotion_gate_path,
                 "ml_edge_model_report": self.ml_edge_report_path,
             },
         }
@@ -733,6 +739,106 @@ class BotAdvisor:
             "verdict": top.get("verdict"),
             "replay_results": top.get("replay_results"),
             "forward_shadow_results": top.get("forward_shadow_results"),
+        }
+
+    def _promotion_gate_recommendations(self, promotion_report: dict) -> list[dict]:
+        if promotion_report.get("_missing") or promotion_report.get("_error"):
+            return []
+        summary = promotion_report.get("summary", {}) or {}
+        decisions = promotion_report.get("decisions", []) or []
+        items = []
+
+        ready = _safe_int(summary.get("ready_for_human_review"))
+        confirmed = _safe_int(summary.get("confirmed_protection"))
+        blocked = _safe_int(summary.get("blocked"))
+        waiting = _safe_int(summary.get("waiting"))
+
+        if ready:
+            top = self._top_promotion_decision(decisions, "ready_for_human_review")
+            items.append(self._rec(
+                priority="high",
+                area="promotion_gate",
+                finding=f"{ready} experiments passed the promotion gate and need human review.",
+                recommendation="Review these explicitly before approving; promotion gate never changes live behavior by itself.",
+                requires_human_approval=True,
+                evidence={
+                    "promotion_status": "ready_for_human_review",
+                    "count": ready,
+                    "top_decision": top,
+                },
+            ))
+
+        if blocked:
+            top = self._top_promotion_decision(decisions, "blocked")
+            items.append(self._rec(
+                priority="medium",
+                area="promotion_gate",
+                finding=f"{blocked} experiments are blocked by the promotion gate.",
+                recommendation="Do not promote these experiments; keep or strengthen protections until new evidence appears.",
+                requires_human_approval=False,
+                evidence={
+                    "promotion_status": "blocked",
+                    "count": blocked,
+                    "top_decision": top,
+                },
+            ))
+
+        if confirmed:
+            top = self._top_promotion_decision(decisions, "confirmed_protection")
+            items.append(self._rec(
+                priority="low",
+                area="promotion_gate",
+                finding=f"{confirmed} protection experiments are confirmed by the promotion gate.",
+                recommendation="Keep these protections; avoid broad relax rules that include these patterns.",
+                requires_human_approval=False,
+                evidence={
+                    "promotion_status": "confirmed_protection",
+                    "count": confirmed,
+                    "top_decision": top,
+                },
+            ))
+
+        if waiting and not ready:
+            items.append(self._rec(
+                priority="low",
+                area="promotion_gate",
+                finding=f"{waiting} experiments are still waiting for enough forward evidence.",
+                recommendation="Let the daily pipeline keep collecting forward-shadow matches.",
+                requires_human_approval=False,
+                evidence={
+                    "promotion_status": "waiting",
+                    "count": waiting,
+                    "by_status": summary.get("by_status", {}),
+                },
+            ))
+        return items
+
+    def _top_promotion_decision(self, decisions: list[dict], status: str) -> dict:
+        matches = [
+            decision for decision in decisions
+            if decision.get("status") == status
+        ]
+        matches.sort(
+            key=lambda item: (
+                _safe_int((item.get("forward") or {}).get("matches")),
+                abs(_safe_float((item.get("forward") or {}).get("cf_avg_r"))),
+                _safe_int((item.get("replay") or {}).get("matches")),
+                abs(_safe_float((item.get("replay") or {}).get("cf_avg_r"))),
+            ),
+            reverse=True,
+        )
+        if not matches:
+            return {}
+        top = matches[0]
+        return {
+            "experiment_id": top.get("experiment_id"),
+            "experiment_type": top.get("experiment_type"),
+            "pattern": top.get("pattern"),
+            "status": top.get("status"),
+            "reason": top.get("reason"),
+            "next_action": top.get("next_action"),
+            "replay": top.get("replay"),
+            "forward": top.get("forward"),
         }
 
     def _ml_edge_model_recommendations(self, ml_report: dict) -> list[dict]:

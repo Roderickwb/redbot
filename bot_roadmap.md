@@ -261,6 +261,7 @@ Principe:
 - shadow experiment runner geeft verdicts en overlap-groepen, zodat dubbele patronen niet als onafhankelijk bewijs worden geteld;
 - promotion gate bepaalt per experiment of het `blocked`, `waiting_for_forward`, `confirmed_protection` of `ready_for_human_review` is;
 - advisor leest shadow experiment verdicts en overlap-groepen terug, zodat replay-only, forward-confirmed en duplicate evidence automatisch worden samengevat;
+- advisor leest promotion gate uitkomsten terug en zet blocked/confirmed/ready experimenten om naar registry-stabiele aanbevelingen;
 - daily job draait de advisor pas na experiment plan en shadow experiment results, zodat advisor altijd de nieuwste experiment-uitkomsten gebruikt;
 - daily control report vat blockers, approval queue, ML readiness, experimentstatus en concrete next actions samen;
 - advisor past nog niets automatisch aan;

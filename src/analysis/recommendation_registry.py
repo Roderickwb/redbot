@@ -119,6 +119,8 @@ def _evidence_stable_key(rec: dict, evidence: dict) -> Optional[str]:
         return f"shadow_experiment_verdict_{evidence.get('verdict')}"
     if "overlap_count" in evidence and area == "shadow_experiments":
         return "shadow_experiment_overlap_groups"
+    if "promotion_status" in evidence and area == "promotion_gate":
+        return f"promotion_gate_{evidence.get('promotion_status')}"
     if recommendation.startswith("Treat this as transition noise"):
         return f"{area}_transition_noise"
     return None

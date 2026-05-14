@@ -71,6 +71,7 @@ from src.analysis.opportunity_reporter import (
     DEFAULT_OUTPUT_DIR as OPPORTUNITY_OUTPUT_DIR,
     write_json as write_opportunity_json,
 )
+from src.analysis.promotion_gate import run_promotion_gate
 from src.analysis.recommendation_registry import RecommendationRegistry
 from src.analysis.shadow_model_evaluator import (
     ShadowModelEvaluator,
@@ -336,6 +337,14 @@ def _build_shadow_experiment_results(hours: int) -> dict:
     }
 
 
+def _build_promotion_gate() -> dict:
+    report = run_promotion_gate()
+    return {
+        "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
+    }
+
+
 def _build_daily_control(send_control: bool) -> dict:
     report = run_daily_control_report(send=send_control)
     return {
@@ -415,6 +424,9 @@ def run_daily_analysis_job(
     )
     steps["shadow_experiment_results"] = _run_step(
         lambda: _build_shadow_experiment_results(hours=hours),
+    )
+    steps["promotion_gate"] = _run_step(
+        lambda: _build_promotion_gate(),
     )
     steps["bot_advisor"] = _run_step(
         lambda: _build_advisor(

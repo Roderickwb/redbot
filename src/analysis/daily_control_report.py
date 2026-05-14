@@ -30,6 +30,7 @@ DEFAULT_ADVISOR_REPORT = os.path.join("analysis", "bot_advisor", "latest_bot_adv
 DEFAULT_REGISTRY_SUMMARY = os.path.join("analysis", "recommendations", "latest_recommendation_registry_summary.json")
 DEFAULT_EXPERIMENT_PLAN = os.path.join("analysis", "experiments", "latest_experiment_plan.json")
 DEFAULT_SHADOW_RESULTS = os.path.join("analysis", "experiments", "latest_shadow_experiment_results.json")
+DEFAULT_PROMOTION_GATE = os.path.join("analysis", "promotion_gate", "latest_promotion_gate_report.json")
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
@@ -73,6 +74,7 @@ class DailyControlReport:
         registry_path: str = DEFAULT_REGISTRY_SUMMARY,
         experiment_path: str = DEFAULT_EXPERIMENT_PLAN,
         shadow_results_path: str = DEFAULT_SHADOW_RESULTS,
+        promotion_gate_path: str = DEFAULT_PROMOTION_GATE,
         ml_edge_path: str = DEFAULT_ML_EDGE_REPORT,
         alerts_path: str = DEFAULT_ALERT_REPORT,
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
@@ -82,6 +84,7 @@ class DailyControlReport:
         self.registry_path = registry_path
         self.experiment_path = experiment_path
         self.shadow_results_path = shadow_results_path
+        self.promotion_gate_path = promotion_gate_path
         self.ml_edge_path = ml_edge_path
         self.alerts_path = alerts_path
         self.market_regime_path = market_regime_path
@@ -93,6 +96,7 @@ class DailyControlReport:
             "registry": load_json(self.registry_path),
             "experiments": load_json(self.experiment_path),
             "shadow_results": load_json(self.shadow_results_path),
+            "promotion_gate": load_json(self.promotion_gate_path),
             "ml_edge": load_json(self.ml_edge_path),
             "alerts": load_json(self.alerts_path),
             "market_regime": load_json(self.market_regime_path),
@@ -101,9 +105,10 @@ class DailyControlReport:
         blockers = self._blockers(reports)
         approval_queue = self._approval_queue(reports)
         experiment_status = self._experiment_status(reports)
+        promotion_status = self._promotion_status(reports)
         learning_status = self._learning_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
-        next_actions = self._next_actions(blockers, approval_queue, experiment_status, learning_status)
+        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, learning_status)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -113,6 +118,7 @@ class DailyControlReport:
             "approval_queue": approval_queue,
             "learning_status": learning_status,
             "experiment_status": experiment_status,
+            "promotion_status": promotion_status,
             "next_actions": next_actions,
             "sources": {
                 "daily_job": self.daily_job_path,
@@ -120,6 +126,7 @@ class DailyControlReport:
                 "registry": self.registry_path,
                 "experiment_plan": self.experiment_path,
                 "shadow_results": self.shadow_results_path,
+                "promotion_gate": self.promotion_gate_path,
                 "ml_edge_model": self.ml_edge_path,
                 "alerts": self.alerts_path,
                 "market_regime": self.market_regime_path,
@@ -233,11 +240,25 @@ class DailyControlReport:
             "protection_confirmed": _safe_int(by_verdict.get("protection_confirmed")),
         }
 
+    def _promotion_status(self, reports: dict) -> dict:
+        promotion = reports.get("promotion_gate", {}) or {}
+        summary = promotion.get("summary", {}) or {}
+        return {
+            "total": _safe_int(summary.get("total")),
+            "ready_for_human_review": _safe_int(summary.get("ready_for_human_review")),
+            "confirmed_protection": _safe_int(summary.get("confirmed_protection")),
+            "blocked": _safe_int(summary.get("blocked")),
+            "waiting": _safe_int(summary.get("waiting")),
+            "by_status": summary.get("by_status", {}),
+            "by_type": summary.get("by_type", {}),
+        }
+
     def _operating_state(self, reports: dict, blockers: list[dict], approval_queue: list[dict]) -> dict:
         advisor = reports.get("advisor", {}) or {}
         registry = reports.get("registry", {}) or {}
         experiments = reports.get("experiments", {}) or {}
         shadow = reports.get("shadow_results", {}) or {}
+        promotion = reports.get("promotion_gate", {}) or {}
 
         if blockers:
             status = "ACTION_NEEDED"
@@ -261,6 +282,7 @@ class DailyControlReport:
             },
             "experiments": experiments.get("summary", {}),
             "shadow_results": shadow.get("summary", {}),
+            "promotion_gate": promotion.get("summary", {}),
         }
 
     def _next_actions(
@@ -268,6 +290,7 @@ class DailyControlReport:
         blockers: list[dict],
         approval_queue: list[dict],
         experiment_status: dict,
+        promotion_status: dict,
         learning_status: dict,
     ) -> list[str]:
         if blockers:
@@ -277,6 +300,10 @@ class DailyControlReport:
             ]
 
         actions = []
+        if promotion_status.get("ready_for_human_review"):
+            actions.append("Review promotion-gate candidates before approving any experiment.")
+        if promotion_status.get("blocked"):
+            actions.append("Do not promote blocked experiments; their evidence failed the promotion gate.")
         if experiment_status.get("ready_for_approval"):
             actions.append("Review ready experiments and approve/reject explicitly via experiment_planner.")
         if experiment_status.get("promising_replay_needs_forward"):
@@ -298,6 +325,7 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
     learning = report.get("learning_status", {}) or {}
     ml = learning.get("ml_edge", {}) or {}
     experiments = report.get("experiment_status", {}) or {}
+    promotion = report.get("promotion_status", {}) or {}
 
     lines = [
         f"Daily Control [{report.get('status')}]",
@@ -310,6 +338,11 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
             f"Experiments planned={experiments.get('planned', 0)} "
             f"ready={experiments.get('ready_for_approval', 0)} "
             f"forward_matches={experiments.get('shadow_forward_matches', 0)}"
+        ),
+        (
+            f"Promotion ready={promotion.get('ready_for_human_review', 0)} "
+            f"confirmed_protection={promotion.get('confirmed_protection', 0)} "
+            f"blocked={promotion.get('blocked', 0)}"
         ),
     ]
 

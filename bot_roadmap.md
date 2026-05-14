@@ -223,6 +223,7 @@ Module:
 - `src.analysis.recommendation_registry` als approval gate voor voorgestelde verbeteringen.
 - `src.analysis.experiment_planner` als gecontroleerde experiment-queue bovenop stabiele hypotheses en approvals.
 - `src.analysis.shadow_experiment_runner` als replay/forward runner voor experimenten zonder live trading impact.
+- `src.analysis.promotion_gate` als objectieve safety gate tussen shadow-resultaten en menselijke approval.
 - `src.analysis.daily_control_report` als compacte operatorlaag bovenop alle analyses.
 
 Inputs:
@@ -241,6 +242,7 @@ Output:
 - `analysis/recommendations/latest_recommendation_registry_summary.json`
 - `analysis/experiments/latest_experiment_plan.json`
 - `analysis/experiments/latest_shadow_experiment_results.json`
+- `analysis/promotion_gate/latest_promotion_gate_report.json`
 - `analysis/daily_control/latest_daily_control_report.json`
 
 Principe:
@@ -257,6 +259,7 @@ Principe:
 - experiment planner kan een compacte Telegram digest sturen zodat de verbeterpipeline zonder JSON-inspectie te volgen is;
 - shadow experiment runner meet experimenten apart op historische replay en recente forward-shadow rows;
 - shadow experiment runner geeft verdicts en overlap-groepen, zodat dubbele patronen niet als onafhankelijk bewijs worden geteld;
+- promotion gate bepaalt per experiment of het `blocked`, `waiting_for_forward`, `confirmed_protection` of `ready_for_human_review` is;
 - advisor leest shadow experiment verdicts en overlap-groepen terug, zodat replay-only, forward-confirmed en duplicate evidence automatisch worden samengevat;
 - daily job draait de advisor pas na experiment plan en shadow experiment results, zodat advisor altijd de nieuwste experiment-uitkomsten gebruikt;
 - daily control report vat blockers, approval queue, ML readiness, experimentstatus en concrete next actions samen;

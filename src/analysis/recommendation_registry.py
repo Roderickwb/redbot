@@ -30,6 +30,9 @@ DEFAULT_REGISTRY_FILE = "recommendation_registry.json"
 DEFAULT_LATEST_FILE = "latest_recommendation_registry_summary.json"
 ACTIVE_STATUSES = {"proposed", "approved"}
 FINAL_STATUSES = {"rejected", "auto_applied"}
+PROMOTABLE_SEEN_COUNT = 3
+PROMOTABLE_MIN_DAYS = 2
+DAY_MS = 24 * 60 * 60 * 1000
 
 
 def _utc_now() -> str:
@@ -53,13 +56,51 @@ def _write_json(path: str, payload: Any) -> None:
 
 
 def _stable_id(rec: dict) -> str:
+    evidence = rec.get("evidence") or {}
+    hypotheses = evidence.get("hypotheses") or []
+    if hypotheses and isinstance(hypotheses[0], dict) and hypotheses[0].get("rule_id"):
+        payload = {
+            "area": rec.get("area"),
+            "hypothesis_rule_id": hypotheses[0].get("rule_id"),
+        }
+    else:
+        payload = {
+            "area": rec.get("area"),
+            "finding": rec.get("finding"),
+            "recommendation": rec.get("recommendation"),
+        }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _stable_hypothesis_id(hypothesis: dict) -> str:
+    rule_id = hypothesis.get("rule_id")
+    if rule_id:
+        return str(rule_id)
     payload = {
-        "area": rec.get("area"),
-        "finding": rec.get("finding"),
-        "recommendation": rec.get("recommendation"),
+        "group": hypothesis.get("group"),
+        "pattern": hypothesis.get("pattern"),
+        "hypothesis_type": hypothesis.get("hypothesis_type"),
+        "proposed_action": hypothesis.get("proposed_action"),
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _age_days(first_ts: int, last_ts: int) -> int:
+    if not first_ts or not last_ts:
+        return 1
+    return max(1, int((last_ts - first_ts) // DAY_MS) + 1)
+
+
+def _extract_hypotheses(rec: dict) -> list[dict]:
+    evidence = rec.get("evidence") or {}
+    hypotheses = evidence.get("hypotheses") or []
+    return [
+        hypothesis
+        for hypothesis in hypotheses
+        if isinstance(hypothesis, dict)
+    ]
 
 
 class RecommendationRegistry:
@@ -88,9 +129,10 @@ class RecommendationRegistry:
                 existing["latest_evidence"] = rec.get("evidence", {})
                 existing["latest_recommendation"] = rec.get("recommendation")
                 existing["requires_human_approval"] = bool(rec.get("requires_human_approval"))
+                self._sync_hypotheses(existing, rec, now_ms=now_ms, now_utc=now_utc)
                 updated += 1
             else:
-                registry["items"][rec_id] = {
+                item = {
                     "id": rec_id,
                     "status": "proposed",
                     "created_ts": now_ms,
@@ -106,6 +148,8 @@ class RecommendationRegistry:
                     "latest_evidence": rec.get("evidence", {}),
                     "decision_history": [],
                 }
+                self._sync_hypotheses(item, rec, now_ms=now_ms, now_utc=now_utc)
+                registry["items"][rec_id] = item
                 created += 1
 
         registry["meta"] = {
@@ -156,6 +200,7 @@ class RecommendationRegistry:
             "total": len(items),
             "by_status": by_status,
             "by_area": by_area,
+            "hypothesis_summary": self._hypothesis_summary(items),
             "active": [
                 self._compact_item(item)
                 for item in active[:25]
@@ -193,7 +238,7 @@ class RecommendationRegistry:
         _write_json(self.registry_path, registry)
 
     def _compact_item(self, item: dict) -> dict:
-        return {
+        compact = {
             "id": item.get("id"),
             "status": item.get("status"),
             "priority": item.get("priority"),
@@ -204,9 +249,162 @@ class RecommendationRegistry:
             "seen_count": item.get("seen_count"),
             "last_seen_utc": item.get("last_seen_utc"),
         }
+        hypotheses = self._compact_hypotheses(item)
+        if hypotheses:
+            compact["hypotheses"] = hypotheses
+        return compact
 
     def _priority_rank(self, priority: Any) -> int:
         return {"high": 3, "medium": 2, "low": 1}.get(str(priority), 0)
+
+    def _sync_hypotheses(self, item: dict, rec: dict, now_ms: int, now_utc: str) -> None:
+        hypotheses = _extract_hypotheses(rec)
+        if not hypotheses:
+            return
+
+        tracked = item.setdefault("hypotheses", {})
+        for hypothesis in hypotheses:
+            hyp_id = _stable_hypothesis_id(hypothesis)
+            existing = tracked.get(hyp_id)
+            if existing:
+                existing["last_seen_ts"] = now_ms
+                existing["last_seen_utc"] = now_utc
+                existing["seen_count"] = int(existing.get("seen_count", 0)) + 1
+            else:
+                existing = {
+                    "id": hyp_id,
+                    "first_seen_ts": now_ms,
+                    "first_seen_utc": now_utc,
+                    "last_seen_ts": now_ms,
+                    "last_seen_utc": now_utc,
+                    "seen_count": 1,
+                }
+                tracked[hyp_id] = existing
+
+            existing.update({
+                "hypothesis_type": hypothesis.get("hypothesis_type"),
+                "group": hypothesis.get("group"),
+                "pattern": hypothesis.get("pattern"),
+                "proposed_action": hypothesis.get("proposed_action"),
+                "confidence": hypothesis.get("confidence"),
+                "matches": hypothesis.get("matches"),
+                "cf_avg_r": hypothesis.get("cf_avg_r"),
+                "cf_positive_rate_pct": hypothesis.get("cf_positive_rate_pct"),
+                "cf_loss_rate_pct": hypothesis.get("cf_loss_rate_pct"),
+                "requires_human_approval": hypothesis.get("requires_human_approval", True),
+                "guardrails": hypothesis.get("guardrails", []),
+                "sample_cases": hypothesis.get("sample_cases", [])[:5],
+            })
+            self._refresh_hypothesis_state(existing)
+
+    def _refresh_hypothesis_state(self, hypothesis: dict) -> None:
+        age_days = _age_days(
+            int(hypothesis.get("first_seen_ts", 0) or 0),
+            int(hypothesis.get("last_seen_ts", 0) or 0),
+        )
+        seen_count = int(hypothesis.get("seen_count", 0) or 0)
+        confidence = str(hypothesis.get("confidence", "low"))
+        promotable = (
+            seen_count >= PROMOTABLE_SEEN_COUNT
+            and age_days >= PROMOTABLE_MIN_DAYS
+            and confidence in {"medium", "high"}
+        )
+
+        if promotable:
+            stability = "promotable"
+        elif seen_count >= PROMOTABLE_SEEN_COUNT:
+            stability = "stable_same_day"
+        elif seen_count >= 2:
+            stability = "repeat"
+        else:
+            stability = "new"
+
+        hypothesis["age_days"] = age_days
+        hypothesis["stability"] = stability
+        hypothesis["promotable"] = promotable
+        hypothesis["promotion_requirements"] = {
+            "min_seen_count": PROMOTABLE_SEEN_COUNT,
+            "min_age_days": PROMOTABLE_MIN_DAYS,
+            "requires_confidence": ["medium", "high"],
+        }
+
+    def _compact_hypotheses(self, item: dict) -> list[dict]:
+        hypotheses = list((item.get("hypotheses") or {}).values())
+        hypotheses.sort(
+            key=lambda hyp: (
+                1 if hyp.get("promotable") else 0,
+                int(hyp.get("seen_count", 0) or 0),
+                float(hyp.get("cf_avg_r", 0.0) or 0.0),
+            ),
+            reverse=True,
+        )
+        return [
+            {
+                "id": hyp.get("id"),
+                "stability": hyp.get("stability"),
+                "promotable": hyp.get("promotable"),
+                "seen_count": hyp.get("seen_count"),
+                "age_days": hyp.get("age_days"),
+                "confidence": hyp.get("confidence"),
+                "hypothesis_type": hyp.get("hypothesis_type"),
+                "pattern": hyp.get("pattern"),
+                "matches": hyp.get("matches"),
+                "cf_avg_r": hyp.get("cf_avg_r"),
+                "cf_loss_rate_pct": hyp.get("cf_loss_rate_pct"),
+            }
+            for hyp in hypotheses[:5]
+        ]
+
+    def _hypothesis_summary(self, items: list[dict]) -> dict:
+        hypotheses = []
+        for item in items:
+            for hypothesis in (item.get("hypotheses") or {}).values():
+                self._refresh_hypothesis_state(hypothesis)
+                hypotheses.append({
+                    **hypothesis,
+                    "recommendation_id": item.get("id"),
+                    "area": item.get("area"),
+                    "priority": item.get("priority"),
+                })
+
+        by_stability = {}
+        for hypothesis in hypotheses:
+            stability = hypothesis.get("stability", "unknown")
+            by_stability[stability] = by_stability.get(stability, 0) + 1
+
+        promotable = [
+            hypothesis for hypothesis in hypotheses
+            if hypothesis.get("promotable")
+        ]
+        promotable.sort(
+            key=lambda hyp: (
+                self._priority_rank(hyp.get("priority")),
+                float(hyp.get("cf_avg_r", 0.0) or 0.0),
+                int(hyp.get("seen_count", 0) or 0),
+            ),
+            reverse=True,
+        )
+
+        return {
+            "total": len(hypotheses),
+            "by_stability": by_stability,
+            "promotable": len(promotable),
+            "top_promotable": [
+                {
+                    "recommendation_id": hyp.get("recommendation_id"),
+                    "hypothesis_id": hyp.get("id"),
+                    "area": hyp.get("area"),
+                    "confidence": hyp.get("confidence"),
+                    "hypothesis_type": hyp.get("hypothesis_type"),
+                    "pattern": hyp.get("pattern"),
+                    "seen_count": hyp.get("seen_count"),
+                    "age_days": hyp.get("age_days"),
+                    "cf_avg_r": hyp.get("cf_avg_r"),
+                    "cf_loss_rate_pct": hyp.get("cf_loss_rate_pct"),
+                }
+                for hyp in promotable[:10]
+            ],
+        }
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:

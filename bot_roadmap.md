@@ -242,6 +242,8 @@ Principe:
 - advisor leest ook shadow-model resultaten en vertaalt die naar promote/reject/wait adviezen;
 - advisor leest ML Edge Model readiness en metrics;
 - recommendation registry bewaart aanbevelingen met status `proposed`, `approved`, `rejected` of `auto_applied`;
+- recommendation registry volgt automatisch gegenereerde hypotheses over meerdere runs/dagen met `seen_count`, `age_days`, `stability` en `promotable`;
+- hypotheses worden pas promotable als ze herhaald terugkomen, minimaal oud genoeg zijn en minimaal medium confidence hebben;
 - advisor past nog niets automatisch aan;
 - adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
 

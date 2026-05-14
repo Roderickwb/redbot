@@ -115,6 +115,10 @@ def _evidence_stable_key(rec: dict, evidence: dict) -> Optional[str]:
         return f"market_regime_{area}_{_hash_key(rec.get('finding'))}"
     if "attention_case" in evidence:
         return f"{area}_{evidence.get('attention_case')}"
+    if "verdict" in evidence and area == "shadow_experiments":
+        return f"shadow_experiment_verdict_{evidence.get('verdict')}"
+    if "overlap_count" in evidence and area == "shadow_experiments":
+        return "shadow_experiment_overlap_groups"
     if recommendation.startswith("Treat this as transition noise"):
         return f"{area}_transition_noise"
     return None

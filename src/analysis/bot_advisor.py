@@ -34,6 +34,7 @@ DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
 DEFAULT_OPPORTUNITY_REPORT = os.path.join("analysis", "opportunities", "latest_opportunity_report.json")
 DEFAULT_SHADOW_REPORT = os.path.join("analysis", "shadow_models", "latest_shadow_model_report.json")
+DEFAULT_SHADOW_EXPERIMENT_REPORT = os.path.join("analysis", "experiments", "latest_shadow_experiment_results.json")
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 
 
@@ -78,6 +79,7 @@ class BotAdvisor:
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
         opportunity_path: str = DEFAULT_OPPORTUNITY_REPORT,
         shadow_report_path: str = DEFAULT_SHADOW_REPORT,
+        shadow_experiment_path: str = DEFAULT_SHADOW_EXPERIMENT_REPORT,
         ml_edge_report_path: str = DEFAULT_ML_EDGE_REPORT,
     ):
         self.learning_report_path = learning_report_path
@@ -88,6 +90,7 @@ class BotAdvisor:
         self.market_regime_path = market_regime_path
         self.opportunity_path = opportunity_path
         self.shadow_report_path = shadow_report_path
+        self.shadow_experiment_path = shadow_experiment_path
         self.ml_edge_report_path = ml_edge_report_path
 
     def build_advice(self) -> dict:
@@ -100,6 +103,7 @@ class BotAdvisor:
             "market_regime": load_json(self.market_regime_path),
             "opportunities": load_json(self.opportunity_path),
             "shadow_models": load_json(self.shadow_report_path),
+            "shadow_experiments": load_json(self.shadow_experiment_path),
             "ml_edge_model": load_json(self.ml_edge_report_path),
         }
 
@@ -111,6 +115,7 @@ class BotAdvisor:
         recommendations.extend(self._market_regime_recommendations(reports["market_regime"]))
         recommendations.extend(self._opportunity_recommendations(reports["opportunities"]))
         recommendations.extend(self._shadow_model_recommendations(reports["shadow_models"]))
+        recommendations.extend(self._shadow_experiment_recommendations(reports["shadow_experiments"]))
         recommendations.extend(self._ml_edge_model_recommendations(reports["ml_edge_model"]))
         recommendations.extend(self._profile_recommendations(reports["profiles"]))
         recommendations.extend(self._learning_recommendations(reports["learning"]))
@@ -130,6 +135,7 @@ class BotAdvisor:
                 "market_regime_report": self.market_regime_path,
                 "opportunity_report": self.opportunity_path,
                 "shadow_model_report": self.shadow_report_path,
+                "shadow_experiment_report": self.shadow_experiment_path,
                 "ml_edge_model_report": self.ml_edge_report_path,
             },
         }
@@ -629,6 +635,105 @@ class BotAdvisor:
                 evidence={"loaded_rows": loaded, "rule_count": len(rules)},
             ))
         return items
+
+    def _shadow_experiment_recommendations(self, shadow_experiment_report: dict) -> list[dict]:
+        if shadow_experiment_report.get("_missing") or shadow_experiment_report.get("_error"):
+            return []
+        summary = shadow_experiment_report.get("summary", {}) or {}
+        results = shadow_experiment_report.get("results", []) or []
+        overlap_groups = shadow_experiment_report.get("overlap_groups", []) or []
+        items = []
+
+        by_verdict = summary.get("by_verdict", {}) or {}
+        replay_promising = _safe_int(by_verdict.get("promising_replay_needs_forward"))
+        protection_confirmed = _safe_int(by_verdict.get("protection_confirmed"))
+        protective_replay = _safe_int(by_verdict.get("protective_replay_needs_forward"))
+        overlap_count = len(overlap_groups)
+
+        if replay_promising:
+            top = self._top_shadow_result(results, "promising_replay_needs_forward")
+            items.append(self._rec(
+                priority="medium",
+                area="shadow_experiments",
+                finding=f"{replay_promising} relax experiments look promising on replay but lack forward confirmation.",
+                recommendation="Do not approve live or shadow promotion yet; keep collecting forward-shadow matches.",
+                requires_human_approval=False,
+                evidence={
+                    "verdict": "promising_replay_needs_forward",
+                    "count": replay_promising,
+                    "top_result": top,
+                },
+            ))
+
+        if protection_confirmed:
+            top = self._top_shadow_result(results, "protection_confirmed")
+            items.append(self._rec(
+                priority="low",
+                area="shadow_experiments",
+                finding=f"{protection_confirmed} protection experiments are confirmed by forward shadow data.",
+                recommendation="Keep these protections; do not loosen broader rules that include these patterns.",
+                requires_human_approval=False,
+                evidence={
+                    "verdict": "protection_confirmed",
+                    "count": protection_confirmed,
+                    "top_result": top,
+                },
+            ))
+
+        if protective_replay:
+            top = self._top_shadow_result(results, "protective_replay_needs_forward")
+            items.append(self._rec(
+                priority="low",
+                area="shadow_experiments",
+                finding=f"{protective_replay} protection experiments are replay-positive but need forward confirmation.",
+                recommendation="Keep observing; do not use replay-only protection evidence as an independent live rule.",
+                requires_human_approval=False,
+                evidence={
+                    "verdict": "protective_replay_needs_forward",
+                    "count": protective_replay,
+                    "top_result": top,
+                },
+            ))
+
+        if overlap_count:
+            items.append(self._rec(
+                priority="low",
+                area="shadow_experiments",
+                finding=f"{overlap_count} shadow experiment overlap groups detected.",
+                recommendation="Treat overlapping experiments as one evidence family; do not count duplicate patterns independently.",
+                requires_human_approval=False,
+                evidence={
+                    "overlap_groups": overlap_groups[:5],
+                    "overlap_count": overlap_count,
+                },
+            ))
+        return items
+
+    def _top_shadow_result(self, results: list[dict], verdict: str) -> dict:
+        matches = [
+            result for result in results
+            if ((result.get("verdict") or {}).get("primary") == verdict)
+        ]
+        matches.sort(
+            key=lambda item: (
+                _safe_int((item.get("forward_shadow_results") or {}).get("matches")),
+                _safe_float((item.get("forward_shadow_results") or {}).get("cf_avg_r")),
+                _safe_int((item.get("replay_results") or {}).get("matches")),
+                _safe_float((item.get("replay_results") or {}).get("cf_avg_r")),
+            ),
+            reverse=True,
+        )
+        if not matches:
+            return {}
+        top = matches[0]
+        return {
+            "experiment_id": top.get("experiment_id"),
+            "pattern": top.get("pattern"),
+            "experiment_type": top.get("experiment_type"),
+            "verdict": top.get("verdict"),
+            "replay_results": top.get("replay_results"),
+            "forward_shadow_results": top.get("forward_shadow_results"),
+        }
 
     def _ml_edge_model_recommendations(self, ml_report: dict) -> list[dict]:
         if ml_report.get("_missing") or ml_report.get("_error"):

@@ -335,6 +335,7 @@ class BotAdvisor:
         by_regime_direction = opportunity_report.get("by_regime_direction", {}) or {}
         pattern_summary = opportunity_report.get("pattern_summary", {}) or {}
         pattern_contrast = opportunity_report.get("pattern_contrast", []) or []
+        pattern_feature_contrast = opportunity_report.get("pattern_feature_contrast", []) or []
         items = []
 
         loaded = _safe_int(meta.get("loaded_candidates"))
@@ -438,6 +439,22 @@ class BotAdvisor:
                 recommendation="Review these first for shadow-rule or prompt experiments.",
                 requires_human_approval=True,
                 evidence={"patterns": conservative_patterns[:5]},
+            ))
+
+        if pattern_feature_contrast:
+            first = pattern_feature_contrast[0]
+            items.append(self._rec(
+                priority="low",
+                area="opportunities",
+                finding="Feature contrast is available for mixed opportunity patterns.",
+                recommendation="Use feature deltas to decide which chart features should split true chop from directional continuation.",
+                requires_human_approval=False,
+                evidence={
+                    "pattern": first.get("pattern"),
+                    "held_large_positive": first.get("held_large_positive"),
+                    "protected_holds": first.get("protected_holds"),
+                    "numeric": first.get("numeric"),
+                },
             ))
         return items
 

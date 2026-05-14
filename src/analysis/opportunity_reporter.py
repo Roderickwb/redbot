@@ -153,6 +153,10 @@ class OpportunityReporter:
             "bad_opens": defaultdict(_new_bucket),
             "good_opens": defaultdict(_new_bucket),
         }
+        pattern_features = defaultdict(lambda: {
+            "held_large_positive": self._new_feature_accumulator(),
+            "protected_holds": self._new_feature_accumulator(),
+        })
 
         attention_cases = {
             "held_positive_opportunities": [],
@@ -190,6 +194,7 @@ class OpportunityReporter:
                 self._add_event(bucket, event, outcome)
 
             self._add_pattern_buckets(pattern_buckets, event, features, outcome)
+            self._add_pattern_features(pattern_features, event, features, outcome)
             self._collect_attention_cases(attention_cases, event, features, outcome)
 
         return {
@@ -205,6 +210,7 @@ class OpportunityReporter:
             "top_attention": self._top_attention(by_symbol_direction, by_veto, by_structure_1h, by_entry_timing_1h),
             "pattern_summary": self._pattern_summary(pattern_buckets),
             "pattern_contrast": self._pattern_contrast(pattern_buckets),
+            "pattern_feature_contrast": self._pattern_feature_contrast(pattern_features),
             "attention_cases": attention_cases,
         }
 
@@ -300,6 +306,73 @@ class OpportunityReporter:
         for target in targets:
             self._add_event(pattern_buckets[target][key], event, outcome)
 
+    def _add_pattern_features(self, pattern_features: dict, event: dict, features: dict, outcome: dict) -> None:
+        action = event.get("gpt_action")
+        if action != "HOLD":
+            return
+
+        counterfactual = outcome.get("counterfactual_trade") or {}
+        cf_r = _safe_float(counterfactual.get("r_multiple"))
+        if cf_r >= 1.0:
+            bucket_name = "held_large_positive"
+        elif cf_r <= -0.5:
+            bucket_name = "protected_holds"
+        else:
+            return
+
+        key = self._pattern_key(event, features)
+        vector = self._feature_vector(event, features)
+        self._add_feature_vector(pattern_features[key][bucket_name], vector)
+
+    def _new_feature_accumulator(self) -> dict:
+        return {
+            "events": 0,
+            "numeric": defaultdict(lambda: {"sum": 0.0, "count": 0}),
+            "categorical": defaultdict(lambda: defaultdict(int)),
+        }
+
+    def _feature_vector(self, event: dict, features: dict) -> dict:
+        chart_1h = ((features.get("chart_features") or {}).get("1h") or {})
+        scores = features.get("scores") or {}
+        return {
+            "numeric": {
+                "confidence": _safe_float(event.get("gpt_confidence")),
+                "entry_score": _safe_float(scores.get("entry")),
+                "trend_score": _safe_float(scores.get("trend")),
+                "risk_score": _safe_float(scores.get("risk")),
+                "learning_score": _safe_float(scores.get("learning")),
+                "rsi": _safe_float(chart_1h.get("rsi")),
+                "ema20_distance_pct": _safe_float(chart_1h.get("ema20_distance_pct")),
+                "ema50_distance_pct": _safe_float(chart_1h.get("ema50_distance_pct")),
+                "ema_spread_pct": _safe_float(chart_1h.get("ema_spread_pct")),
+                "atr_pct": _safe_float(chart_1h.get("atr_pct")),
+                "trend_age_bars": _safe_float(chart_1h.get("trend_age_bars")),
+                "pullback_depth_pct": _safe_float(chart_1h.get("pullback_depth_pct")),
+                "last_body_pct": _safe_float(chart_1h.get("last_body_pct")),
+                "last_top_wick_pct": _safe_float(chart_1h.get("last_top_wick_pct")),
+                "last_bot_wick_pct": _safe_float(chart_1h.get("last_bot_wick_pct")),
+                "recent_doji_count": _safe_float(chart_1h.get("recent_doji_count")),
+                "recent_opposing_wick_count": _safe_float(chart_1h.get("recent_opposing_wick_count")),
+                "recent_directional_body_count": _safe_float(chart_1h.get("recent_directional_body_count")),
+                "recent_directional_close_count": _safe_float(chart_1h.get("recent_directional_close_count")),
+                "macd_hist": _safe_float(chart_1h.get("macd_hist")),
+                "macd_hist_slope": _safe_float(chart_1h.get("macd_hist_slope")),
+            },
+            "categorical": {
+                "symbol": event.get("symbol") or "UNKNOWN",
+                "last_candle_quality": chart_1h.get("last_candle_quality") or "missing",
+                "directional_continuation": str(chart_1h.get("directional_continuation")),
+            },
+        }
+
+    def _add_feature_vector(self, acc: dict, vector: dict) -> None:
+        acc["events"] += 1
+        for key, value in (vector.get("numeric") or {}).items():
+            acc["numeric"][key]["sum"] += _safe_float(value)
+            acc["numeric"][key]["count"] += 1
+        for key, value in (vector.get("categorical") or {}).items():
+            acc["categorical"][key][str(value)] += 1
+
     def _pattern_key(self, event: dict, features: dict) -> str:
         chart_1h = ((features.get("chart_features") or {}).get("1h") or {})
         regime = features.get("market_regime") or {}
@@ -352,6 +425,56 @@ class OpportunityReporter:
             reverse=True,
         )
         return rows[:25]
+
+    def _pattern_feature_contrast(self, pattern_features: dict) -> list[dict]:
+        rows = []
+        for pattern, groups in pattern_features.items():
+            large = groups["held_large_positive"]
+            protected = groups["protected_holds"]
+            large_n = _safe_int(large.get("events"))
+            protected_n = _safe_int(protected.get("events"))
+            if large_n < 3 or protected_n < 3:
+                continue
+
+            numeric = {}
+            for metric in sorted(set(large["numeric"]) | set(protected["numeric"])):
+                large_avg = self._feature_avg(large, metric)
+                protected_avg = self._feature_avg(protected, metric)
+                numeric[metric] = {
+                    "held_large_avg": large_avg,
+                    "protected_avg": protected_avg,
+                    "delta": round(large_avg - protected_avg, 4),
+                }
+
+            rows.append({
+                "pattern": pattern,
+                "held_large_positive": large_n,
+                "protected_holds": protected_n,
+                "numeric": numeric,
+                "categorical": {
+                    "held_large_positive": self._top_categorical(large),
+                    "protected_holds": self._top_categorical(protected),
+                },
+            })
+
+        rows.sort(key=lambda row: row["held_large_positive"], reverse=True)
+        return rows[:15]
+
+    def _feature_avg(self, acc: dict, metric: str) -> float:
+        item = acc["numeric"].get(metric) or {}
+        count = _safe_int(item.get("count"))
+        return round(_safe_float(item.get("sum")) / count, 4) if count else 0.0
+
+    def _top_categorical(self, acc: dict) -> dict:
+        result = {}
+        for key, counts in (acc.get("categorical") or {}).items():
+            rows = sorted(
+                [{"value": value, "count": count} for value, count in counts.items()],
+                key=lambda row: row["count"],
+                reverse=True,
+            )
+            result[key] = rows[:5]
+        return result
 
     def _interpret_pattern_contrast(self, large_n: int, protected_n: int) -> str:
         if large_n >= 5 and protected_n >= 5:

@@ -165,6 +165,27 @@ Principe:
 - een positieve shadow-score mag hoogstens leiden tot een voorstel;
 - live activeren gebeurt pas na voldoende sample, review en human approval.
 
+## 9. ML Edge Model
+
+Doel: een echt model trainen dat per kandidaat de verwachte edge voorspelt.
+
+Module:
+- `src.analysis.ml_edge_model`
+
+Output:
+- `analysis/ml_models/latest_edge_model_report.json`
+- `analysis/ml_models/latest_edge_model.joblib` zodra training verantwoord is.
+
+V1 voorspelt:
+- `expected_r`: verwachte counterfactual R;
+- `p_positive`: kans op positieve counterfactual uitkomst.
+
+Guardrails:
+- standaard niet trainen onder voldoende sample;
+- model blijft shadow-only;
+- advisor mag readiness/metrics rapporteren;
+- live gebruik pas na stabiele out-of-sample resultaten en human approval.
+
 ## Belangrijk Principe
 
 De bot moet niet te vroeg autonoom zijn in het aanpassen van regels. Eerst moeten observatie, labeling, rapportage en risk controls betrouwbaar zijn.
@@ -204,6 +225,7 @@ Inputs:
 - chart vision QA report;
 - bot alerts report.
 - ML training dataset summary.
+- ML Edge Model readiness en metrics.
 
 Output:
 - `analysis/bot_advisor/latest_bot_advice.json`
@@ -212,6 +234,7 @@ Output:
 Principe:
 - advisor mag conclusies trekken en aanbevelingen doen;
 - advisor leest ook shadow-model resultaten en vertaalt die naar promote/reject/wait adviezen;
+- advisor leest ML Edge Model readiness en metrics;
 - advisor past nog niets automatisch aan;
 - adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
 
@@ -222,5 +245,5 @@ De volgorde blijft:
 4. beter risico beheren;
 5. sentiment/nieuws uitbreiden;
 6. prompt/strategy versies objectief vergelijken;
-7. ML-ready dataset en shadow models bouwen;
+7. ML-ready dataset, shadow models en ML Edge Model bouwen;
 8. pas daarna gecontroleerde autonome verbeteradviezen of rule updates.

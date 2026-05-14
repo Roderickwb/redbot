@@ -33,6 +33,7 @@ DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
 DEFAULT_OPPORTUNITY_REPORT = os.path.join("analysis", "opportunities", "latest_opportunity_report.json")
 DEFAULT_SHADOW_REPORT = os.path.join("analysis", "shadow_models", "latest_shadow_model_report.json")
+DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -76,6 +77,7 @@ class BotAdvisor:
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
         opportunity_path: str = DEFAULT_OPPORTUNITY_REPORT,
         shadow_report_path: str = DEFAULT_SHADOW_REPORT,
+        ml_edge_report_path: str = DEFAULT_ML_EDGE_REPORT,
     ):
         self.learning_report_path = learning_report_path
         self.profile_proposals_path = profile_proposals_path
@@ -85,6 +87,7 @@ class BotAdvisor:
         self.market_regime_path = market_regime_path
         self.opportunity_path = opportunity_path
         self.shadow_report_path = shadow_report_path
+        self.ml_edge_report_path = ml_edge_report_path
 
     def build_advice(self) -> dict:
         reports = {
@@ -96,6 +99,7 @@ class BotAdvisor:
             "market_regime": load_json(self.market_regime_path),
             "opportunities": load_json(self.opportunity_path),
             "shadow_models": load_json(self.shadow_report_path),
+            "ml_edge_model": load_json(self.ml_edge_report_path),
         }
 
         recommendations = []
@@ -106,6 +110,7 @@ class BotAdvisor:
         recommendations.extend(self._market_regime_recommendations(reports["market_regime"]))
         recommendations.extend(self._opportunity_recommendations(reports["opportunities"]))
         recommendations.extend(self._shadow_model_recommendations(reports["shadow_models"]))
+        recommendations.extend(self._ml_edge_model_recommendations(reports["ml_edge_model"]))
         recommendations.extend(self._profile_recommendations(reports["profiles"]))
         recommendations.extend(self._learning_recommendations(reports["learning"]))
 
@@ -124,6 +129,7 @@ class BotAdvisor:
                 "market_regime_report": self.market_regime_path,
                 "opportunity_report": self.opportunity_path,
                 "shadow_model_report": self.shadow_report_path,
+                "ml_edge_model_report": self.ml_edge_report_path,
             },
         }
 
@@ -582,6 +588,66 @@ class BotAdvisor:
                 recommendation="Keep collecting structured events and review again after the next daily cycle.",
                 requires_human_approval=False,
                 evidence={"loaded_rows": loaded, "rule_count": len(rules)},
+            ))
+        return items
+
+    def _ml_edge_model_recommendations(self, ml_report: dict) -> list[dict]:
+        if ml_report.get("_missing") or ml_report.get("_error"):
+            return []
+        readiness = ml_report.get("readiness", {}) or {}
+        model = ml_report.get("model", {}) or {}
+        summary = ml_report.get("dataset_summary", {}) or {}
+        items = []
+
+        status = readiness.get("status")
+        loaded = _safe_int(readiness.get("rows"))
+        positive = _safe_int(readiness.get("positive"))
+        non_positive = _safe_int(readiness.get("non_positive"))
+        if status == "insufficient_data":
+            items.append(self._rec(
+                priority="low",
+                area="ml_edge_model",
+                finding=(
+                    f"ML Edge Model is not trained yet: rows={loaded}, "
+                    f"positive={positive}, non_positive={non_positive}."
+                ),
+                recommendation="Keep collecting structured labeled events; model remains shadow-only and inactive.",
+                requires_human_approval=False,
+                evidence={"readiness": readiness, "dataset_summary": summary},
+            ))
+            return items
+
+        model_status = model.get("status")
+        if model_status == "trained":
+            metrics = model.get("metrics", {}) or {}
+            auc = _safe_float(metrics.get("classification_auc"))
+            mae = _safe_float(metrics.get("regression_mae_r"))
+            priority = "medium" if auc >= 0.6 else "low"
+            items.append(self._rec(
+                priority=priority,
+                area="ml_edge_model",
+                finding=f"ML Edge Model trained: AUC={metrics.get('classification_auc')} MAE_R={mae}.",
+                recommendation="Use predictions only for shadow comparison until out-of-sample stability is proven.",
+                requires_human_approval=True,
+                evidence={"metrics": metrics, "prediction_summary": model.get("prediction_summary", {})},
+            ))
+        elif model_status == "dependency_missing":
+            items.append(self._rec(
+                priority="medium",
+                area="ml_edge_model",
+                finding=f"ML Edge Model dependencies missing: {model.get('reason')}",
+                recommendation="Install/verify sklearn and joblib in the runtime if ML training should run on this machine.",
+                requires_human_approval=False,
+                evidence={"model": model},
+            ))
+        elif model_status == "failed":
+            items.append(self._rec(
+                priority="medium",
+                area="ml_edge_model",
+                finding=f"ML Edge Model failed: {model.get('reason')}",
+                recommendation="Inspect ml_edge_model report and traceback/logs before relying on ML output.",
+                requires_human_approval=False,
+                evidence={"model": model},
             ))
         return items
 

@@ -56,6 +56,12 @@ from src.analysis.ml_training_dataset import (
     DEFAULT_OUTPUT_DIR as ML_DATASET_OUTPUT_DIR,
     write_dataset as write_ml_dataset,
 )
+from src.analysis.ml_edge_model import (
+    MlEdgeModel,
+    DEFAULT_LATEST_FILE as ML_EDGE_LATEST_FILE,
+    DEFAULT_OUTPUT_DIR as ML_EDGE_OUTPUT_DIR,
+    write_json as write_ml_edge_json,
+)
 from src.analysis.opportunity_reporter import (
     OpportunityReporter,
     DEFAULT_LATEST_FILE as OPPORTUNITY_LATEST_FILE,
@@ -237,6 +243,19 @@ def _build_shadow_model_report(limit: int) -> dict:
     }
 
 
+def _build_ml_edge_model(limit: int) -> dict:
+    report = MlEdgeModel().build_report(limit=limit)
+    output_path = os.path.join(ML_EDGE_OUTPUT_DIR, ML_EDGE_LATEST_FILE)
+    write_ml_edge_json(output_path, report)
+    return {
+        "loaded_rows": report.get("meta", {}).get("loaded_rows", 0),
+        "readiness": report.get("readiness", {}),
+        "model_status": (report.get("model") or {}).get("status"),
+        "metrics": (report.get("model") or {}).get("metrics", {}),
+        "output_path": output_path,
+    }
+
+
 def _build_opportunity_report(limit: int) -> dict:
     db = DatabaseManager(db_path=DB_FILE)
     try:
@@ -323,6 +342,9 @@ def run_daily_analysis_job(
     )
     steps["shadow_model_report"] = _run_step(
         lambda: _build_shadow_model_report(limit=report_limit),
+    )
+    steps["ml_edge_model"] = _run_step(
+        lambda: _build_ml_edge_model(limit=report_limit),
     )
     steps["opportunity_report"] = _run_step(
         lambda: _build_opportunity_report(limit=report_limit),

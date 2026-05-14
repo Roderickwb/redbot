@@ -105,7 +105,11 @@ You get a JSON object with at least:
   {
     "1h": {
       "structure_label": "clean_trend" | "trend_continuation" | "pullback" | "late_trend" | "chop" | "mixed",
+      "chop_subtype": "not_chop" | "true_range_chop" | "messy_chop" | "bearish_continuation_chop" | "bullish_continuation_chop" | "late_extension_chop",
       "entry_timing": "early" | "clean" | "continuation" | "late" | "noisy",
+      "continuation_pressure": int,
+      "breakout_pressure": int,
+      "breakdown_pressure": int,
       "ema20_distance_pct": float,
       "ema50_distance_pct": float,
       "ema_spread_pct": float,
@@ -403,6 +407,11 @@ Only continue toward OPEN if the current chart itself is good enough:
 - MACD and RSI do not show obvious momentum decay against the trade.
 - Use chart_features as the compact trader summary:
   - structure_label="chop" or entry_timing="noisy" is a strong HOLD signal.
+  - chop_subtype="true_range_chop" or "messy_chop" is a stronger HOLD signal than the generic chop label.
+  - chop_subtype="bearish_continuation_chop" means the 1h chart has chop-like wicks/noise but also bearish continuation pressure. In risk_off with algo_signal="short_candidate", this is not an automatic HOLD; assess whether breakdown_pressure is high enough and risk is controlled.
+  - chop_subtype="bullish_continuation_chop" is the long-side mirror, useful only when broader regime/symbol strength also supports it.
+  - chop_subtype="late_extension_chop" means avoid chasing unless the setup is exceptional.
+  - continuation_pressure, breakout_pressure, and breakdown_pressure are 0-100 helper scores. They can soften a chop/noisy veto only when they align with algo_signal and 4h trend; they never override hard risk flags alone.
   - structure_label="trend_continuation" means recent candles still move with the intended direction despite some wicks/dojis. In risk_off, bearish trend_continuation can be a valid SHORT context if not overextended.
   - structure_label="late_trend" or entry_timing="late" lowers confidence sharply.
   - structure_label="pullback" with a supportive rejection candle is often better than chasing extension.

@@ -1453,6 +1453,23 @@ class TrendStrategy4H:
                 and recent_directional_body_count >= 2
                 and recent_directional_close_count >= 2
             )
+            pressure = self._continuation_pressure(
+                intended_direction=intended_direction,
+                close=close,
+                ema_fast=ema_fast,
+                ema_slow=ema_slow,
+                ema20_distance_pct=ema20_distance_pct,
+                ema50_distance_pct=ema50_distance_pct,
+                ema_spread_pct=ema_spread_pct,
+                atr_pct=atr_pct,
+                rsi=rsi,
+                macd_hist=macd_hist,
+                macd_hist_slope=macd_hist_slope,
+                recent_doji_count=recent_doji_count,
+                recent_directional_body_count=recent_directional_body_count,
+                recent_directional_close_count=recent_directional_close_count,
+                directional_continuation=directional_continuation,
+            )
 
             last_candle_quality = self._last_candle_quality(
                 close=close,
@@ -1474,6 +1491,17 @@ class TrendStrategy4H:
                 ema20_distance_pct=ema20_distance_pct,
                 directional_continuation=directional_continuation,
             )
+            chop_subtype = self._chop_subtype(
+                structure_label=structure_label,
+                intended_direction=intended_direction,
+                recent_doji_count=recent_doji_count,
+                trend_age_bars=trend_age_bars,
+                ema_spread_pct=ema_spread_pct,
+                ema20_distance_pct=ema20_distance_pct,
+                macd_hist=macd_hist,
+                breakout_pressure=pressure["breakout_pressure"],
+                breakdown_pressure=pressure["breakdown_pressure"],
+            )
             entry_timing = self._entry_timing_label(
                 structure_label=structure_label,
                 intended_direction=intended_direction,
@@ -1488,7 +1516,11 @@ class TrendStrategy4H:
             return {
                 "timeframe": timeframe,
                 "structure_label": structure_label,
+                "chop_subtype": chop_subtype,
                 "entry_timing": entry_timing,
+                "continuation_pressure": pressure["continuation_pressure"],
+                "breakout_pressure": pressure["breakout_pressure"],
+                "breakdown_pressure": pressure["breakdown_pressure"],
                 "ema20_distance_pct": round(ema20_distance_pct, 4),
                 "ema50_distance_pct": round(ema50_distance_pct, 4),
                 "ema_spread_pct": round(ema_spread_pct, 4),
@@ -1514,6 +1546,95 @@ class TrendStrategy4H:
         except Exception as e:
             self.logger.debug("[chart_features] failed for %s: %s", timeframe, e)
             return default
+
+    def _continuation_pressure(
+        self,
+        intended_direction: str,
+        close: float,
+        ema_fast: float,
+        ema_slow: float,
+        ema20_distance_pct: float,
+        ema50_distance_pct: float,
+        ema_spread_pct: float,
+        atr_pct: float,
+        rsi: float,
+        macd_hist: float,
+        macd_hist_slope: float,
+        recent_doji_count: int,
+        recent_directional_body_count: int,
+        recent_directional_close_count: int,
+        directional_continuation: bool,
+    ) -> dict:
+        score = 0
+        if directional_continuation:
+            score += 25
+        if recent_directional_body_count >= 2:
+            score += 15
+        if recent_directional_close_count >= 2:
+            score += 15
+        if recent_doji_count <= 1:
+            score += 10
+        if ema_spread_pct >= 0.5:
+            score += 10
+        if atr_pct >= 0.45:
+            score += 10
+
+        if intended_direction == "long":
+            if close > ema_fast > ema_slow:
+                score += 15
+            if ema20_distance_pct > 0 and ema50_distance_pct > 0:
+                score += 10
+            if macd_hist > 0 or macd_hist_slope > 0:
+                score += 10
+            if rsi >= 55:
+                score += 5
+            breakout_pressure = min(score, 100)
+            breakdown_pressure = 0
+        elif intended_direction == "short":
+            if close < ema_fast < ema_slow:
+                score += 15
+            if ema20_distance_pct < 0 and ema50_distance_pct < 0:
+                score += 10
+            if macd_hist < 0 or macd_hist_slope < 0:
+                score += 10
+            if rsi <= 45:
+                score += 5
+            breakdown_pressure = min(score, 100)
+            breakout_pressure = 0
+        else:
+            breakout_pressure = 0
+            breakdown_pressure = 0
+
+        continuation_pressure = max(breakout_pressure, breakdown_pressure)
+        return {
+            "continuation_pressure": int(continuation_pressure),
+            "breakout_pressure": int(breakout_pressure),
+            "breakdown_pressure": int(breakdown_pressure),
+        }
+
+    def _chop_subtype(
+        self,
+        structure_label: str,
+        intended_direction: str,
+        recent_doji_count: int,
+        trend_age_bars: int,
+        ema_spread_pct: float,
+        ema20_distance_pct: float,
+        macd_hist: float,
+        breakout_pressure: int,
+        breakdown_pressure: int,
+    ) -> str:
+        if structure_label != "chop":
+            return "not_chop"
+        if trend_age_bars >= 8 and abs(ema20_distance_pct) >= 3.0:
+            return "late_extension_chop"
+        if intended_direction == "short" and breakdown_pressure >= 65 and recent_doji_count <= 1 and macd_hist < 0:
+            return "bearish_continuation_chop"
+        if intended_direction == "long" and breakout_pressure >= 65 and recent_doji_count <= 1 and macd_hist > 0:
+            return "bullish_continuation_chop"
+        if recent_doji_count >= 2 and ema_spread_pct < 0.5:
+            return "true_range_chop"
+        return "messy_chop"
 
     def _trend_age_bars(self, df: pd.DataFrame, ema_fast_col: str, ema_slow_col: str, trend: str) -> int:
         age = 0

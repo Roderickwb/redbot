@@ -143,6 +143,7 @@ class OpportunityReporter:
         by_symbol_direction = defaultdict(_new_bucket)
         by_veto = defaultdict(_new_bucket)
         by_structure_1h = defaultdict(_new_bucket)
+        by_chop_subtype_1h = defaultdict(_new_bucket)
         by_entry_timing_1h = defaultdict(_new_bucket)
         by_market_regime = defaultdict(_new_bucket)
         by_regime_direction = defaultdict(_new_bucket)
@@ -175,6 +176,7 @@ class OpportunityReporter:
             regime = features.get("market_regime") or {}
             primary_veto = features.get("primary_veto") or "missing"
             structure = chart_1h.get("structure_label") or "missing"
+            chop_subtype = chart_1h.get("chop_subtype") or "missing"
             timing = chart_1h.get("entry_timing") or "missing"
             market_regime = regime.get("regime") or "missing"
             symbol = event.get("symbol") or "UNKNOWN"
@@ -186,6 +188,7 @@ class OpportunityReporter:
                 by_symbol_direction[f"{symbol}|{direction}"],
                 by_veto[primary_veto],
                 by_structure_1h[structure],
+                by_chop_subtype_1h[chop_subtype],
                 by_entry_timing_1h[timing],
                 by_market_regime[market_regime],
                 by_regime_direction[f"{market_regime}|{direction}"],
@@ -204,10 +207,17 @@ class OpportunityReporter:
             "by_symbol_direction": self._finalize_mapping(by_symbol_direction),
             "by_primary_veto": self._finalize_mapping(by_veto),
             "by_structure_1h": self._finalize_mapping(by_structure_1h),
+            "by_chop_subtype_1h": self._finalize_mapping(by_chop_subtype_1h),
             "by_entry_timing_1h": self._finalize_mapping(by_entry_timing_1h),
             "by_market_regime": self._finalize_mapping(by_market_regime),
             "by_regime_direction": self._finalize_mapping(by_regime_direction),
-            "top_attention": self._top_attention(by_symbol_direction, by_veto, by_structure_1h, by_entry_timing_1h),
+            "top_attention": self._top_attention(
+                by_symbol_direction,
+                by_veto,
+                by_structure_1h,
+                by_chop_subtype_1h,
+                by_entry_timing_1h,
+            ),
             "pattern_summary": self._pattern_summary(pattern_buckets),
             "pattern_contrast": self._pattern_contrast(pattern_buckets),
             "pattern_feature_contrast": self._pattern_feature_contrast(pattern_features),
@@ -260,6 +270,7 @@ class OpportunityReporter:
             "confidence": event.get("gpt_confidence"),
             "primary_veto": features.get("primary_veto"),
             "structure_1h": chart_1h.get("structure_label"),
+            "chop_subtype_1h": chart_1h.get("chop_subtype"),
             "entry_timing_1h": chart_1h.get("entry_timing"),
             "directional_continuation": chart_1h.get("directional_continuation"),
             "market_regime": (features.get("market_regime") or {}).get("regime"),
@@ -355,12 +366,16 @@ class OpportunityReporter:
                 "recent_opposing_wick_count": _safe_float(chart_1h.get("recent_opposing_wick_count")),
                 "recent_directional_body_count": _safe_float(chart_1h.get("recent_directional_body_count")),
                 "recent_directional_close_count": _safe_float(chart_1h.get("recent_directional_close_count")),
+                "continuation_pressure": _safe_float(chart_1h.get("continuation_pressure")),
+                "breakout_pressure": _safe_float(chart_1h.get("breakout_pressure")),
+                "breakdown_pressure": _safe_float(chart_1h.get("breakdown_pressure")),
                 "macd_hist": _safe_float(chart_1h.get("macd_hist")),
                 "macd_hist_slope": _safe_float(chart_1h.get("macd_hist_slope")),
             },
             "categorical": {
                 "symbol": event.get("symbol") or "UNKNOWN",
                 "last_candle_quality": chart_1h.get("last_candle_quality") or "missing",
+                "chop_subtype": chart_1h.get("chop_subtype") or "missing",
                 "directional_continuation": str(chart_1h.get("directional_continuation")),
             },
         }
@@ -381,6 +396,7 @@ class OpportunityReporter:
             str(regime.get("regime") or "missing"),
             str(features.get("primary_veto") or "missing"),
             str(chart_1h.get("structure_label") or "missing"),
+            str(chart_1h.get("chop_subtype") or "missing"),
             str(chart_1h.get("entry_timing") or "missing"),
         ]
         return "|".join(parts)
@@ -514,10 +530,18 @@ class OpportunityReporter:
         result["cf_total_r"] = round(result["cf_total_r"], 4)
         return result
 
-    def _top_attention(self, by_symbol_direction: dict, by_veto: dict, by_structure: dict, by_timing: dict) -> dict:
+    def _top_attention(
+        self,
+        by_symbol_direction: dict,
+        by_veto: dict,
+        by_structure: dict,
+        by_chop_subtype: dict,
+        by_timing: dict,
+    ) -> dict:
         finalized_symbol_direction = self._finalize_mapping(by_symbol_direction)
         finalized_veto = self._finalize_mapping(by_veto)
         finalized_structure = self._finalize_mapping(by_structure)
+        finalized_chop_subtype = self._finalize_mapping(by_chop_subtype)
         finalized_timing = self._finalize_mapping(by_timing)
         return {
             "symbol_direction_best_cf": self._top(finalized_symbol_direction, "cf_avg_r", reverse=True),
@@ -527,6 +551,8 @@ class OpportunityReporter:
             "veto_worst_cf": self._top(finalized_veto, "cf_avg_r", reverse=False),
             "structure_best_cf": self._top(finalized_structure, "cf_avg_r", reverse=True),
             "structure_worst_cf": self._top(finalized_structure, "cf_avg_r", reverse=False),
+            "chop_subtype_best_cf": self._top(finalized_chop_subtype, "cf_avg_r", reverse=True),
+            "chop_subtype_worst_cf": self._top(finalized_chop_subtype, "cf_avg_r", reverse=False),
             "entry_timing_best_cf": self._top(finalized_timing, "cf_avg_r", reverse=True),
             "entry_timing_worst_cf": self._top(finalized_timing, "cf_avg_r", reverse=False),
         }

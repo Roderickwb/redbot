@@ -378,14 +378,14 @@ def run_daily_analysis_job(
     steps["opportunity_report"] = _run_step(
         lambda: _build_opportunity_report(limit=report_limit),
     )
-    steps["bot_advisor"] = _run_step(
-        lambda: _build_advisor(send_advice=send_advice),
-    )
     steps["experiment_plan"] = _run_step(
         lambda: _build_experiment_plan(send_experiments=send_experiments),
     )
     steps["shadow_experiment_results"] = _run_step(
         lambda: _build_shadow_experiment_results(hours=hours),
+    )
+    steps["bot_advisor"] = _run_step(
+        lambda: _build_advisor(send_advice=send_advice),
     )
 
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]

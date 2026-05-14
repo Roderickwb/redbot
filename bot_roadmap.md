@@ -255,6 +255,7 @@ Principe:
 - shadow experiment runner meet experimenten apart op historische replay en recente forward-shadow rows;
 - shadow experiment runner geeft verdicts en overlap-groepen, zodat dubbele patronen niet als onafhankelijk bewijs worden geteld;
 - advisor leest shadow experiment verdicts en overlap-groepen terug, zodat replay-only, forward-confirmed en duplicate evidence automatisch worden samengevat;
+- daily job draait de advisor pas na experiment plan en shadow experiment results, zodat advisor altijd de nieuwste experiment-uitkomsten gebruikt;
 - advisor past nog niets automatisch aan;
 - adviezen met `requires_human_approval=true` moeten eerst handmatig beoordeeld worden.
 

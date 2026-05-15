@@ -449,6 +449,21 @@ def run_daily_analysis_job(
             cleanup_stale_days=cleanup_stale_days,
         ),
     )
+    # Advisor syncs the recommendation registry. Refresh the downstream
+    # experiment/control artifacts once more so newly promotable hypotheses are
+    # visible in the same daily run instead of one cycle later.
+    steps["post_advisor_experiment_plan"] = _run_step(
+        lambda: _build_experiment_plan(send_experiments=False),
+    )
+    steps["post_advisor_shadow_experiment_results"] = _run_step(
+        lambda: _build_shadow_experiment_results(hours=hours),
+    )
+    steps["post_advisor_promotion_gate"] = _run_step(
+        lambda: _build_promotion_gate(),
+    )
+    steps["post_advisor_approval_inbox"] = _run_step(
+        lambda: _build_approval_inbox(),
+    )
 
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]
     advisor_result = steps.get("bot_advisor", {}).get("result") or {}

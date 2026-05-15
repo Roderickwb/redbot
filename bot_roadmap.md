@@ -265,6 +265,7 @@ Principe:
 - approval inbox vertaalt experimenten en promotion-gate uitkomsten naar `review_for_approval`, `review_for_rejection`, `wait` of `no_action_keep_protection`;
 - advisor leest shadow experiment verdicts en overlap-groepen terug, zodat replay-only, forward-confirmed en duplicate evidence automatisch worden samengevat;
 - advisor leest promotion gate uitkomsten terug en zet blocked/confirmed/ready experimenten om naar registry-stabiele aanbevelingen;
+- daily job ververst experiment plan, shadow results, promotion gate en approval inbox nogmaals na advisor/registry-sync, zodat nieuwe promotable hypotheses dezelfde run zichtbaar zijn;
 - daily job draait de advisor pas na experiment plan en shadow experiment results, zodat advisor altijd de nieuwste experiment-uitkomsten gebruikt;
 - daily control report vat blockers, approval queue, ML readiness, experimentstatus en concrete next actions samen;
 - advisor past nog niets automatisch aan;

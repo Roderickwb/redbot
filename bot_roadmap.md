@@ -88,6 +88,17 @@ Waarom: een goede coin setup is minder betrouwbaar als de brede markt risk-off i
 
 Doel: de bot beschermen en sizing slimmer maken.
 
+Module:
+- `src.analysis.risk_policy`
+
+Status:
+- V1 combineert market regime, coin profiles, promotion gate, approval inbox en ML readiness;
+- schrijft `analysis/risk/latest_risk_policy_report.json`;
+- bepaalt per symbool een read-only policy met `risk_multiplier`, risk-down signalen en long-risk caps;
+- draait mee in `src.analysis.daily_analysis_job`;
+- daily advisor en daily control lezen deze risk policy terug;
+- live enforcement staat expliciet uit totdat een aparte live-wiring stap is goedgekeurd.
+
 Te verbeteren:
 - daily loss limit;
 - weekly drawdown guard;
@@ -247,6 +258,7 @@ Output:
 - `analysis/promotion_gate/latest_promotion_gate_report.json`
 - `analysis/approvals/latest_approval_inbox.json`
 - `analysis/shadow_live/latest_shadow_live_bridge_report.json`
+- `analysis/risk/latest_risk_policy_report.json`
 - `analysis/daily_control/latest_daily_control_report.json`
 
 Principe:
@@ -267,6 +279,7 @@ Principe:
 - approval inbox vertaalt experimenten en promotion-gate uitkomsten naar `review_for_approval`, `review_for_rejection`, `reject_candidate`, `wait` of `no_action_keep_protection`;
 - approval inbox houdt een blocked lifecycle bij, zodat pas herhaald geblokkeerde experimenten reject-candidate worden;
 - shadow-live bridge draait alleen approved-for-shadow experimenten tegen recente live GPT decisions en schrijft alleen `would_allow`/`would_block` observaties;
+- risk policy combineert regime/profiles/safety gates tot read-only risk-down en cap-adviezen per symbool;
 - advisor leest shadow experiment verdicts en overlap-groepen terug, zodat replay-only, forward-confirmed en duplicate evidence automatisch worden samengevat;
 - advisor leest promotion gate uitkomsten terug en zet blocked/confirmed/ready experimenten om naar registry-stabiele aanbevelingen;
 - daily job ververst experiment plan, shadow results, promotion gate en approval inbox nogmaals na advisor/registry-sync, zodat nieuwe promotable hypotheses dezelfde run zichtbaar zijn;

@@ -37,6 +37,7 @@ DEFAULT_SHADOW_REPORT = os.path.join("analysis", "shadow_models", "latest_shadow
 DEFAULT_SHADOW_EXPERIMENT_REPORT = os.path.join("analysis", "experiments", "latest_shadow_experiment_results.json")
 DEFAULT_PROMOTION_GATE_REPORT = os.path.join("analysis", "promotion_gate", "latest_promotion_gate_report.json")
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
+DEFAULT_RISK_POLICY_REPORT = os.path.join("analysis", "risk", "latest_risk_policy_report.json")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -83,6 +84,7 @@ class BotAdvisor:
         shadow_experiment_path: str = DEFAULT_SHADOW_EXPERIMENT_REPORT,
         promotion_gate_path: str = DEFAULT_PROMOTION_GATE_REPORT,
         ml_edge_report_path: str = DEFAULT_ML_EDGE_REPORT,
+        risk_policy_path: str = DEFAULT_RISK_POLICY_REPORT,
     ):
         self.learning_report_path = learning_report_path
         self.profile_proposals_path = profile_proposals_path
@@ -95,6 +97,7 @@ class BotAdvisor:
         self.shadow_experiment_path = shadow_experiment_path
         self.promotion_gate_path = promotion_gate_path
         self.ml_edge_report_path = ml_edge_report_path
+        self.risk_policy_path = risk_policy_path
 
     def build_advice(self) -> dict:
         reports = {
@@ -109,6 +112,7 @@ class BotAdvisor:
             "shadow_experiments": load_json(self.shadow_experiment_path),
             "promotion_gate": load_json(self.promotion_gate_path),
             "ml_edge_model": load_json(self.ml_edge_report_path),
+            "risk_policy": load_json(self.risk_policy_path),
         }
 
         recommendations = []
@@ -121,6 +125,7 @@ class BotAdvisor:
         recommendations.extend(self._shadow_model_recommendations(reports["shadow_models"]))
         recommendations.extend(self._shadow_experiment_recommendations(reports["shadow_experiments"]))
         recommendations.extend(self._promotion_gate_recommendations(reports["promotion_gate"]))
+        recommendations.extend(self._risk_policy_recommendations(reports["risk_policy"]))
         recommendations.extend(self._ml_edge_model_recommendations(reports["ml_edge_model"]))
         recommendations.extend(self._profile_recommendations(reports["profiles"]))
         recommendations.extend(self._learning_recommendations(reports["learning"]))
@@ -143,6 +148,7 @@ class BotAdvisor:
                 "shadow_experiment_report": self.shadow_experiment_path,
                 "promotion_gate_report": self.promotion_gate_path,
                 "ml_edge_model_report": self.ml_edge_report_path,
+                "risk_policy_report": self.risk_policy_path,
             },
         }
 
@@ -840,6 +846,75 @@ class BotAdvisor:
             "replay": top.get("replay"),
             "forward": top.get("forward"),
         }
+
+    def _risk_policy_recommendations(self, risk_report: dict) -> list[dict]:
+        if risk_report.get("_missing") or risk_report.get("_error"):
+            return []
+        summary = risk_report.get("summary", {}) or {}
+        guardrails = risk_report.get("guardrails", {}) or {}
+        items = []
+
+        risk_down = summary.get("risk_down_symbols", []) or []
+        cap_longs = summary.get("cap_new_long_symbols", []) or []
+        blocked = _safe_int(summary.get("promotion_blocked"))
+        reject_candidates = _safe_int(summary.get("approval_reject_candidates"))
+        ml_status = summary.get("ml_edge_status")
+
+        if cap_longs:
+            items.append(self._rec(
+                priority="medium",
+                area="risk_policy",
+                finding=f"Risk policy would cap new long risk for {len(cap_longs)} symbols.",
+                recommendation="Keep this read-only for now; later wire it only as conservative risk-down, not as risk-up.",
+                requires_human_approval=False,
+                evidence={
+                    "policy_signal": "cap_new_long_risk",
+                    "symbols": [row.get("symbol") for row in cap_longs[:10]],
+                    "guardrails": guardrails,
+                },
+            ))
+
+        if risk_down:
+            items.append(self._rec(
+                priority="low",
+                area="risk_policy",
+                finding=f"Risk policy proposes risk-down for {len(risk_down)} symbols.",
+                recommendation="Use this as the future risk engine input; live enforcement remains off until explicitly wired.",
+                requires_human_approval=False,
+                evidence={
+                    "policy_signal": "risk_down",
+                    "symbols": [row.get("symbol") for row in risk_down[:10]],
+                    "average_risk_multiplier": summary.get("average_risk_multiplier"),
+                },
+            ))
+
+        if blocked or reject_candidates:
+            items.append(self._rec(
+                priority="low",
+                area="risk_policy",
+                finding=(
+                    f"Risk policy sees safety gate pressure: blocked={blocked}, "
+                    f"reject_candidates={reject_candidates}."
+                ),
+                recommendation="Do not let blocked experiments influence live risk or entries.",
+                requires_human_approval=False,
+                evidence={
+                    "policy_signal": "safety_gate_pressure",
+                    "promotion_blocked": blocked,
+                    "approval_reject_candidates": reject_candidates,
+                },
+            ))
+
+        if ml_status and ml_status != "ready":
+            items.append(self._rec(
+                priority="low",
+                area="risk_policy",
+                finding=f"Risk policy ignores ML for live risk because ML status is {ml_status}.",
+                recommendation="Keep ML shadow-only until training/readiness gates pass.",
+                requires_human_approval=False,
+                evidence={"policy_signal": "ml_not_live", "ml_edge_status": ml_status},
+            ))
+        return items
 
     def _ml_edge_model_recommendations(self, ml_report: dict) -> list[dict]:
         if ml_report.get("_missing") or ml_report.get("_error"):

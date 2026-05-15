@@ -5,9 +5,9 @@
 Approval inbox.
 
 Creates a compact human decision queue from the experiment planner and
-promotion gate. This module does not approve, reject, or change trading rules.
-It only shows which experiments can be acted on and provides the exact command
-to use when a human decides.
+promotion gate. This module does not approve or change trading rules. It can
+auto-archive repeat-blocked candidates during cleanup so the cockpit stays
+quiet without changing live behavior.
 """
 
 from __future__ import annotations
@@ -18,6 +18,9 @@ import os
 import time
 from datetime import datetime
 from typing import Any, Iterable, Optional
+
+from src.analysis.experiment_planner import run_experiment_planner
+from src.analysis.recommendation_registry import RecommendationRegistry
 
 
 DEFAULT_OUTPUT_DIR = os.path.join("analysis", "approvals")
@@ -137,6 +140,7 @@ class ApprovalInbox:
                 "experiment_type": experiment.get("experiment_type"),
                 "pattern": evidence.get("pattern"),
                 "experiment_status": experiment.get("status"),
+                "source_recommendation_id": (experiment.get("source") or {}).get("recommendation_id"),
                 "promotion_status": promotion.get("status", "unknown"),
                 "promotion_reason": promotion.get("reason"),
                 "blocked_count": state.get("blocked_count", 0),
@@ -325,12 +329,105 @@ def run_approval_inbox(
     return report
 
 
+def cleanup_reject_candidates(
+    experiment_plan_path: str = DEFAULT_EXPERIMENT_PLAN,
+    promotion_gate_path: str = DEFAULT_PROMOTION_GATE,
+    output_dir: str = DEFAULT_OUTPUT_DIR,
+    apply: bool = False,
+    limit: int = 25,
+    note: str = "",
+) -> dict:
+    report = run_approval_inbox(
+        experiment_plan_path=experiment_plan_path,
+        promotion_gate_path=promotion_gate_path,
+        output_dir=output_dir,
+    )
+    raw_candidates = [
+        item for item in report.get("items", []) or []
+        if item.get("action") == "reject_candidate"
+    ]
+    candidates = []
+    seen_sources = set()
+    for item in raw_candidates:
+        source_id = item.get("source_recommendation_id") or item.get("experiment_id")
+        if source_id in seen_sources:
+            continue
+        seen_sources.add(source_id)
+        candidates.append(item)
+        if len(candidates) >= max(0, limit):
+            break
+    results = []
+    if apply:
+        for item in candidates:
+            recommendation_id = item.get("source_recommendation_id")
+            if not recommendation_id:
+                continue
+            result = RecommendationRegistry().archive(
+                recommendation_id,
+                note=note or "auto-archived repeat-blocked experiment from approval inbox cleanup",
+            )
+            results.append({
+                "experiment_id": item.get("experiment_id"),
+                "pattern": item.get("pattern"),
+                "ok": result.get("ok"),
+                "recommendation_id": recommendation_id,
+                "registry_status": result.get("status"),
+                "error": result.get("error"),
+            })
+
+        run_experiment_planner()
+        report = run_approval_inbox(
+            experiment_plan_path=experiment_plan_path,
+            promotion_gate_path=promotion_gate_path,
+            output_dir=output_dir,
+        )
+
+    return {
+        "ok": True,
+        "applied": apply,
+        "cleanup_mode": "archive_repeat_blocked_reject_candidates",
+        "candidates": len(candidates),
+        "limit": limit,
+        "items": [
+            {
+                "experiment_id": item.get("experiment_id"),
+                "source_recommendation_id": item.get("source_recommendation_id"),
+                "experiment_type": item.get("experiment_type"),
+                "pattern": item.get("pattern"),
+                "promotion_status": item.get("promotion_status"),
+                "blocked_count": item.get("blocked_count"),
+                "reject_command": (item.get("commands") or {}).get("reject"),
+            }
+            for item in candidates
+        ],
+        "results": results,
+        "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
+    }
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Build approval inbox from experiment and promotion reports.")
+    parser = argparse.ArgumentParser(description="Build and manage approval inbox from experiment and promotion reports.")
+    parser.add_argument("command", nargs="?", choices=["report", "reject-candidates", "cleanup-reject-candidates"], default="report")
     parser.add_argument("--experiment-plan", type=str, default=DEFAULT_EXPERIMENT_PLAN, help="Experiment plan JSON.")
     parser.add_argument("--promotion-gate", type=str, default=DEFAULT_PROMOTION_GATE, help="Promotion gate JSON.")
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Output directory.")
+    parser.add_argument("--apply", action="store_true", help="Apply cleanup instead of dry-run.")
+    parser.add_argument("--limit", type=int, default=25, help="Max reject candidates to process.")
+    parser.add_argument("--note", type=str, default="", help="Decision note for applied cleanup.")
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if args.command in {"reject-candidates", "cleanup-reject-candidates"}:
+        result = cleanup_reject_candidates(
+            experiment_plan_path=args.experiment_plan,
+            promotion_gate_path=args.promotion_gate,
+            output_dir=args.output_dir,
+            apply=args.apply,
+            limit=args.limit,
+            note=args.note,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
 
     report = run_approval_inbox(
         experiment_plan_path=args.experiment_plan,

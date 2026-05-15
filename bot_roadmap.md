@@ -289,6 +289,7 @@ Principe:
 - promotion gate bepaalt per experiment of het `blocked`, `waiting_for_forward`, `confirmed_protection` of `ready_for_human_review` is;
 - approval inbox vertaalt experimenten en promotion-gate uitkomsten naar `review_for_approval`, `review_for_rejection`, `reject_candidate`, `wait` of `no_action_keep_protection`;
 - approval inbox houdt een blocked lifecycle bij, zodat pas herhaald geblokkeerde experimenten reject-candidate worden;
+- approval inbox kan reject-candidates eerst als dry-run tonen en herhaald geblokkeerde candidates veilig auto-archiveren tijdens `--cleanup-registry`;
 - operator cockpit is de enige dagelijkse menselijke cockpit: live changes, bot health, action needed, learning en risk in één kort bericht;
 - shadow-live bridge draait alleen approved-for-shadow experimenten tegen recente live GPT decisions en schrijft alleen `would_allow`/`would_block` observaties;
 - risk policy combineert regime/profiles/safety gates tot read-only risk-down en cap-adviezen per symbool;

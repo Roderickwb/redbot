@@ -257,6 +257,9 @@ class RecommendationRegistry:
     def reject(self, rec_id: str, note: str = "") -> dict:
         return self._set_status(rec_id=rec_id, status="rejected", note=note)
 
+    def archive(self, rec_id: str, note: str = "") -> dict:
+        return self._set_status(rec_id=rec_id, status="archived", note=note)
+
     def mark_auto_applied(self, rec_id: str, note: str = "") -> dict:
         return self._set_status(rec_id=rec_id, status="auto_applied", note=note)
 

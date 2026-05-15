@@ -27,7 +27,7 @@ from src.analysis.bot_advisor import (
     sync_registry as sync_advice_registry,
     write_json as write_advisor_json,
 )
-from src.analysis.approval_inbox import run_approval_inbox
+from src.analysis.approval_inbox import cleanup_reject_candidates, run_approval_inbox
 from src.analysis.bot_alerts_reporter import (
     BotAlertsReporter,
     DEFAULT_LATEST_FILE as ALERTS_LATEST_FILE,
@@ -395,6 +395,10 @@ def _build_approval_inbox() -> dict:
     }
 
 
+def _build_approval_cleanup(apply: bool) -> dict:
+    return cleanup_reject_candidates(apply=apply)
+
+
 def _build_shadow_live_bridge(hours: int) -> dict:
     report = run_shadow_live_bridge(hours=hours)
     return {
@@ -543,6 +547,22 @@ def run_daily_analysis_job(
     steps["post_advisor_approval_inbox"] = _run_step(
         lambda: _build_approval_inbox(),
     )
+    if cleanup_registry:
+        steps["approval_reject_cleanup"] = _run_step(
+            lambda: _build_approval_cleanup(apply=True),
+        )
+        steps["post_cleanup_experiment_plan"] = _run_step(
+            lambda: _build_experiment_plan(send_experiments=False),
+        )
+        steps["post_cleanup_shadow_experiment_results"] = _run_step(
+            lambda: _build_shadow_experiment_results(hours=hours),
+        )
+        steps["post_cleanup_promotion_gate"] = _run_step(
+            lambda: _build_promotion_gate(),
+        )
+        steps["post_cleanup_approval_inbox"] = _run_step(
+            lambda: _build_approval_inbox(),
+        )
     steps["post_advisor_shadow_live_bridge"] = _run_step(
         lambda: _build_shadow_live_bridge(hours=hours),
     )
@@ -641,7 +661,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--send-experiments", action="store_true", help="Also send experiment planner digest to Telegram.")
     parser.add_argument("--send-control", action="store_true", help="Also send compact daily control report to Telegram.")
     parser.add_argument("--send-cockpit", action="store_true", help="Also send the compact operator cockpit to Telegram.")
-    parser.add_argument("--cleanup-registry", action="store_true", help="Archive stale/missing proposed recommendations after advisor sync.")
+    parser.add_argument("--cleanup-registry", action="store_true", help="Archive stale/missing proposed recommendations and repeat-blocked approval candidates after advisor sync.")
     parser.add_argument("--cleanup-missing-count", type=int, default=2, help="Archive proposed recommendations missing from this many syncs.")
     parser.add_argument("--cleanup-stale-days", type=int, default=14, help="Archive proposed recommendations not seen for this many days.")
     parser.add_argument("--force-health-send", action="store_true", help="Ignore daily health digest send marker.")

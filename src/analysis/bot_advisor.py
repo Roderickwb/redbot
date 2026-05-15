@@ -855,6 +855,8 @@ class BotAdvisor:
         items = []
 
         risk_down = summary.get("risk_down_symbols", []) or []
+        long_risk_down = summary.get("long_risk_down_symbols", []) or []
+        short_risk_down = summary.get("short_risk_down_symbols", []) or []
         cap_longs = summary.get("cap_new_long_symbols", []) or []
         blocked = _safe_int(summary.get("promotion_blocked"))
         reject_candidates = _safe_int(summary.get("approval_reject_candidates"))
@@ -878,13 +880,18 @@ class BotAdvisor:
             items.append(self._rec(
                 priority="low",
                 area="risk_policy",
-                finding=f"Risk policy proposes risk-down for {len(risk_down)} symbols.",
+                finding=(
+                    f"Risk policy proposes direction-aware risk-down: "
+                    f"long={len(long_risk_down)}, short={len(short_risk_down)}."
+                ),
                 recommendation="Use this as the future risk engine input; live enforcement remains off until explicitly wired.",
                 requires_human_approval=False,
                 evidence={
                     "policy_signal": "risk_down",
                     "symbols": [row.get("symbol") for row in risk_down[:10]],
                     "average_risk_multiplier": summary.get("average_risk_multiplier"),
+                    "average_long_risk_multiplier": summary.get("average_long_risk_multiplier"),
+                    "average_short_risk_multiplier": summary.get("average_short_risk_multiplier"),
                 },
             ))
 

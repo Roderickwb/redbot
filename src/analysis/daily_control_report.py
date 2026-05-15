@@ -305,9 +305,15 @@ class DailyControlReport:
         return {
             "total_symbols": _safe_int(summary.get("total_symbols")),
             "average_risk_multiplier": _safe_float(summary.get("average_risk_multiplier"), 1.0),
+            "average_long_risk_multiplier": _safe_float(summary.get("average_long_risk_multiplier"), 1.0),
+            "average_short_risk_multiplier": _safe_float(summary.get("average_short_risk_multiplier"), 1.0),
             "risk_down": len(summary.get("risk_down_symbols", []) or []),
+            "long_risk_down": len(summary.get("long_risk_down_symbols", []) or []),
+            "short_risk_down": len(summary.get("short_risk_down_symbols", []) or []),
             "cap_new_longs": len(summary.get("cap_new_long_symbols", []) or []),
             "by_policy_mode": summary.get("by_policy_mode", {}),
+            "by_long_policy_mode": summary.get("by_long_policy_mode", {}),
+            "by_short_policy_mode": summary.get("by_short_policy_mode", {}),
             "market_regime": summary.get("market_regime") or market.get("regime"),
             "promotion_blocked": _safe_int(summary.get("promotion_blocked")),
             "approval_reject_candidates": _safe_int(summary.get("approval_reject_candidates")),
@@ -442,9 +448,11 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
         ),
         (
             f"Risk policy symbols={risk_policy.get('total_symbols', 0)} "
-            f"risk_down={risk_policy.get('risk_down', 0)} "
+            f"long_down={risk_policy.get('long_risk_down', 0)} "
+            f"short_down={risk_policy.get('short_risk_down', 0)} "
             f"cap_longs={risk_policy.get('cap_new_longs', 0)} "
-            f"avg_mult={risk_policy.get('average_risk_multiplier', 1.0)}"
+            f"avg_long={risk_policy.get('average_long_risk_multiplier', 1.0)} "
+            f"avg_short={risk_policy.get('average_short_risk_multiplier', 1.0)}"
         ),
     ]
 

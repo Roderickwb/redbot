@@ -184,12 +184,29 @@ class RiskPolicyBuilder:
         flag_mult = self._flag_multiplier(flags, source_profile)
         final_mult = self._clamp_multiplier(market_mult * profile_mult * flag_mult)
         risk_mode = self._risk_mode(final_mult)
-        actions = self._actions(symbol, final_mult, source_profile, flags, market, promotion, approval, ml_edge)
+        directional_policy = self._directional_policy(
+            base_multiplier=final_mult,
+            profile=source_profile,
+            flags=flags,
+            market=market,
+        )
+        actions = self._actions(
+            symbol,
+            final_mult,
+            directional_policy,
+            source_profile,
+            flags,
+            market,
+            promotion,
+            approval,
+            ml_edge,
+        )
 
         return {
             "symbol": symbol,
             "policy_mode": risk_mode,
             "risk_multiplier": final_mult,
+            "directional_policy": directional_policy,
             "components": {
                 "market_multiplier": round(market_mult, 2),
                 "profile_multiplier": round(profile_mult, 2),
@@ -260,10 +277,67 @@ class RiskPolicyBuilder:
             return "cautious"
         return "normal"
 
+    def _directional_policy(
+        self,
+        base_multiplier: float,
+        profile: dict,
+        flags: set[str],
+        market: dict,
+    ) -> dict:
+        long_multiplier = base_multiplier
+        short_multiplier = base_multiplier
+        long_reasons = []
+        short_reasons = []
+        regime = market.get("regime")
+        directional_bias = market.get("directional_bias")
+        profile_bias = str(profile.get("bias") or "neutral")
+        normalized_flags = {str(flag).upper() for flag in flags}
+
+        if regime == "risk_off":
+            long_multiplier = min(long_multiplier, 0.5)
+            long_reasons.append("market_risk_off_caps_longs")
+            if directional_bias == "short_or_cash":
+                short_reasons.append("market_risk_off_allows_short_or_cash_only")
+        elif regime == "risk_on":
+            short_multiplier = min(short_multiplier, 0.7)
+            short_reasons.append("market_risk_on_caps_shorts")
+        elif regime == "chop":
+            long_multiplier = min(long_multiplier, 0.7)
+            short_multiplier = min(short_multiplier, 0.7)
+            long_reasons.append("market_chop_caps_directional_entries")
+            short_reasons.append("market_chop_caps_directional_entries")
+
+        if profile_bias in {"long_edge", "long_bias"}:
+            short_multiplier = min(short_multiplier, 0.75)
+            short_reasons.append("profile_bias_favors_long")
+        elif profile_bias in {"short_edge", "short_bias"}:
+            long_multiplier = min(long_multiplier, 0.75)
+            long_reasons.append("profile_bias_favors_short")
+
+        if "DRAWDOWN_RISK" in normalized_flags or "COUNTERFACTUAL_EDGE_NEGATIVE" in normalized_flags:
+            long_reasons.append("profile_negative_edge_or_drawdown")
+            short_reasons.append("profile_negative_edge_or_drawdown")
+
+        return {
+            "long": {
+                "risk_multiplier": self._clamp_multiplier(long_multiplier),
+                "policy_mode": self._risk_mode(self._clamp_multiplier(long_multiplier)),
+                "can_increase_risk": False,
+                "reasons": long_reasons or ["base_policy"],
+            },
+            "short": {
+                "risk_multiplier": self._clamp_multiplier(short_multiplier),
+                "policy_mode": self._risk_mode(self._clamp_multiplier(short_multiplier)),
+                "can_increase_risk": False,
+                "reasons": short_reasons or ["base_policy"],
+            },
+        }
+
     def _actions(
         self,
         symbol: str,
         multiplier: float,
+        directional_policy: dict,
         profile: dict,
         flags: set[str],
         market: dict,
@@ -278,12 +352,13 @@ class RiskPolicyBuilder:
             actions.append({
                 "action": "cap_new_long_risk",
                 "mode": "read_only",
-                "suggested_multiplier": min(multiplier, 0.5),
+                "suggested_multiplier": (directional_policy.get("long") or {}).get("risk_multiplier", min(multiplier, 0.5)),
             })
             if directional_bias == "short_or_cash":
                 actions.append({
                     "action": "prefer_short_or_cash",
                     "mode": "read_only",
+                    "short_multiplier": (directional_policy.get("short") or {}).get("risk_multiplier", multiplier),
                 })
         if multiplier < 1.0:
             actions.append({
@@ -347,26 +422,78 @@ class RiskPolicyBuilder:
         ml_edge: dict,
     ) -> dict:
         by_mode = Counter(policy.get("policy_mode") for policy in policies)
+        by_long_mode = Counter(((policy.get("directional_policy") or {}).get("long") or {}).get("policy_mode") for policy in policies)
+        by_short_mode = Counter(((policy.get("directional_policy") or {}).get("short") or {}).get("policy_mode") for policy in policies)
         risk_down = [p for p in policies if _safe_float(p.get("risk_multiplier"), 1.0) < 1.0]
         cap_longs = [
             p for p in policies
             if any(action.get("action") == "cap_new_long_risk" for action in p.get("actions", []))
         ]
+        long_risk_down = [
+            p for p in policies
+            if _safe_float(((p.get("directional_policy") or {}).get("long") or {}).get("risk_multiplier"), 1.0) < 1.0
+        ]
+        short_risk_down = [
+            p for p in policies
+            if _safe_float(((p.get("directional_policy") or {}).get("short") or {}).get("risk_multiplier"), 1.0) < 1.0
+        ]
+        short_not_increased = [
+            p for p in policies
+            if not bool(((p.get("directional_policy") or {}).get("short") or {}).get("can_increase_risk"))
+        ]
         avg_mult = (
             round(sum(_safe_float(p.get("risk_multiplier"), 1.0) for p in policies) / len(policies), 3)
+            if policies else 1.0
+        )
+        avg_long_mult = (
+            round(sum(_safe_float(((p.get("directional_policy") or {}).get("long") or {}).get("risk_multiplier"), 1.0) for p in policies) / len(policies), 3)
+            if policies else 1.0
+        )
+        avg_short_mult = (
+            round(sum(_safe_float(((p.get("directional_policy") or {}).get("short") or {}).get("risk_multiplier"), 1.0) for p in policies) / len(policies), 3)
             if policies else 1.0
         )
         return {
             "total_symbols": len(policies),
             "by_policy_mode": dict(by_mode),
+            "by_long_policy_mode": dict(by_long_mode),
+            "by_short_policy_mode": dict(by_short_mode),
             "average_risk_multiplier": avg_mult,
+            "average_long_risk_multiplier": avg_long_mult,
+            "average_short_risk_multiplier": avg_short_mult,
             "risk_down_symbols": [
                 {"symbol": p.get("symbol"), "risk_multiplier": p.get("risk_multiplier"), "policy_mode": p.get("policy_mode")}
                 for p in risk_down[:20]
             ],
+            "long_risk_down_symbols": [
+                {
+                    "symbol": p.get("symbol"),
+                    "risk_multiplier": ((p.get("directional_policy") or {}).get("long") or {}).get("risk_multiplier"),
+                    "policy_mode": ((p.get("directional_policy") or {}).get("long") or {}).get("policy_mode"),
+                }
+                for p in long_risk_down[:20]
+            ],
+            "short_risk_down_symbols": [
+                {
+                    "symbol": p.get("symbol"),
+                    "risk_multiplier": ((p.get("directional_policy") or {}).get("short") or {}).get("risk_multiplier"),
+                    "policy_mode": ((p.get("directional_policy") or {}).get("short") or {}).get("policy_mode"),
+                }
+                for p in short_risk_down[:20]
+            ],
             "cap_new_long_symbols": [
-                {"symbol": p.get("symbol"), "risk_multiplier": p.get("risk_multiplier")}
+                {
+                    "symbol": p.get("symbol"),
+                    "risk_multiplier": ((p.get("directional_policy") or {}).get("long") or {}).get("risk_multiplier", p.get("risk_multiplier")),
+                }
                 for p in cap_longs[:20]
+            ],
+            "short_risk_not_increased_symbols": [
+                {
+                    "symbol": p.get("symbol"),
+                    "risk_multiplier": ((p.get("directional_policy") or {}).get("short") or {}).get("risk_multiplier"),
+                }
+                for p in short_not_increased[:20]
             ],
             "market_regime": market.get("regime"),
             "promotion_blocked": self._promotion_blocked(promotion),

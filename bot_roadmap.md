@@ -95,6 +95,7 @@ Status:
 - V1 combineert market regime, coin profiles, promotion gate, approval inbox en ML readiness;
 - schrijft `analysis/risk/latest_risk_policy_report.json`;
 - bepaalt per symbool een read-only policy met `risk_multiplier`, risk-down signalen en long-risk caps;
+- bepaalt daarnaast direction-aware risk policy met aparte `long` en `short` multipliers per symbool;
 - draait mee in `src.analysis.daily_analysis_job`;
 - daily advisor en daily control lezen deze risk policy terug;
 - live enforcement staat expliciet uit totdat een aparte live-wiring stap is goedgekeurd.

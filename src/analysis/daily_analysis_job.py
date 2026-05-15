@@ -72,6 +72,7 @@ from src.analysis.opportunity_reporter import (
     DEFAULT_OUTPUT_DIR as OPPORTUNITY_OUTPUT_DIR,
     write_json as write_opportunity_json,
 )
+from src.analysis.operator_cockpit import run_operator_cockpit
 from src.analysis.promotion_gate import run_promotion_gate
 from src.analysis.recommendation_registry import RecommendationRegistry
 from src.analysis.risk_bridge_outcome_evaluator import run_risk_bridge_outcome_evaluator
@@ -414,6 +415,21 @@ def _build_daily_control(send_control: bool) -> dict:
     }
 
 
+def _build_operator_cockpit(send_cockpit: bool) -> dict:
+    report = run_operator_cockpit(send=send_cockpit)
+    return {
+        "status": report.get("status"),
+        "live_changes": report.get("live_changes", {}),
+        "bot_health": report.get("bot_health", {}),
+        "action_needed": report.get("action_needed", {}),
+        "learning": report.get("learning", {}),
+        "risk": report.get("risk", {}),
+        "next_actions": report.get("next_actions", []),
+        "output_path": report.get("output_path"),
+        "telegram_sent": report.get("telegram_sent", False),
+    }
+
+
 def run_daily_analysis_job(
     apply_labels: bool = True,
     relabel_existing: bool = False,
@@ -425,6 +441,7 @@ def run_daily_analysis_job(
     send_health: bool = False,
     send_experiments: bool = False,
     send_control: bool = False,
+    send_cockpit: bool = False,
     cleanup_registry: bool = False,
     cleanup_missing_count: int = 2,
     cleanup_stale_days: int = 14,
@@ -565,6 +582,7 @@ def run_daily_analysis_job(
             "send_health": send_health,
             "send_experiments": send_experiments,
             "send_control": send_control,
+            "send_cockpit": send_cockpit,
             "cleanup_registry": cleanup_registry,
             "cleanup_missing_count": cleanup_missing_count,
             "cleanup_stale_days": cleanup_stale_days,
@@ -579,6 +597,9 @@ def run_daily_analysis_job(
 
     steps["daily_control_report"] = _run_step(
         lambda: _build_daily_control(send_control=send_control),
+    )
+    steps["operator_cockpit"] = _run_step(
+        lambda: _build_operator_cockpit(send_cockpit=send_cockpit),
     )
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]
     payload["failed_steps"] = failed_steps
@@ -619,6 +640,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--send-health", action="store_true", help="Also send the health digest once per day.")
     parser.add_argument("--send-experiments", action="store_true", help="Also send experiment planner digest to Telegram.")
     parser.add_argument("--send-control", action="store_true", help="Also send compact daily control report to Telegram.")
+    parser.add_argument("--send-cockpit", action="store_true", help="Also send the compact operator cockpit to Telegram.")
     parser.add_argument("--cleanup-registry", action="store_true", help="Archive stale/missing proposed recommendations after advisor sync.")
     parser.add_argument("--cleanup-missing-count", type=int, default=2, help="Archive proposed recommendations missing from this many syncs.")
     parser.add_argument("--cleanup-stale-days", type=int, default=14, help="Archive proposed recommendations not seen for this many days.")
@@ -638,6 +660,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         send_health=args.send_health,
         send_experiments=args.send_experiments,
         send_control=args.send_control,
+        send_cockpit=args.send_cockpit,
         cleanup_registry=args.cleanup_registry,
         cleanup_missing_count=args.cleanup_missing_count,
         cleanup_stale_days=args.cleanup_stale_days,

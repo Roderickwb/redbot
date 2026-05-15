@@ -82,10 +82,14 @@ class OperatorCockpit:
         health = self._health(blockers)
         action_needed = self._action_needed(blockers, approvals, approval_status, promotion, risk_history)
         status = self._status(health, action_needed, control.get("status"))
+        learning_summary = self._learning_summary(learning, experiments, promotion, approval_status)
+        risk_summary = self._risk_summary(risk_policy, risk_strategy, risk_outcome, risk_history)
+        daily_decision = self._daily_decision(live_changes, health, action_needed, learning_summary, risk_summary)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "status": status,
+            "daily_decision": daily_decision,
             "live_changes": live_changes,
             "bot_health": health,
             "action_needed": action_needed,
@@ -96,9 +100,9 @@ class OperatorCockpit:
                 "urgent": action_needed.get("urgent", False),
                 "live_enforcement": live_changes.get("live_enforcement", False),
             },
-            "learning": self._learning_summary(learning, experiments, promotion, approval_status),
-            "risk": self._risk_summary(risk_policy, risk_strategy, risk_outcome, risk_history),
-            "next_actions": self._next_actions(control, action_needed),
+            "learning": learning_summary,
+            "risk": risk_summary,
+            "next_actions": self._next_actions(control, daily_decision),
             "sources": {
                 "daily_control": self.control_path,
             },
@@ -108,6 +112,11 @@ class OperatorCockpit:
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "status": "ACTION_NEEDED",
+            "daily_decision": {
+                "label": "TODAY: STOP / FIX",
+                "severity": "stop",
+                "reason": "Daily control report is missing or unreadable.",
+            },
             "live_changes": {"status": "UNKNOWN", "live_enforcement": False},
             "bot_health": {
                 "status": "BROKEN",
@@ -193,7 +202,7 @@ class OperatorCockpit:
             }
         if approvals:
             return {
-                "status": "REVIEW",
+                "status": "OPTIONAL_REVIEW",
                 "urgent": False,
                 "headline": "There are non-urgent recommendations to review.",
             }
@@ -210,6 +219,8 @@ class OperatorCockpit:
             return "ACTION_NEEDED"
         if action.get("status") in {"YES", "REVIEW"}:
             return "REVIEW"
+        if action.get("status") == "OPTIONAL_REVIEW":
+            return "WATCH"
         return fallback or "WATCH"
 
     def _learning_summary(self, learning: dict, experiments: dict, promotion: dict, approval: dict) -> dict:
@@ -249,10 +260,41 @@ class OperatorCockpit:
             "live_enforcement": bool(risk_history.get("live_enforcement")),
         }
 
-    def _next_actions(self, control: dict, action_needed: dict) -> list[str]:
+    def _daily_decision(self, live_changes: dict, health: dict, action_needed: dict, learning: dict, risk: dict) -> dict:
+        if health.get("status") != "OK":
+            return {
+                "label": "TODAY: STOP / FIX",
+                "severity": "stop",
+                "reason": health.get("finding") or "Bot health is not OK.",
+            }
+        if live_changes.get("live_enforcement"):
+            return {
+                "label": "TODAY: STOP / REVIEW LIVE CHANGES",
+                "severity": "stop",
+                "reason": "Live enforcement is enabled; verify this was intentional.",
+            }
+        if action_needed.get("status") == "YES":
+            return {
+                "label": "TODAY: REVIEW REQUIRED",
+                "severity": "review",
+                "reason": action_needed.get("headline"),
+            }
+        if risk.get("history_verdict") in {"stable_risk_down_helpful", "risk_down_too_strict"}:
+            return {
+                "label": "TODAY: REVIEW REQUIRED",
+                "severity": "review",
+                "reason": f"Risk bridge history verdict is {risk.get('history_verdict')}.",
+            }
+        return {
+            "label": "TODAY: NO ACTION REQUIRED",
+            "severity": "watch",
+            "reason": "No blockers, no live changes, and no approval-ready item.",
+        }
+
+    def _next_actions(self, control: dict, daily_decision: dict) -> list[str]:
         actions = control.get("next_actions", []) or []
-        if action_needed.get("status") == "NO":
-            return ["No urgent action. Let the bot keep collecting evidence."] + actions[:4]
+        if daily_decision.get("severity") == "watch":
+            return ["No action required today. Let the bot keep collecting evidence."]
         return actions[:6]
 
 
@@ -262,9 +304,12 @@ def format_cockpit_message(cockpit: dict) -> str:
     live = cockpit.get("live_changes", {}) or {}
     health = cockpit.get("bot_health", {}) or {}
     action = cockpit.get("action_needed", {}) or {}
+    decision = cockpit.get("daily_decision", {}) or {}
 
     lines = [
         f"RED BOT COCKPIT [{cockpit.get('status')}]",
+        str(decision.get("label") or "TODAY: UNKNOWN"),
+        f"Reason: {decision.get('reason')}",
         f"Live changes: {live.get('status', 'UNKNOWN')}",
         f"Bot health: {health.get('status', 'UNKNOWN')} (blockers={health.get('blockers', 0)})",
         f"Action needed: {action.get('status', 'UNKNOWN')} - {action.get('headline')}",
@@ -310,6 +355,7 @@ def format_cockpit_message(cockpit: dict) -> str:
         lines.extend(["", "Next:"])
         for item in next_actions[:5]:
             lines.append(f"- {item}")
+    lines.extend(["", str(decision.get("label") or "TODAY: UNKNOWN")])
     return "\n".join(line for line in lines if line is not None)
 
 
@@ -352,6 +398,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     if args.json:
         print(json.dumps({
             "status": cockpit.get("status"),
+            "daily_decision": cockpit.get("daily_decision"),
             "live_changes": cockpit.get("live_changes"),
             "bot_health": cockpit.get("bot_health"),
             "action_needed": cockpit.get("action_needed"),

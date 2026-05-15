@@ -32,6 +32,7 @@ DEFAULT_EXPERIMENT_PLAN = os.path.join("analysis", "experiments", "latest_experi
 DEFAULT_SHADOW_RESULTS = os.path.join("analysis", "experiments", "latest_shadow_experiment_results.json")
 DEFAULT_PROMOTION_GATE = os.path.join("analysis", "promotion_gate", "latest_promotion_gate_report.json")
 DEFAULT_APPROVAL_INBOX = os.path.join("analysis", "approvals", "latest_approval_inbox.json")
+DEFAULT_SHADOW_LIVE_BRIDGE = os.path.join("analysis", "shadow_live", "latest_shadow_live_bridge_report.json")
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
@@ -77,6 +78,7 @@ class DailyControlReport:
         shadow_results_path: str = DEFAULT_SHADOW_RESULTS,
         promotion_gate_path: str = DEFAULT_PROMOTION_GATE,
         approval_inbox_path: str = DEFAULT_APPROVAL_INBOX,
+        shadow_live_path: str = DEFAULT_SHADOW_LIVE_BRIDGE,
         ml_edge_path: str = DEFAULT_ML_EDGE_REPORT,
         alerts_path: str = DEFAULT_ALERT_REPORT,
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
@@ -88,6 +90,7 @@ class DailyControlReport:
         self.shadow_results_path = shadow_results_path
         self.promotion_gate_path = promotion_gate_path
         self.approval_inbox_path = approval_inbox_path
+        self.shadow_live_path = shadow_live_path
         self.ml_edge_path = ml_edge_path
         self.alerts_path = alerts_path
         self.market_regime_path = market_regime_path
@@ -101,6 +104,7 @@ class DailyControlReport:
             "shadow_results": load_json(self.shadow_results_path),
             "promotion_gate": load_json(self.promotion_gate_path),
             "approval_inbox": load_json(self.approval_inbox_path),
+            "shadow_live": load_json(self.shadow_live_path),
             "ml_edge": load_json(self.ml_edge_path),
             "alerts": load_json(self.alerts_path),
             "market_regime": load_json(self.market_regime_path),
@@ -111,9 +115,10 @@ class DailyControlReport:
         experiment_status = self._experiment_status(reports)
         promotion_status = self._promotion_status(reports)
         approval_status = self._approval_status(reports)
+        shadow_live_status = self._shadow_live_status(reports)
         learning_status = self._learning_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
-        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, learning_status)
+        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, learning_status)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -125,6 +130,7 @@ class DailyControlReport:
             "experiment_status": experiment_status,
             "promotion_status": promotion_status,
             "approval_status": approval_status,
+            "shadow_live_status": shadow_live_status,
             "next_actions": next_actions,
             "sources": {
                 "daily_job": self.daily_job_path,
@@ -134,6 +140,7 @@ class DailyControlReport:
                 "shadow_results": self.shadow_results_path,
                 "promotion_gate": self.promotion_gate_path,
                 "approval_inbox": self.approval_inbox_path,
+                "shadow_live_bridge": self.shadow_live_path,
                 "ml_edge_model": self.ml_edge_path,
                 "alerts": self.alerts_path,
                 "market_regime": self.market_regime_path,
@@ -274,6 +281,16 @@ class DailyControlReport:
             "lifecycle": inbox.get("lifecycle_summary", {}),
         }
 
+    def _shadow_live_status(self, reports: dict) -> dict:
+        shadow_live = reports.get("shadow_live", {}) or {}
+        summary = shadow_live.get("summary", {}) or {}
+        return {
+            "active_shadow_policies": _safe_int(summary.get("active_shadow_policies")),
+            "loaded_events": _safe_int(summary.get("loaded_events")),
+            "matches": _safe_int(summary.get("matches")),
+            "by_shadow_action": summary.get("by_shadow_action", {}),
+        }
+
     def _operating_state(self, reports: dict, blockers: list[dict], approval_queue: list[dict]) -> dict:
         advisor = reports.get("advisor", {}) or {}
         registry = reports.get("registry", {}) or {}
@@ -281,6 +298,7 @@ class DailyControlReport:
         shadow = reports.get("shadow_results", {}) or {}
         promotion = reports.get("promotion_gate", {}) or {}
         approval = reports.get("approval_inbox", {}) or {}
+        shadow_live = reports.get("shadow_live", {}) or {}
 
         if blockers:
             status = "ACTION_NEEDED"
@@ -306,6 +324,7 @@ class DailyControlReport:
             "shadow_results": shadow.get("summary", {}),
             "promotion_gate": promotion.get("summary", {}),
             "approval_inbox": approval.get("summary", {}),
+            "shadow_live": shadow_live.get("summary", {}),
         }
 
     def _next_actions(
@@ -315,6 +334,7 @@ class DailyControlReport:
         experiment_status: dict,
         promotion_status: dict,
         approval_status: dict,
+        shadow_live_status: dict,
         learning_status: dict,
     ) -> list[str]:
         if blockers:
@@ -330,6 +350,8 @@ class DailyControlReport:
             actions.append("Approval inbox has repeat-blocked experiments that are reject candidates.")
         if approval_status.get("review_for_rejection"):
             actions.append("Approval inbox has experiments that should likely be rejected or left blocked.")
+        if shadow_live_status.get("active_shadow_policies"):
+            actions.append("Review shadow-live matches before considering any live behavior change.")
         if promotion_status.get("ready_for_human_review"):
             actions.append("Review promotion-gate candidates before approving any experiment.")
         if promotion_status.get("blocked"):
@@ -357,6 +379,7 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
     experiments = report.get("experiment_status", {}) or {}
     promotion = report.get("promotion_status", {}) or {}
     approval = report.get("approval_status", {}) or {}
+    shadow_live = report.get("shadow_live_status", {}) or {}
 
     lines = [
         f"Daily Control [{report.get('status')}]",
@@ -380,6 +403,10 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
             f"reject_candidate={approval.get('reject_candidate', 0)} "
             f"reject={approval.get('review_for_rejection', 0)} "
             f"wait={approval.get('wait', 0)}"
+        ),
+        (
+            f"Shadow-live policies={shadow_live.get('active_shadow_policies', 0)} "
+            f"matches={shadow_live.get('matches', 0)}"
         ),
     ]
 

@@ -74,6 +74,7 @@ from src.analysis.opportunity_reporter import (
 )
 from src.analysis.promotion_gate import run_promotion_gate
 from src.analysis.recommendation_registry import RecommendationRegistry
+from src.analysis.shadow_live_bridge import run_shadow_live_bridge
 from src.analysis.shadow_model_evaluator import (
     ShadowModelEvaluator,
     DEFAULT_LATEST_FILE as SHADOW_LATEST_FILE,
@@ -355,6 +356,14 @@ def _build_approval_inbox() -> dict:
     }
 
 
+def _build_shadow_live_bridge(hours: int) -> dict:
+    report = run_shadow_live_bridge(hours=hours)
+    return {
+        "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
+    }
+
+
 def _build_daily_control(send_control: bool) -> dict:
     report = run_daily_control_report(send=send_control)
     return {
@@ -441,6 +450,9 @@ def run_daily_analysis_job(
     steps["approval_inbox"] = _run_step(
         lambda: _build_approval_inbox(),
     )
+    steps["shadow_live_bridge"] = _run_step(
+        lambda: _build_shadow_live_bridge(hours=hours),
+    )
     steps["bot_advisor"] = _run_step(
         lambda: _build_advisor(
             send_advice=send_advice,
@@ -463,6 +475,9 @@ def run_daily_analysis_job(
     )
     steps["post_advisor_approval_inbox"] = _run_step(
         lambda: _build_approval_inbox(),
+    )
+    steps["post_advisor_shadow_live_bridge"] = _run_step(
+        lambda: _build_shadow_live_bridge(hours=hours),
     )
 
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]

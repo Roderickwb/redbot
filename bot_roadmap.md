@@ -225,6 +225,7 @@ Module:
 - `src.analysis.shadow_experiment_runner` als replay/forward runner voor experimenten zonder live trading impact.
 - `src.analysis.promotion_gate` als objectieve safety gate tussen shadow-resultaten en menselijke approval.
 - `src.analysis.approval_inbox` als compacte beslisqueue met approve/reject commands per experiment.
+- `src.analysis.shadow_live_bridge` als read-only bridge die approved experiments tegen recente live decisions shadowt.
 - `src.analysis.daily_control_report` als compacte operatorlaag bovenop alle analyses.
 
 Inputs:
@@ -245,6 +246,7 @@ Output:
 - `analysis/experiments/latest_shadow_experiment_results.json`
 - `analysis/promotion_gate/latest_promotion_gate_report.json`
 - `analysis/approvals/latest_approval_inbox.json`
+- `analysis/shadow_live/latest_shadow_live_bridge_report.json`
 - `analysis/daily_control/latest_daily_control_report.json`
 
 Principe:
@@ -264,6 +266,7 @@ Principe:
 - promotion gate bepaalt per experiment of het `blocked`, `waiting_for_forward`, `confirmed_protection` of `ready_for_human_review` is;
 - approval inbox vertaalt experimenten en promotion-gate uitkomsten naar `review_for_approval`, `review_for_rejection`, `reject_candidate`, `wait` of `no_action_keep_protection`;
 - approval inbox houdt een blocked lifecycle bij, zodat pas herhaald geblokkeerde experimenten reject-candidate worden;
+- shadow-live bridge draait alleen approved-for-shadow experimenten tegen recente live GPT decisions en schrijft alleen `would_allow`/`would_block` observaties;
 - advisor leest shadow experiment verdicts en overlap-groepen terug, zodat replay-only, forward-confirmed en duplicate evidence automatisch worden samengevat;
 - advisor leest promotion gate uitkomsten terug en zet blocked/confirmed/ready experimenten om naar registry-stabiele aanbevelingen;
 - daily job ververst experiment plan, shadow results, promotion gate en approval inbox nogmaals na advisor/registry-sync, zodat nieuwe promotable hypotheses dezelfde run zichtbaar zijn;

@@ -77,6 +77,7 @@ from src.analysis.promotion_gate import run_promotion_gate
 from src.analysis.recommendation_registry import RecommendationRegistry
 from src.analysis.risk_bridge_outcome_evaluator import run_risk_bridge_outcome_evaluator
 from src.analysis.risk_bridge_history import run_risk_bridge_history
+from src.analysis.risk_guard_report import run_risk_guard_report
 from src.analysis.risk_policy import run_risk_policy
 from src.analysis.risk_strategy_bridge import run_risk_strategy_bridge
 from src.analysis.shadow_live_bridge import run_shadow_live_bridge
@@ -247,6 +248,14 @@ def _build_risk_bridge_history() -> dict:
         "summary": report.get("summary", {}),
         "output_path": report.get("output_path"),
         "history_path": (report.get("meta") or {}).get("history_path"),
+    }
+
+
+def _build_risk_guard_report(limit: int) -> dict:
+    report = run_risk_guard_report(limit=limit)
+    return {
+        "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
     }
 
 
@@ -494,6 +503,9 @@ def run_daily_analysis_job(
     steps["risk_bridge_history"] = _run_step(
         lambda: _build_risk_bridge_history(),
     )
+    steps["risk_guard_report"] = _run_step(
+        lambda: _build_risk_guard_report(limit=report_limit),
+    )
     steps["ml_training_dataset"] = _run_step(
         lambda: _build_ml_training_dataset(
             limit=report_limit,
@@ -577,6 +589,9 @@ def run_daily_analysis_job(
     )
     steps["post_advisor_risk_bridge_history"] = _run_step(
         lambda: _build_risk_bridge_history(),
+    )
+    steps["post_advisor_risk_guard_report"] = _run_step(
+        lambda: _build_risk_guard_report(limit=report_limit),
     )
 
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]

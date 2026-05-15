@@ -269,6 +269,7 @@ Output:
 - `analysis/risk/latest_risk_strategy_bridge_report.json`
 - `analysis/risk/latest_risk_bridge_outcome_report.json`
 - `analysis/risk/latest_risk_bridge_history_report.json`
+- `analysis/risk/latest_risk_guard_report.json`
 - `analysis/daily_control/latest_daily_control_report.json`
 - `analysis/operator_cockpit/latest_operator_cockpit.json`
 
@@ -293,6 +294,7 @@ Principe:
 - operator cockpit is de enige dagelijkse menselijke cockpit: live changes, bot health, action needed, learning en risk in één kort bericht;
 - shadow-live bridge draait alleen approved-for-shadow experimenten tegen recente live GPT decisions en schrijft alleen `would_allow`/`would_block` observaties;
 - risk policy combineert regime/profiles/safety gates tot read-only risk-down en cap-adviezen per symbool;
+- risk guard report replayt daily loss, weekly drawdown, loss streak en exposure guards in shadow mode;
 - advisor leest shadow experiment verdicts en overlap-groepen terug, zodat replay-only, forward-confirmed en duplicate evidence automatisch worden samengevat;
 - advisor leest promotion gate uitkomsten terug en zet blocked/confirmed/ready experimenten om naar registry-stabiele aanbevelingen;
 - daily job ververst experiment plan, shadow results, promotion gate en approval inbox nogmaals na advisor/registry-sync, zodat nieuwe promotable hypotheses dezelfde run zichtbaar zijn;

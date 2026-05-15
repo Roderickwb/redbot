@@ -76,6 +76,7 @@ class OperatorCockpit:
         risk_strategy = control.get("risk_strategy_status", {}) or {}
         risk_outcome = control.get("risk_outcome_status", {}) or {}
         risk_history = control.get("risk_history_status", {}) or {}
+        risk_guard = control.get("risk_guard_status", {}) or {}
         shadow_live = control.get("shadow_live_status", {}) or {}
 
         live_changes = self._live_changes(control, shadow_live, risk_policy, risk_strategy, risk_outcome, risk_history)
@@ -83,7 +84,7 @@ class OperatorCockpit:
         action_needed = self._action_needed(blockers, approvals, approval_status, promotion, risk_history)
         status = self._status(health, action_needed, control.get("status"))
         learning_summary = self._learning_summary(learning, experiments, promotion, approval_status)
-        risk_summary = self._risk_summary(risk_policy, risk_strategy, risk_outcome, risk_history)
+        risk_summary = self._risk_summary(risk_policy, risk_strategy, risk_outcome, risk_history, risk_guard)
         daily_decision = self._daily_decision(live_changes, health, action_needed, learning_summary, risk_summary)
 
         return {
@@ -242,7 +243,7 @@ class OperatorCockpit:
             "market_bias": market.get("directional_bias"),
         }
 
-    def _risk_summary(self, risk_policy: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict) -> dict:
+    def _risk_summary(self, risk_policy: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, risk_guard: dict) -> dict:
         return {
             "policy_symbols": _safe_int(risk_policy.get("total_symbols")),
             "risk_down": _safe_int(risk_policy.get("risk_down")),
@@ -257,6 +258,10 @@ class OperatorCockpit:
             "history_days": _safe_int(risk_history.get("days_observed")),
             "history_net_saved_r": _safe_float(risk_history.get("estimated_net_saved_r")),
             "history_verdict": risk_history.get("verdict"),
+            "guard_trades": _safe_int(risk_guard.get("loaded_open_trades")),
+            "guard_triggers": _safe_int(risk_guard.get("guard_triggers")),
+            "guard_net_saved_r": _safe_float(risk_guard.get("estimated_net_saved_r")),
+            "guard_verdict": risk_guard.get("verdict"),
             "live_enforcement": bool(risk_history.get("live_enforcement")),
         }
 
@@ -284,6 +289,12 @@ class OperatorCockpit:
                 "label": "TODAY: REVIEW REQUIRED",
                 "severity": "review",
                 "reason": f"Risk bridge history verdict is {risk.get('history_verdict')}.",
+            }
+        if risk.get("guard_verdict") in {"guards_look_helpful", "guards_too_strict"}:
+            return {
+                "label": "TODAY: REVIEW REQUIRED",
+                "severity": "review",
+                "reason": f"Risk guard verdict is {risk.get('guard_verdict')}.",
             }
         return {
             "label": "TODAY: NO ACTION REQUIRED",
@@ -347,6 +358,12 @@ def format_cockpit_message(cockpit: dict) -> str:
             f"days={risk.get('history_days', 0)} "
             f"net_R={risk.get('history_net_saved_r', 0.0)} "
             f"verdict={risk.get('history_verdict')}"
+        ),
+        (
+            f"- Guards: trades={risk.get('guard_trades', 0)} "
+            f"triggers={risk.get('guard_triggers', 0)} "
+            f"net_R={risk.get('guard_net_saved_r', 0.0)} "
+            f"verdict={risk.get('guard_verdict')}"
         ),
     ]
 

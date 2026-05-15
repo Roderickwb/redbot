@@ -39,6 +39,7 @@ DEFAULT_PROMOTION_GATE_REPORT = os.path.join("analysis", "promotion_gate", "late
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_RISK_POLICY_REPORT = os.path.join("analysis", "risk", "latest_risk_policy_report.json")
 DEFAULT_RISK_STRATEGY_BRIDGE_REPORT = os.path.join("analysis", "risk", "latest_risk_strategy_bridge_report.json")
+DEFAULT_RISK_BRIDGE_OUTCOME_REPORT = os.path.join("analysis", "risk", "latest_risk_bridge_outcome_report.json")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -87,6 +88,7 @@ class BotAdvisor:
         ml_edge_report_path: str = DEFAULT_ML_EDGE_REPORT,
         risk_policy_path: str = DEFAULT_RISK_POLICY_REPORT,
         risk_strategy_bridge_path: str = DEFAULT_RISK_STRATEGY_BRIDGE_REPORT,
+        risk_bridge_outcome_path: str = DEFAULT_RISK_BRIDGE_OUTCOME_REPORT,
     ):
         self.learning_report_path = learning_report_path
         self.profile_proposals_path = profile_proposals_path
@@ -101,6 +103,7 @@ class BotAdvisor:
         self.ml_edge_report_path = ml_edge_report_path
         self.risk_policy_path = risk_policy_path
         self.risk_strategy_bridge_path = risk_strategy_bridge_path
+        self.risk_bridge_outcome_path = risk_bridge_outcome_path
 
     def build_advice(self) -> dict:
         reports = {
@@ -117,6 +120,7 @@ class BotAdvisor:
             "ml_edge_model": load_json(self.ml_edge_report_path),
             "risk_policy": load_json(self.risk_policy_path),
             "risk_strategy_bridge": load_json(self.risk_strategy_bridge_path),
+            "risk_bridge_outcomes": load_json(self.risk_bridge_outcome_path),
         }
 
         recommendations = []
@@ -131,6 +135,7 @@ class BotAdvisor:
         recommendations.extend(self._promotion_gate_recommendations(reports["promotion_gate"]))
         recommendations.extend(self._risk_policy_recommendations(reports["risk_policy"]))
         recommendations.extend(self._risk_strategy_bridge_recommendations(reports["risk_strategy_bridge"]))
+        recommendations.extend(self._risk_bridge_outcome_recommendations(reports["risk_bridge_outcomes"]))
         recommendations.extend(self._ml_edge_model_recommendations(reports["ml_edge_model"]))
         recommendations.extend(self._profile_recommendations(reports["profiles"]))
         recommendations.extend(self._learning_recommendations(reports["learning"]))
@@ -155,6 +160,7 @@ class BotAdvisor:
                 "ml_edge_model_report": self.ml_edge_report_path,
                 "risk_policy_report": self.risk_policy_path,
                 "risk_strategy_bridge_report": self.risk_strategy_bridge_path,
+                "risk_bridge_outcome_report": self.risk_bridge_outcome_path,
             },
         }
 
@@ -965,6 +971,48 @@ class BotAdvisor:
                 evidence={"bridge_signal": "observed_no_adjustments", "opened_trades": opened},
             ))
         return items
+
+    def _risk_bridge_outcome_recommendations(self, outcome_report: dict) -> list[dict]:
+        if outcome_report.get("_missing") or outcome_report.get("_error"):
+            return []
+        summary = outcome_report.get("summary", {}) or {}
+        sample = _safe_int(summary.get("adjusted_with_labeled_outcomes"))
+        verdict = summary.get("verdict")
+        if not sample:
+            return []
+
+        priority = "medium" if verdict in {"risk_down_helpful", "risk_down_too_strict"} else "low"
+        if verdict == "risk_down_helpful":
+            finding = (
+                f"Risk bridge outcomes look helpful: net_saved_R={summary.get('estimated_net_saved_r')} "
+                f"over {sample} adjusted labeled trades."
+            )
+            recommendation = "Keep collecting shadow evidence; do not live-wire until sample is larger and stable."
+        elif verdict == "risk_down_too_strict":
+            finding = (
+                f"Risk bridge may be too strict: missed_R={summary.get('estimated_missed_r')} "
+                f"over {sample} adjusted labeled trades."
+            )
+            recommendation = "Do not live-wire this risk policy; inspect winners that were reduced."
+        else:
+            finding = f"Risk bridge outcome sample is not decisive yet ({sample} adjusted labeled trades)."
+            recommendation = "Keep risk bridge shadow-only and collect more labeled outcomes."
+
+        return [self._rec(
+            priority=priority,
+            area="risk_bridge_outcomes",
+            finding=finding,
+            recommendation=recommendation,
+            requires_human_approval=False,
+            evidence={
+                "outcome_signal": verdict,
+                "adjusted_with_labeled_outcomes": sample,
+                "estimated_saved_r": summary.get("estimated_saved_r"),
+                "estimated_missed_r": summary.get("estimated_missed_r"),
+                "estimated_net_saved_r": summary.get("estimated_net_saved_r"),
+                "adjusted_avg_cf_r": summary.get("adjusted_avg_cf_r"),
+            },
+        )]
 
     def _ml_edge_model_recommendations(self, ml_report: dict) -> list[dict]:
         if ml_report.get("_missing") or ml_report.get("_error"):

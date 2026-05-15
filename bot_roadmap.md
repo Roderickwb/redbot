@@ -98,6 +98,8 @@ Status:
 - bepaalt daarnaast direction-aware risk policy met aparte `long` en `short` multipliers per symbool;
 - `src.analysis.risk_strategy_bridge` past deze policy in shadow mode toe op recente GPT decisions;
 - schrijft `analysis/risk/latest_risk_strategy_bridge_report.json` met `would_reduce_size`/`would_min_size_or_block` observaties;
+- `src.analysis.risk_bridge_outcome_evaluator` meet achteraf of risk-down R zou besparen of winners zou afknijpen;
+- schrijft `analysis/risk/latest_risk_bridge_outcome_report.json`;
 - draait mee in `src.analysis.daily_analysis_job`;
 - daily advisor en daily control lezen deze risk policy terug;
 - live enforcement staat expliciet uit totdat een aparte live-wiring stap is goedgekeurd.

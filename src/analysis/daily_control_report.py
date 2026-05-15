@@ -35,6 +35,7 @@ DEFAULT_APPROVAL_INBOX = os.path.join("analysis", "approvals", "latest_approval_
 DEFAULT_SHADOW_LIVE_BRIDGE = os.path.join("analysis", "shadow_live", "latest_shadow_live_bridge_report.json")
 DEFAULT_RISK_POLICY_REPORT = os.path.join("analysis", "risk", "latest_risk_policy_report.json")
 DEFAULT_RISK_STRATEGY_BRIDGE = os.path.join("analysis", "risk", "latest_risk_strategy_bridge_report.json")
+DEFAULT_RISK_BRIDGE_OUTCOMES = os.path.join("analysis", "risk", "latest_risk_bridge_outcome_report.json")
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
@@ -83,6 +84,7 @@ class DailyControlReport:
         shadow_live_path: str = DEFAULT_SHADOW_LIVE_BRIDGE,
         risk_policy_path: str = DEFAULT_RISK_POLICY_REPORT,
         risk_strategy_bridge_path: str = DEFAULT_RISK_STRATEGY_BRIDGE,
+        risk_bridge_outcomes_path: str = DEFAULT_RISK_BRIDGE_OUTCOMES,
         ml_edge_path: str = DEFAULT_ML_EDGE_REPORT,
         alerts_path: str = DEFAULT_ALERT_REPORT,
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
@@ -97,6 +99,7 @@ class DailyControlReport:
         self.shadow_live_path = shadow_live_path
         self.risk_policy_path = risk_policy_path
         self.risk_strategy_bridge_path = risk_strategy_bridge_path
+        self.risk_bridge_outcomes_path = risk_bridge_outcomes_path
         self.ml_edge_path = ml_edge_path
         self.alerts_path = alerts_path
         self.market_regime_path = market_regime_path
@@ -113,6 +116,7 @@ class DailyControlReport:
             "shadow_live": load_json(self.shadow_live_path),
             "risk_policy": load_json(self.risk_policy_path),
             "risk_strategy_bridge": load_json(self.risk_strategy_bridge_path),
+            "risk_bridge_outcomes": load_json(self.risk_bridge_outcomes_path),
             "ml_edge": load_json(self.ml_edge_path),
             "alerts": load_json(self.alerts_path),
             "market_regime": load_json(self.market_regime_path),
@@ -126,9 +130,10 @@ class DailyControlReport:
         shadow_live_status = self._shadow_live_status(reports)
         risk_policy_status = self._risk_policy_status(reports)
         risk_strategy_status = self._risk_strategy_status(reports)
+        risk_outcome_status = self._risk_outcome_status(reports)
         learning_status = self._learning_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
-        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_strategy_status, learning_status)
+        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_strategy_status, risk_outcome_status, learning_status)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -143,6 +148,7 @@ class DailyControlReport:
             "shadow_live_status": shadow_live_status,
             "risk_policy_status": risk_policy_status,
             "risk_strategy_status": risk_strategy_status,
+            "risk_outcome_status": risk_outcome_status,
             "next_actions": next_actions,
             "sources": {
                 "daily_job": self.daily_job_path,
@@ -155,6 +161,7 @@ class DailyControlReport:
                 "shadow_live_bridge": self.shadow_live_path,
                 "risk_policy": self.risk_policy_path,
                 "risk_strategy_bridge": self.risk_strategy_bridge_path,
+                "risk_bridge_outcomes": self.risk_bridge_outcomes_path,
                 "ml_edge_model": self.ml_edge_path,
                 "alerts": self.alerts_path,
                 "market_regime": self.market_regime_path,
@@ -340,6 +347,21 @@ class DailyControlReport:
             "live_enforcement": bool((bridge.get("meta") or {}).get("live_enforcement")),
         }
 
+    def _risk_outcome_status(self, reports: dict) -> dict:
+        outcome = reports.get("risk_bridge_outcomes", {}) or {}
+        summary = outcome.get("summary", {}) or {}
+        return {
+            "adjusted_with_labeled_outcomes": _safe_int(summary.get("adjusted_with_labeled_outcomes")),
+            "adjusted_loss_trades": _safe_int(summary.get("adjusted_loss_trades")),
+            "adjusted_winner_trades": _safe_int(summary.get("adjusted_winner_trades")),
+            "adjusted_avg_cf_r": _safe_float(summary.get("adjusted_avg_cf_r")),
+            "estimated_saved_r": _safe_float(summary.get("estimated_saved_r")),
+            "estimated_missed_r": _safe_float(summary.get("estimated_missed_r")),
+            "estimated_net_saved_r": _safe_float(summary.get("estimated_net_saved_r")),
+            "verdict": summary.get("verdict"),
+            "live_enforcement": bool((outcome.get("meta") or {}).get("live_enforcement")),
+        }
+
     def _operating_state(self, reports: dict, blockers: list[dict], approval_queue: list[dict]) -> dict:
         advisor = reports.get("advisor", {}) or {}
         registry = reports.get("registry", {}) or {}
@@ -350,6 +372,7 @@ class DailyControlReport:
         shadow_live = reports.get("shadow_live", {}) or {}
         risk_policy = reports.get("risk_policy", {}) or {}
         risk_strategy = reports.get("risk_strategy_bridge", {}) or {}
+        risk_outcomes = reports.get("risk_bridge_outcomes", {}) or {}
 
         if blockers:
             status = "ACTION_NEEDED"
@@ -378,6 +401,7 @@ class DailyControlReport:
             "shadow_live": shadow_live.get("summary", {}),
             "risk_policy": risk_policy.get("summary", {}),
             "risk_strategy_bridge": risk_strategy.get("summary", {}),
+            "risk_bridge_outcomes": risk_outcomes.get("summary", {}),
         }
 
     def _next_actions(
@@ -390,6 +414,7 @@ class DailyControlReport:
         shadow_live_status: dict,
         risk_policy_status: dict,
         risk_strategy_status: dict,
+        risk_outcome_status: dict,
         learning_status: dict,
     ) -> list[str]:
         if blockers:
@@ -413,6 +438,10 @@ class DailyControlReport:
             actions.append("Use risk policy as conservative risk-down input; never use it for risk-up without approval.")
         if risk_strategy_status.get("would_adjust_open_trades"):
             actions.append("Risk strategy bridge would reduce recent open trade sizing; review before live wiring.")
+        if risk_outcome_status.get("verdict") == "risk_down_helpful":
+            actions.append("Risk bridge outcomes suggest risk-down helped; keep collecting evidence before live wiring.")
+        elif risk_outcome_status.get("verdict") == "risk_down_too_strict":
+            actions.append("Risk bridge outcomes suggest risk-down may be too strict; do not wire live yet.")
         if promotion_status.get("ready_for_human_review"):
             actions.append("Review promotion-gate candidates before approving any experiment.")
         if promotion_status.get("blocked"):
@@ -443,6 +472,7 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
     shadow_live = report.get("shadow_live_status", {}) or {}
     risk_policy = report.get("risk_policy_status", {}) or {}
     risk_strategy = report.get("risk_strategy_status", {}) or {}
+    risk_outcomes = report.get("risk_outcome_status", {}) or {}
 
     lines = [
         f"Daily Control [{report.get('status')}]",
@@ -484,6 +514,11 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
             f"opens={risk_strategy.get('opened_trades', 0)} "
             f"adjusted_opens={risk_strategy.get('would_adjust_open_trades', 0)} "
             f"avg_open_mult={risk_strategy.get('average_adjusted_open_multiplier', 0.0)}"
+        ),
+        (
+            f"Risk outcomes labeled={risk_outcomes.get('adjusted_with_labeled_outcomes', 0)} "
+            f"net_saved_R={risk_outcomes.get('estimated_net_saved_r', 0.0)} "
+            f"verdict={risk_outcomes.get('verdict')}"
         ),
     ]
 

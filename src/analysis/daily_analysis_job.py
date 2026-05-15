@@ -75,6 +75,7 @@ from src.analysis.opportunity_reporter import (
 from src.analysis.promotion_gate import run_promotion_gate
 from src.analysis.recommendation_registry import RecommendationRegistry
 from src.analysis.risk_policy import run_risk_policy
+from src.analysis.risk_strategy_bridge import run_risk_strategy_bridge
 from src.analysis.shadow_live_bridge import run_shadow_live_bridge
 from src.analysis.shadow_model_evaluator import (
     ShadowModelEvaluator,
@@ -217,6 +218,14 @@ def _build_risk_policy() -> dict:
     return {
         "summary": report.get("summary", {}),
         "guardrails": report.get("guardrails", {}),
+        "output_path": report.get("output_path"),
+    }
+
+
+def _build_risk_strategy_bridge(hours: int) -> dict:
+    report = run_risk_strategy_bridge(hours=hours)
+    return {
+        "summary": report.get("summary", {}),
         "output_path": report.get("output_path"),
     }
 
@@ -436,6 +445,9 @@ def run_daily_analysis_job(
     steps["risk_policy"] = _run_step(
         lambda: _build_risk_policy(),
     )
+    steps["risk_strategy_bridge"] = _run_step(
+        lambda: _build_risk_strategy_bridge(hours=hours),
+    )
     steps["ml_training_dataset"] = _run_step(
         lambda: _build_ml_training_dataset(
             limit=report_limit,
@@ -491,6 +503,12 @@ def run_daily_analysis_job(
     )
     steps["post_advisor_shadow_live_bridge"] = _run_step(
         lambda: _build_shadow_live_bridge(hours=hours),
+    )
+    steps["post_advisor_risk_policy"] = _run_step(
+        lambda: _build_risk_policy(),
+    )
+    steps["post_advisor_risk_strategy_bridge"] = _run_step(
+        lambda: _build_risk_strategy_bridge(hours=hours),
     )
 
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]

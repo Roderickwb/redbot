@@ -38,6 +38,7 @@ DEFAULT_SHADOW_EXPERIMENT_REPORT = os.path.join("analysis", "experiments", "late
 DEFAULT_PROMOTION_GATE_REPORT = os.path.join("analysis", "promotion_gate", "latest_promotion_gate_report.json")
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_RISK_POLICY_REPORT = os.path.join("analysis", "risk", "latest_risk_policy_report.json")
+DEFAULT_RISK_STRATEGY_BRIDGE_REPORT = os.path.join("analysis", "risk", "latest_risk_strategy_bridge_report.json")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -85,6 +86,7 @@ class BotAdvisor:
         promotion_gate_path: str = DEFAULT_PROMOTION_GATE_REPORT,
         ml_edge_report_path: str = DEFAULT_ML_EDGE_REPORT,
         risk_policy_path: str = DEFAULT_RISK_POLICY_REPORT,
+        risk_strategy_bridge_path: str = DEFAULT_RISK_STRATEGY_BRIDGE_REPORT,
     ):
         self.learning_report_path = learning_report_path
         self.profile_proposals_path = profile_proposals_path
@@ -98,6 +100,7 @@ class BotAdvisor:
         self.promotion_gate_path = promotion_gate_path
         self.ml_edge_report_path = ml_edge_report_path
         self.risk_policy_path = risk_policy_path
+        self.risk_strategy_bridge_path = risk_strategy_bridge_path
 
     def build_advice(self) -> dict:
         reports = {
@@ -113,6 +116,7 @@ class BotAdvisor:
             "promotion_gate": load_json(self.promotion_gate_path),
             "ml_edge_model": load_json(self.ml_edge_report_path),
             "risk_policy": load_json(self.risk_policy_path),
+            "risk_strategy_bridge": load_json(self.risk_strategy_bridge_path),
         }
 
         recommendations = []
@@ -126,6 +130,7 @@ class BotAdvisor:
         recommendations.extend(self._shadow_experiment_recommendations(reports["shadow_experiments"]))
         recommendations.extend(self._promotion_gate_recommendations(reports["promotion_gate"]))
         recommendations.extend(self._risk_policy_recommendations(reports["risk_policy"]))
+        recommendations.extend(self._risk_strategy_bridge_recommendations(reports["risk_strategy_bridge"]))
         recommendations.extend(self._ml_edge_model_recommendations(reports["ml_edge_model"]))
         recommendations.extend(self._profile_recommendations(reports["profiles"]))
         recommendations.extend(self._learning_recommendations(reports["learning"]))
@@ -149,6 +154,7 @@ class BotAdvisor:
                 "promotion_gate_report": self.promotion_gate_path,
                 "ml_edge_model_report": self.ml_edge_report_path,
                 "risk_policy_report": self.risk_policy_path,
+                "risk_strategy_bridge_report": self.risk_strategy_bridge_path,
             },
         }
 
@@ -920,6 +926,43 @@ class BotAdvisor:
                 recommendation="Keep ML shadow-only until training/readiness gates pass.",
                 requires_human_approval=False,
                 evidence={"policy_signal": "ml_not_live", "ml_edge_status": ml_status},
+            ))
+        return items
+
+    def _risk_strategy_bridge_recommendations(self, bridge_report: dict) -> list[dict]:
+        if bridge_report.get("_missing") or bridge_report.get("_error"):
+            return []
+        summary = bridge_report.get("summary", {}) or {}
+        adjusted = _safe_int(summary.get("would_adjust_open_trades"))
+        opened = _safe_int(summary.get("opened_trades"))
+        loaded = _safe_int(summary.get("loaded_decisions"))
+        if not loaded:
+            return []
+
+        items = []
+        if adjusted:
+            items.append(self._rec(
+                priority="medium",
+                area="risk_strategy_bridge",
+                finding=f"Risk bridge would adjust {adjusted} of {opened} recent open trades.",
+                recommendation="Keep this shadow-only; use the result to validate sizing before live wiring.",
+                requires_human_approval=False,
+                evidence={
+                    "bridge_signal": "would_adjust_open_trades",
+                    "opened_trades": opened,
+                    "would_adjust_open_trades": adjusted,
+                    "average_adjusted_open_multiplier": summary.get("average_adjusted_open_multiplier"),
+                    "by_risk_shadow_action": summary.get("by_risk_shadow_action", {}),
+                },
+            ))
+        elif opened:
+            items.append(self._rec(
+                priority="low",
+                area="risk_strategy_bridge",
+                finding=f"Risk bridge observed {opened} recent open trades without sizing reductions.",
+                recommendation="Continue collecting shadow sizing evidence before live enforcement.",
+                requires_human_approval=False,
+                evidence={"bridge_signal": "observed_no_adjustments", "opened_trades": opened},
             ))
         return items
 

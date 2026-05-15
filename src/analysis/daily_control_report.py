@@ -266,10 +266,12 @@ class DailyControlReport:
         return {
             "total": _safe_int(summary.get("total")),
             "review_for_approval": _safe_int(summary.get("review_for_approval")),
+            "reject_candidate": _safe_int(summary.get("reject_candidate")),
             "review_for_rejection": _safe_int(summary.get("review_for_rejection")),
             "wait": _safe_int(summary.get("wait")),
             "no_action_keep_protection": _safe_int(summary.get("no_action_keep_protection")),
             "by_action": summary.get("by_action", {}),
+            "lifecycle": inbox.get("lifecycle_summary", {}),
         }
 
     def _operating_state(self, reports: dict, blockers: list[dict], approval_queue: list[dict]) -> dict:
@@ -324,6 +326,8 @@ class DailyControlReport:
         actions = []
         if approval_status.get("review_for_approval"):
             actions.append("Approval inbox has experiments ready for explicit approve/reject review.")
+        if approval_status.get("reject_candidate"):
+            actions.append("Approval inbox has repeat-blocked experiments that are reject candidates.")
         if approval_status.get("review_for_rejection"):
             actions.append("Approval inbox has experiments that should likely be rejected or left blocked.")
         if promotion_status.get("ready_for_human_review"):
@@ -373,6 +377,7 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
         ),
         (
             f"Approval inbox approve={approval.get('review_for_approval', 0)} "
+            f"reject_candidate={approval.get('reject_candidate', 0)} "
             f"reject={approval.get('review_for_rejection', 0)} "
             f"wait={approval.get('wait', 0)}"
         ),

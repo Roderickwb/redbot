@@ -15,14 +15,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
 
 DEFAULT_OUTPUT_DIR = os.path.join("analysis", "approvals")
 DEFAULT_LATEST_FILE = "latest_approval_inbox.json"
+DEFAULT_LIFECYCLE_FILE = "approval_lifecycle.json"
 DEFAULT_EXPERIMENT_PLAN = os.path.join("analysis", "experiments", "latest_experiment_plan.json")
 DEFAULT_PROMOTION_GATE = os.path.join("analysis", "promotion_gate", "latest_promotion_gate_report.json")
+REJECT_CANDIDATE_BLOCKED_COUNT = 3
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -60,15 +63,19 @@ class ApprovalInbox:
         self,
         experiment_plan_path: str = DEFAULT_EXPERIMENT_PLAN,
         promotion_gate_path: str = DEFAULT_PROMOTION_GATE,
+        lifecycle_path: str = os.path.join(DEFAULT_OUTPUT_DIR, DEFAULT_LIFECYCLE_FILE),
     ):
         self.experiment_plan_path = experiment_plan_path
         self.promotion_gate_path = promotion_gate_path
+        self.lifecycle_path = lifecycle_path
 
     def build_report(self) -> dict:
         plan = _load_json(self.experiment_plan_path, {"experiments": [], "summary": {}})
         promotion = _load_json(self.promotion_gate_path, {"decisions": [], "summary": {}})
+        lifecycle = _load_json(self.lifecycle_path, {"items": {}})
         if plan.get("_error") or promotion.get("_error"):
             items = []
+            lifecycle_summary = {}
             errors = [
                 report.get("_error")
                 for report in (plan, promotion)
@@ -79,33 +86,50 @@ class ApprovalInbox:
             items = self._items(
                 experiments=plan.get("experiments", []) or [],
                 decisions=promotion.get("decisions", []) or [],
+                lifecycle=lifecycle,
             )
+            lifecycle_summary = self._lifecycle_summary(lifecycle)
+            self._write_lifecycle(lifecycle)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "status": "ERROR" if errors else "OK",
             "errors": errors,
             "summary": self._summary(items),
+            "lifecycle_summary": lifecycle_summary,
             "items": items,
             "sources": {
                 "experiment_plan": self.experiment_plan_path,
                 "promotion_gate": self.promotion_gate_path,
+                "lifecycle": self.lifecycle_path,
             },
         }
 
-    def _items(self, experiments: list[dict], decisions: list[dict]) -> list[dict]:
+    def _items(self, experiments: list[dict], decisions: list[dict], lifecycle: dict) -> list[dict]:
         decision_by_id = {
             item.get("experiment_id"): item
             for item in decisions
             if item.get("experiment_id")
         }
+        lifecycle_items = lifecycle.setdefault("items", {})
+        now_ms = int(time.time() * 1000)
+        now_local = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        seen_ids = set()
         items = []
         for experiment in experiments:
             exp_id = experiment.get("id")
+            seen_ids.add(exp_id)
             promotion = decision_by_id.get(exp_id, {})
-            action = self._action_for(experiment, promotion)
             evidence = experiment.get("evidence", {}) or {}
             decision = experiment.get("decision", {}) or {}
+            state = self._update_lifecycle_state(
+                lifecycle_items=lifecycle_items,
+                experiment=experiment,
+                promotion=promotion,
+                now_ms=now_ms,
+                now_local=now_local,
+            )
+            action = self._action_for(experiment, promotion, state)
             items.append({
                 "experiment_id": exp_id,
                 "action": action,
@@ -115,6 +139,8 @@ class ApprovalInbox:
                 "experiment_status": experiment.get("status"),
                 "promotion_status": promotion.get("status", "unknown"),
                 "promotion_reason": promotion.get("reason"),
+                "blocked_count": state.get("blocked_count", 0),
+                "last_action": state.get("last_action"),
                 "proposal": experiment.get("proposal"),
                 "next_action": promotion.get("next_action") or experiment.get("next_action"),
                 "metrics": {
@@ -140,10 +166,12 @@ class ApprovalInbox:
                 },
             })
 
+        self._mark_missing_lifecycle_items(lifecycle_items, seen_ids, now_ms=now_ms, now_local=now_local)
         items.sort(
             key=lambda item: (
                 self._action_rank(item.get("action")),
                 self._priority_rank(item.get("priority")),
+                _safe_int(item.get("blocked_count")),
                 _safe_int((item.get("metrics", {}).get("forward") or {}).get("matches")),
                 abs(_safe_float((item.get("metrics", {}).get("forward") or {}).get("cf_avg_r"))),
             ),
@@ -151,11 +179,13 @@ class ApprovalInbox:
         )
         return items
 
-    def _action_for(self, experiment: dict, promotion: dict) -> str:
+    def _action_for(self, experiment: dict, promotion: dict, state: dict) -> str:
         promotion_status = promotion.get("status")
         experiment_status = experiment.get("status")
         if promotion_status == "ready_for_human_review":
             return "review_for_approval"
+        if promotion_status == "blocked" and _safe_int(state.get("blocked_count")) >= REJECT_CANDIDATE_BLOCKED_COUNT:
+            return "reject_candidate"
         if promotion_status in {"blocked", "needs_review"}:
             return "review_for_rejection"
         if experiment_status == "approved_for_shadow":
@@ -166,6 +196,8 @@ class ApprovalInbox:
 
     def _priority_for(self, action: str, experiment: dict, promotion: dict) -> str:
         if action == "review_for_approval":
+            return "high"
+        if action == "reject_candidate":
             return "high"
         if action == "review_for_rejection":
             return "medium"
@@ -190,15 +222,84 @@ class ApprovalInbox:
             "by_action": by_action,
             "by_promotion_status": by_promotion_status,
             "review_for_approval": by_action.get("review_for_approval", 0),
+            "reject_candidate": by_action.get("reject_candidate", 0),
             "review_for_rejection": by_action.get("review_for_rejection", 0),
             "wait": by_action.get("wait", 0),
             "no_action_keep_protection": by_action.get("no_action_keep_protection", 0),
         }
 
+    def _update_lifecycle_state(
+        self,
+        lifecycle_items: dict,
+        experiment: dict,
+        promotion: dict,
+        now_ms: int,
+        now_local: str,
+    ) -> dict:
+        exp_id = experiment.get("id")
+        state = lifecycle_items.setdefault(exp_id, {
+            "experiment_id": exp_id,
+            "first_seen_ts": now_ms,
+            "first_seen_local": now_local,
+            "seen_count": 0,
+            "blocked_count": 0,
+            "missing_count": 0,
+        })
+        promotion_status = promotion.get("status", "unknown")
+        state["seen_count"] = _safe_int(state.get("seen_count")) + 1
+        state["last_seen_ts"] = now_ms
+        state["last_seen_local"] = now_local
+        state["missing_count"] = 0
+        state["experiment_type"] = experiment.get("experiment_type")
+        state["pattern"] = (experiment.get("evidence") or {}).get("pattern")
+        state["experiment_status"] = experiment.get("status")
+        state["promotion_status"] = promotion_status
+        state["promotion_reason"] = promotion.get("reason")
+
+        if promotion_status == "blocked":
+            state["blocked_count"] = _safe_int(state.get("blocked_count")) + 1
+        elif promotion_status == "ready_for_human_review":
+            state["blocked_count"] = 0
+
+        state["last_action"] = (
+            "reject_candidate"
+            if promotion_status == "blocked" and _safe_int(state.get("blocked_count")) >= REJECT_CANDIDATE_BLOCKED_COUNT
+            else None
+        )
+        return state
+
+    def _mark_missing_lifecycle_items(self, lifecycle_items: dict, seen_ids: set[str], now_ms: int, now_local: str) -> None:
+        for exp_id, state in lifecycle_items.items():
+            if exp_id in seen_ids:
+                continue
+            state["missing_count"] = _safe_int(state.get("missing_count")) + 1
+            state["last_missing_ts"] = now_ms
+            state["last_missing_local"] = now_local
+
+    def _write_lifecycle(self, lifecycle: dict) -> None:
+        lifecycle["meta"] = {
+            "updated_ts": int(time.time() * 1000),
+            "updated_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "reject_candidate_blocked_count": REJECT_CANDIDATE_BLOCKED_COUNT,
+        }
+        write_json(self.lifecycle_path, lifecycle)
+
+    def _lifecycle_summary(self, lifecycle: dict) -> dict:
+        items = list((lifecycle.get("items") or {}).values())
+        return {
+            "tracked": len(items),
+            "reject_candidate_blocked_count": REJECT_CANDIDATE_BLOCKED_COUNT,
+            "blocked_ge_threshold": sum(
+                1 for item in items
+                if _safe_int(item.get("blocked_count")) >= REJECT_CANDIDATE_BLOCKED_COUNT
+            ),
+        }
+
     def _action_rank(self, action: Any) -> int:
         return {
             "review_for_approval": 5,
-            "review_for_rejection": 4,
+            "reject_candidate": 4,
+            "review_for_rejection": 3,
             "already_approved_for_shadow": 3,
             "wait": 2,
             "no_action_keep_protection": 1,
@@ -216,6 +317,7 @@ def run_approval_inbox(
     report = ApprovalInbox(
         experiment_plan_path=experiment_plan_path,
         promotion_gate_path=promotion_gate_path,
+        lifecycle_path=os.path.join(output_dir, DEFAULT_LIFECYCLE_FILE),
     ).build_report()
     output_path = os.path.join(output_dir, DEFAULT_LATEST_FILE)
     report["output_path"] = output_path

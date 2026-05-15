@@ -262,7 +262,8 @@ Principe:
 - shadow experiment runner meet experimenten apart op historische replay en recente forward-shadow rows;
 - shadow experiment runner geeft verdicts en overlap-groepen, zodat dubbele patronen niet als onafhankelijk bewijs worden geteld;
 - promotion gate bepaalt per experiment of het `blocked`, `waiting_for_forward`, `confirmed_protection` of `ready_for_human_review` is;
-- approval inbox vertaalt experimenten en promotion-gate uitkomsten naar `review_for_approval`, `review_for_rejection`, `wait` of `no_action_keep_protection`;
+- approval inbox vertaalt experimenten en promotion-gate uitkomsten naar `review_for_approval`, `review_for_rejection`, `reject_candidate`, `wait` of `no_action_keep_protection`;
+- approval inbox houdt een blocked lifecycle bij, zodat pas herhaald geblokkeerde experimenten reject-candidate worden;
 - advisor leest shadow experiment verdicts en overlap-groepen terug, zodat replay-only, forward-confirmed en duplicate evidence automatisch worden samengevat;
 - advisor leest promotion gate uitkomsten terug en zet blocked/confirmed/ready experimenten om naar registry-stabiele aanbevelingen;
 - daily job ververst experiment plan, shadow results, promotion gate en approval inbox nogmaals na advisor/registry-sync, zodat nieuwe promotable hypotheses dezelfde run zichtbaar zijn;

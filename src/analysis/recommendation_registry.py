@@ -127,6 +127,8 @@ def _evidence_stable_key(rec: dict, evidence: dict) -> Optional[str]:
         return f"risk_strategy_bridge_{evidence.get('bridge_signal')}"
     if "outcome_signal" in evidence and area == "risk_bridge_outcomes":
         return f"risk_bridge_outcomes_{evidence.get('outcome_signal')}"
+    if "history_signal" in evidence and area == "risk_bridge_history":
+        return f"risk_bridge_history_{evidence.get('history_signal')}"
     if recommendation.startswith("Treat this as transition noise"):
         return f"{area}_transition_noise"
     return None

@@ -40,6 +40,7 @@ DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_mode
 DEFAULT_RISK_POLICY_REPORT = os.path.join("analysis", "risk", "latest_risk_policy_report.json")
 DEFAULT_RISK_STRATEGY_BRIDGE_REPORT = os.path.join("analysis", "risk", "latest_risk_strategy_bridge_report.json")
 DEFAULT_RISK_BRIDGE_OUTCOME_REPORT = os.path.join("analysis", "risk", "latest_risk_bridge_outcome_report.json")
+DEFAULT_RISK_BRIDGE_HISTORY_REPORT = os.path.join("analysis", "risk", "latest_risk_bridge_history_report.json")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -89,6 +90,7 @@ class BotAdvisor:
         risk_policy_path: str = DEFAULT_RISK_POLICY_REPORT,
         risk_strategy_bridge_path: str = DEFAULT_RISK_STRATEGY_BRIDGE_REPORT,
         risk_bridge_outcome_path: str = DEFAULT_RISK_BRIDGE_OUTCOME_REPORT,
+        risk_bridge_history_path: str = DEFAULT_RISK_BRIDGE_HISTORY_REPORT,
     ):
         self.learning_report_path = learning_report_path
         self.profile_proposals_path = profile_proposals_path
@@ -104,6 +106,7 @@ class BotAdvisor:
         self.risk_policy_path = risk_policy_path
         self.risk_strategy_bridge_path = risk_strategy_bridge_path
         self.risk_bridge_outcome_path = risk_bridge_outcome_path
+        self.risk_bridge_history_path = risk_bridge_history_path
 
     def build_advice(self) -> dict:
         reports = {
@@ -121,6 +124,7 @@ class BotAdvisor:
             "risk_policy": load_json(self.risk_policy_path),
             "risk_strategy_bridge": load_json(self.risk_strategy_bridge_path),
             "risk_bridge_outcomes": load_json(self.risk_bridge_outcome_path),
+            "risk_bridge_history": load_json(self.risk_bridge_history_path),
         }
 
         recommendations = []
@@ -136,6 +140,7 @@ class BotAdvisor:
         recommendations.extend(self._risk_policy_recommendations(reports["risk_policy"]))
         recommendations.extend(self._risk_strategy_bridge_recommendations(reports["risk_strategy_bridge"]))
         recommendations.extend(self._risk_bridge_outcome_recommendations(reports["risk_bridge_outcomes"]))
+        recommendations.extend(self._risk_bridge_history_recommendations(reports["risk_bridge_history"]))
         recommendations.extend(self._ml_edge_model_recommendations(reports["ml_edge_model"]))
         recommendations.extend(self._profile_recommendations(reports["profiles"]))
         recommendations.extend(self._learning_recommendations(reports["learning"]))
@@ -161,6 +166,7 @@ class BotAdvisor:
                 "risk_policy_report": self.risk_policy_path,
                 "risk_strategy_bridge_report": self.risk_strategy_bridge_path,
                 "risk_bridge_outcome_report": self.risk_bridge_outcome_path,
+                "risk_bridge_history_report": self.risk_bridge_history_path,
             },
         }
 
@@ -1007,6 +1013,55 @@ class BotAdvisor:
             evidence={
                 "outcome_signal": verdict,
                 "adjusted_with_labeled_outcomes": sample,
+                "estimated_saved_r": summary.get("estimated_saved_r"),
+                "estimated_missed_r": summary.get("estimated_missed_r"),
+                "estimated_net_saved_r": summary.get("estimated_net_saved_r"),
+                "adjusted_avg_cf_r": summary.get("adjusted_avg_cf_r"),
+            },
+        )]
+
+    def _risk_bridge_history_recommendations(self, history_report: dict) -> list[dict]:
+        if history_report.get("_missing") or history_report.get("_error"):
+            return []
+        summary = history_report.get("summary", {}) or {}
+        sample = _safe_int(summary.get("unique_adjusted_labeled_events"))
+        days = _safe_int(summary.get("days_observed"))
+        verdict = summary.get("verdict")
+        if not sample:
+            return []
+
+        if verdict == "stable_risk_down_helpful":
+            priority = "medium"
+            finding = (
+                f"Risk bridge history is stable-positive: net_saved_R={summary.get('estimated_net_saved_r')} "
+                f"over {sample} unique adjusted trades across {days} days."
+            )
+            recommendation = "Prepare human review for conservative risk-down wiring; keep live enforcement off until approved."
+        elif verdict == "risk_down_too_strict":
+            priority = "medium"
+            finding = (
+                f"Risk bridge history suggests risk-down may be too strict: missed_R={summary.get('estimated_missed_r')} "
+                f"over {sample} unique adjusted trades."
+            )
+            recommendation = "Do not live-wire this risk policy; inspect reduced winners and tighten the policy first."
+        else:
+            priority = "low"
+            finding = (
+                f"Risk bridge history is accumulating evidence: {sample} unique adjusted labeled trades "
+                f"across {days} days."
+            )
+            recommendation = "Keep accumulating unique outcomes; repeated daily runs should not be treated as new samples."
+
+        return [self._rec(
+            priority=priority,
+            area="risk_bridge_history",
+            finding=finding,
+            recommendation=recommendation,
+            requires_human_approval=False,
+            evidence={
+                "history_signal": verdict,
+                "unique_adjusted_labeled_events": sample,
+                "days_observed": days,
                 "estimated_saved_r": summary.get("estimated_saved_r"),
                 "estimated_missed_r": summary.get("estimated_missed_r"),
                 "estimated_net_saved_r": summary.get("estimated_net_saved_r"),

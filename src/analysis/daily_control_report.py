@@ -36,6 +36,7 @@ DEFAULT_SHADOW_LIVE_BRIDGE = os.path.join("analysis", "shadow_live", "latest_sha
 DEFAULT_RISK_POLICY_REPORT = os.path.join("analysis", "risk", "latest_risk_policy_report.json")
 DEFAULT_RISK_STRATEGY_BRIDGE = os.path.join("analysis", "risk", "latest_risk_strategy_bridge_report.json")
 DEFAULT_RISK_BRIDGE_OUTCOMES = os.path.join("analysis", "risk", "latest_risk_bridge_outcome_report.json")
+DEFAULT_RISK_BRIDGE_HISTORY = os.path.join("analysis", "risk", "latest_risk_bridge_history_report.json")
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
@@ -85,6 +86,7 @@ class DailyControlReport:
         risk_policy_path: str = DEFAULT_RISK_POLICY_REPORT,
         risk_strategy_bridge_path: str = DEFAULT_RISK_STRATEGY_BRIDGE,
         risk_bridge_outcomes_path: str = DEFAULT_RISK_BRIDGE_OUTCOMES,
+        risk_bridge_history_path: str = DEFAULT_RISK_BRIDGE_HISTORY,
         ml_edge_path: str = DEFAULT_ML_EDGE_REPORT,
         alerts_path: str = DEFAULT_ALERT_REPORT,
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
@@ -100,6 +102,7 @@ class DailyControlReport:
         self.risk_policy_path = risk_policy_path
         self.risk_strategy_bridge_path = risk_strategy_bridge_path
         self.risk_bridge_outcomes_path = risk_bridge_outcomes_path
+        self.risk_bridge_history_path = risk_bridge_history_path
         self.ml_edge_path = ml_edge_path
         self.alerts_path = alerts_path
         self.market_regime_path = market_regime_path
@@ -117,6 +120,7 @@ class DailyControlReport:
             "risk_policy": load_json(self.risk_policy_path),
             "risk_strategy_bridge": load_json(self.risk_strategy_bridge_path),
             "risk_bridge_outcomes": load_json(self.risk_bridge_outcomes_path),
+            "risk_bridge_history": load_json(self.risk_bridge_history_path),
             "ml_edge": load_json(self.ml_edge_path),
             "alerts": load_json(self.alerts_path),
             "market_regime": load_json(self.market_regime_path),
@@ -131,9 +135,10 @@ class DailyControlReport:
         risk_policy_status = self._risk_policy_status(reports)
         risk_strategy_status = self._risk_strategy_status(reports)
         risk_outcome_status = self._risk_outcome_status(reports)
+        risk_history_status = self._risk_history_status(reports)
         learning_status = self._learning_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
-        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_strategy_status, risk_outcome_status, learning_status)
+        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_strategy_status, risk_outcome_status, risk_history_status, learning_status)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -149,6 +154,7 @@ class DailyControlReport:
             "risk_policy_status": risk_policy_status,
             "risk_strategy_status": risk_strategy_status,
             "risk_outcome_status": risk_outcome_status,
+            "risk_history_status": risk_history_status,
             "next_actions": next_actions,
             "sources": {
                 "daily_job": self.daily_job_path,
@@ -162,6 +168,7 @@ class DailyControlReport:
                 "risk_policy": self.risk_policy_path,
                 "risk_strategy_bridge": self.risk_strategy_bridge_path,
                 "risk_bridge_outcomes": self.risk_bridge_outcomes_path,
+                "risk_bridge_history": self.risk_bridge_history_path,
                 "ml_edge_model": self.ml_edge_path,
                 "alerts": self.alerts_path,
                 "market_regime": self.market_regime_path,
@@ -362,6 +369,22 @@ class DailyControlReport:
             "live_enforcement": bool((outcome.get("meta") or {}).get("live_enforcement")),
         }
 
+    def _risk_history_status(self, reports: dict) -> dict:
+        history = reports.get("risk_bridge_history", {}) or {}
+        summary = history.get("summary", {}) or {}
+        return {
+            "unique_adjusted_labeled_events": _safe_int(summary.get("unique_adjusted_labeled_events")),
+            "days_observed": _safe_int(summary.get("days_observed")),
+            "adjusted_loss_trades": _safe_int(summary.get("adjusted_loss_trades")),
+            "adjusted_winner_trades": _safe_int(summary.get("adjusted_winner_trades")),
+            "adjusted_avg_cf_r": _safe_float(summary.get("adjusted_avg_cf_r")),
+            "estimated_saved_r": _safe_float(summary.get("estimated_saved_r")),
+            "estimated_missed_r": _safe_float(summary.get("estimated_missed_r")),
+            "estimated_net_saved_r": _safe_float(summary.get("estimated_net_saved_r")),
+            "verdict": summary.get("verdict"),
+            "live_enforcement": bool((history.get("meta") or {}).get("live_enforcement")),
+        }
+
     def _operating_state(self, reports: dict, blockers: list[dict], approval_queue: list[dict]) -> dict:
         advisor = reports.get("advisor", {}) or {}
         registry = reports.get("registry", {}) or {}
@@ -373,6 +396,7 @@ class DailyControlReport:
         risk_policy = reports.get("risk_policy", {}) or {}
         risk_strategy = reports.get("risk_strategy_bridge", {}) or {}
         risk_outcomes = reports.get("risk_bridge_outcomes", {}) or {}
+        risk_history = reports.get("risk_bridge_history", {}) or {}
 
         if blockers:
             status = "ACTION_NEEDED"
@@ -402,6 +426,7 @@ class DailyControlReport:
             "risk_policy": risk_policy.get("summary", {}),
             "risk_strategy_bridge": risk_strategy.get("summary", {}),
             "risk_bridge_outcomes": risk_outcomes.get("summary", {}),
+            "risk_bridge_history": risk_history.get("summary", {}),
         }
 
     def _next_actions(
@@ -415,6 +440,7 @@ class DailyControlReport:
         risk_policy_status: dict,
         risk_strategy_status: dict,
         risk_outcome_status: dict,
+        risk_history_status: dict,
         learning_status: dict,
     ) -> list[str]:
         if blockers:
@@ -442,6 +468,12 @@ class DailyControlReport:
             actions.append("Risk bridge outcomes suggest risk-down helped; keep collecting evidence before live wiring.")
         elif risk_outcome_status.get("verdict") == "risk_down_too_strict":
             actions.append("Risk bridge outcomes suggest risk-down may be too strict; do not wire live yet.")
+        if risk_history_status.get("verdict") == "stable_risk_down_helpful":
+            actions.append("Risk bridge history is stable-positive; prepare human review before any live wiring.")
+        elif risk_history_status.get("verdict") == "risk_down_too_strict":
+            actions.append("Risk bridge history says risk-down is too strict; keep it shadow-only.")
+        elif risk_history_status.get("unique_adjusted_labeled_events"):
+            actions.append("Risk bridge history is accumulating unique labeled outcomes; avoid judging repeated runs as new evidence.")
         if promotion_status.get("ready_for_human_review"):
             actions.append("Review promotion-gate candidates before approving any experiment.")
         if promotion_status.get("blocked"):
@@ -473,6 +505,7 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
     risk_policy = report.get("risk_policy_status", {}) or {}
     risk_strategy = report.get("risk_strategy_status", {}) or {}
     risk_outcomes = report.get("risk_outcome_status", {}) or {}
+    risk_history = report.get("risk_history_status", {}) or {}
 
     lines = [
         f"Daily Control [{report.get('status')}]",
@@ -519,6 +552,12 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
             f"Risk outcomes labeled={risk_outcomes.get('adjusted_with_labeled_outcomes', 0)} "
             f"net_saved_R={risk_outcomes.get('estimated_net_saved_r', 0.0)} "
             f"verdict={risk_outcomes.get('verdict')}"
+        ),
+        (
+            f"Risk history unique={risk_history.get('unique_adjusted_labeled_events', 0)} "
+            f"days={risk_history.get('days_observed', 0)} "
+            f"net_saved_R={risk_history.get('estimated_net_saved_r', 0.0)} "
+            f"verdict={risk_history.get('verdict')}"
         ),
     ]
 

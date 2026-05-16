@@ -79,6 +79,7 @@ from src.analysis.pre_gpt_gate_report import run_pre_gpt_gate_report
 from src.analysis.recommendation_registry import RecommendationRegistry
 from src.analysis.risk_bridge_outcome_evaluator import run_risk_bridge_outcome_evaluator
 from src.analysis.risk_bridge_history import run_risk_bridge_history
+from src.analysis.risk_advice_history import run_risk_advice_history
 from src.analysis.risk_guard_report import run_risk_guard_report
 from src.analysis.risk_policy import run_risk_policy
 from src.analysis.risk_strategy_bridge import run_risk_strategy_bridge
@@ -249,6 +250,16 @@ def _build_risk_bridge_history() -> dict:
     report = run_risk_bridge_history()
     return {
         "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
+        "history_path": (report.get("meta") or {}).get("history_path"),
+    }
+
+
+def _build_risk_advice_history() -> dict:
+    report = run_risk_advice_history()
+    return {
+        "summary": report.get("summary", {}),
+        "today": report.get("today", {}),
         "output_path": report.get("output_path"),
         "history_path": (report.get("meta") or {}).get("history_path"),
     }
@@ -539,6 +550,9 @@ def run_daily_analysis_job(
     steps["risk_policy"] = _run_step(
         lambda: _build_risk_policy(),
     )
+    steps["risk_advice_history"] = _run_step(
+        lambda: _build_risk_advice_history(),
+    )
     steps["risk_strategy_bridge"] = _run_step(
         lambda: _build_risk_strategy_bridge(hours=hours),
     )
@@ -625,6 +639,9 @@ def run_daily_analysis_job(
     )
     steps["post_advisor_risk_policy"] = _run_step(
         lambda: _build_risk_policy(),
+    )
+    steps["post_advisor_risk_advice_history"] = _run_step(
+        lambda: _build_risk_advice_history(),
     )
     steps["post_advisor_risk_strategy_bridge"] = _run_step(
         lambda: _build_risk_strategy_bridge(hours=hours),

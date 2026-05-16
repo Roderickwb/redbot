@@ -23,6 +23,7 @@ echo "== Compile critical modules =="
   src/analysis/daily_analysis_job.py \
   src/analysis/daily_control_report.py \
   src/analysis/operator_cockpit.py \
+  src/analysis/risk_advice_history.py \
   src/analysis/live_readiness_gate.py \
   src/analysis/pre_gpt_gate_report.py \
   src/analysis/strategy_profile_proposer.py \
@@ -59,6 +60,7 @@ for name in (
     "safety_control",
     "ml_edge_model",
     "risk_guard_report",
+    "risk_advice_history",
     "live_readiness_gate",
     "pre_gpt_gate_report",
     "daily_control_report",
@@ -76,6 +78,14 @@ for name in (
         summary = result.get("summary") or {}
         issue = (summary.get("primary_issue") or {}).get("guard")
         print(f" verdict={summary.get('verdict')} triggers={summary.get('guard_triggers')} issue={issue}")
+    elif name == "risk_advice_history":
+        summary = result.get("summary") or {}
+        print(
+            f" verdict={summary.get('verdict')} "
+            f"tracked={summary.get('tracked_symbols')} "
+            f"days={summary.get('days_observed')} "
+            f"stable_down={summary.get('stable_data_down_symbols')}"
+        )
     elif name == "live_readiness_gate":
         summary = result.get("summary") or {}
         print(

@@ -74,6 +74,7 @@ class OperatorCockpit:
         approval_status = control.get("approval_status", {}) or {}
         safety = control.get("safety_status", {}) or {}
         risk_policy = control.get("risk_policy_status", {}) or {}
+        risk_advice_history = control.get("risk_advice_history_status", {}) or {}
         risk_strategy = control.get("risk_strategy_status", {}) or {}
         risk_outcome = control.get("risk_outcome_status", {}) or {}
         risk_history = control.get("risk_history_status", {}) or {}
@@ -83,12 +84,12 @@ class OperatorCockpit:
         shadow_live = control.get("shadow_live_status", {}) or {}
         live_readiness = control.get("live_readiness_status", {}) or {}
 
-        live_changes = self._live_changes(control, shadow_live, risk_policy, risk_strategy, risk_outcome, risk_history, safety)
+        live_changes = self._live_changes(control, shadow_live, risk_policy, risk_advice_history, risk_strategy, risk_outcome, risk_history, safety)
         health = self._health(blockers)
-        action_needed = self._action_needed(blockers, approvals, approval_status, promotion, risk_history, live_readiness)
+        action_needed = self._action_needed(blockers, approvals, approval_status, promotion, risk_advice_history, risk_history, live_readiness)
         status = self._status(health, action_needed, control.get("status"))
         learning_summary = self._learning_summary(learning, experiments, promotion, approval_status, gpt_efficiency, pre_gpt_gate)
-        risk_summary = self._risk_summary(risk_policy, risk_strategy, risk_outcome, risk_history, risk_guard)
+        risk_summary = self._risk_summary(risk_policy, risk_advice_history, risk_strategy, risk_outcome, risk_history, risk_guard)
         live_readiness_summary = self._live_readiness_summary(live_readiness)
         daily_decision = self._daily_decision(live_changes, health, action_needed, learning_summary, risk_summary, live_readiness_summary)
 
@@ -148,9 +149,10 @@ class OperatorCockpit:
             "sources": {"daily_control": self.control_path},
         }
 
-    def _live_changes(self, control: dict, shadow_live: dict, risk_policy: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, safety: dict) -> dict:
+    def _live_changes(self, control: dict, shadow_live: dict, risk_policy: dict, risk_advice_history: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, safety: dict) -> dict:
         live_enforcement = any([
             bool(risk_policy.get("live_enforcement")),
+            bool(risk_advice_history.get("live_enforcement")),
             bool(risk_strategy.get("live_enforcement")),
             bool(risk_outcome.get("live_enforcement")),
             bool(risk_history.get("live_enforcement")),
@@ -189,7 +191,7 @@ class OperatorCockpit:
             "finding": "No runtime or pipeline blockers.",
         }
 
-    def _action_needed(self, blockers: list[dict], approvals: list[dict], approval_status: dict, promotion: dict, risk_history: dict, live_readiness: dict) -> dict:
+    def _action_needed(self, blockers: list[dict], approvals: list[dict], approval_status: dict, promotion: dict, risk_advice_history: dict, risk_history: dict, live_readiness: dict) -> dict:
         if blockers:
             return {
                 "status": "YES",
@@ -213,6 +215,12 @@ class OperatorCockpit:
                 "status": "YES",
                 "urgent": False,
                 "headline": "Live readiness has candidates for operator review.",
+            }
+        if risk_advice_history.get("verdict") == "stable_data_down_candidates":
+            return {
+                "status": "OPTIONAL_REVIEW",
+                "urgent": False,
+                "headline": "Risk advice has stable data-down candidates, still read-only.",
             }
         if risk_history.get("verdict") in {"stable_risk_down_helpful", "risk_down_too_strict"}:
             return {
@@ -272,7 +280,7 @@ class OperatorCockpit:
             "pre_gpt_verdict": pre_gpt_gate.get("verdict"),
         }
 
-    def _risk_summary(self, risk_policy: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, risk_guard: dict) -> dict:
+    def _risk_summary(self, risk_policy: dict, risk_advice_history: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, risk_guard: dict) -> dict:
         return {
             "policy_symbols": _safe_int(risk_policy.get("total_symbols")),
             "risk_down": _safe_int(risk_policy.get("risk_down")),
@@ -283,6 +291,11 @@ class OperatorCockpit:
             "cap_new_longs": _safe_int(risk_policy.get("cap_new_longs")),
             "avg_long_multiplier": _safe_float(risk_policy.get("average_long_risk_multiplier"), 1.0),
             "avg_short_multiplier": _safe_float(risk_policy.get("average_short_risk_multiplier"), 1.0),
+            "advice_tracked": _safe_int(risk_advice_history.get("tracked_symbols")),
+            "advice_days": _safe_int(risk_advice_history.get("days_observed")),
+            "advice_stable_data_down": _safe_int(risk_advice_history.get("stable_data_down_symbols")),
+            "advice_data_down": _safe_int(risk_advice_history.get("data_driven_risk_down_symbols")),
+            "advice_verdict": risk_advice_history.get("verdict"),
             "recent_open_trades": _safe_int(risk_strategy.get("opened_trades")),
             "recent_adjusted_opens": _safe_int(risk_strategy.get("would_adjust_open_trades")),
             "latest_labeled_adjusted": _safe_int(risk_outcome.get("adjusted_with_labeled_outcomes")),
@@ -438,6 +451,12 @@ def format_cockpit_message(cockpit: dict) -> str:
             f"market_only={risk.get('market_context_only', 0)} "
             f"risk_up={risk.get('risk_up', 0)} "
             f"cap_longs={risk.get('cap_new_longs', 0)}"
+        ),
+        (
+            f"- Advice history: tracked={risk.get('advice_tracked', 0)} "
+            f"days={risk.get('advice_days', 0)} "
+            f"stable_down={risk.get('advice_stable_data_down', 0)} "
+            f"verdict={risk.get('advice_verdict')}"
         ),
         (
             f"- Recent bridge: opens={risk.get('recent_open_trades', 0)} "

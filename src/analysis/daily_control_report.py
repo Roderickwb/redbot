@@ -34,6 +34,7 @@ DEFAULT_PROMOTION_GATE = os.path.join("analysis", "promotion_gate", "latest_prom
 DEFAULT_APPROVAL_INBOX = os.path.join("analysis", "approvals", "latest_approval_inbox.json")
 DEFAULT_SHADOW_LIVE_BRIDGE = os.path.join("analysis", "shadow_live", "latest_shadow_live_bridge_report.json")
 DEFAULT_RISK_POLICY_REPORT = os.path.join("analysis", "risk", "latest_risk_policy_report.json")
+DEFAULT_RISK_ADVICE_HISTORY = os.path.join("analysis", "risk", "latest_risk_advice_history_report.json")
 DEFAULT_RISK_STRATEGY_BRIDGE = os.path.join("analysis", "risk", "latest_risk_strategy_bridge_report.json")
 DEFAULT_RISK_BRIDGE_OUTCOMES = os.path.join("analysis", "risk", "latest_risk_bridge_outcome_report.json")
 DEFAULT_RISK_BRIDGE_HISTORY = os.path.join("analysis", "risk", "latest_risk_bridge_history_report.json")
@@ -89,6 +90,7 @@ class DailyControlReport:
         approval_inbox_path: str = DEFAULT_APPROVAL_INBOX,
         shadow_live_path: str = DEFAULT_SHADOW_LIVE_BRIDGE,
         risk_policy_path: str = DEFAULT_RISK_POLICY_REPORT,
+        risk_advice_history_path: str = DEFAULT_RISK_ADVICE_HISTORY,
         risk_strategy_bridge_path: str = DEFAULT_RISK_STRATEGY_BRIDGE,
         risk_bridge_outcomes_path: str = DEFAULT_RISK_BRIDGE_OUTCOMES,
         risk_bridge_history_path: str = DEFAULT_RISK_BRIDGE_HISTORY,
@@ -110,6 +112,7 @@ class DailyControlReport:
         self.approval_inbox_path = approval_inbox_path
         self.shadow_live_path = shadow_live_path
         self.risk_policy_path = risk_policy_path
+        self.risk_advice_history_path = risk_advice_history_path
         self.risk_strategy_bridge_path = risk_strategy_bridge_path
         self.risk_bridge_outcomes_path = risk_bridge_outcomes_path
         self.risk_bridge_history_path = risk_bridge_history_path
@@ -133,6 +136,7 @@ class DailyControlReport:
             "approval_inbox": load_json(self.approval_inbox_path),
             "shadow_live": load_json(self.shadow_live_path),
             "risk_policy": load_json(self.risk_policy_path),
+            "risk_advice_history": load_json(self.risk_advice_history_path),
             "risk_strategy_bridge": load_json(self.risk_strategy_bridge_path),
             "risk_bridge_outcomes": load_json(self.risk_bridge_outcomes_path),
             "risk_bridge_history": load_json(self.risk_bridge_history_path),
@@ -153,6 +157,7 @@ class DailyControlReport:
         approval_status = self._approval_status(reports)
         shadow_live_status = self._shadow_live_status(reports)
         risk_policy_status = self._risk_policy_status(reports)
+        risk_advice_history_status = self._risk_advice_history_status(reports)
         risk_strategy_status = self._risk_strategy_status(reports)
         risk_outcome_status = self._risk_outcome_status(reports)
         risk_history_status = self._risk_history_status(reports)
@@ -163,7 +168,7 @@ class DailyControlReport:
         live_readiness_status = self._live_readiness_status(reports)
         learning_status = self._learning_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
-        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, live_readiness_status, learning_status)
+        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_advice_history_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, live_readiness_status, learning_status)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -177,6 +182,7 @@ class DailyControlReport:
             "approval_status": approval_status,
             "shadow_live_status": shadow_live_status,
             "risk_policy_status": risk_policy_status,
+            "risk_advice_history_status": risk_advice_history_status,
             "risk_strategy_status": risk_strategy_status,
             "risk_outcome_status": risk_outcome_status,
             "risk_history_status": risk_history_status,
@@ -196,6 +202,7 @@ class DailyControlReport:
                 "approval_inbox": self.approval_inbox_path,
                 "shadow_live_bridge": self.shadow_live_path,
                 "risk_policy": self.risk_policy_path,
+                "risk_advice_history": self.risk_advice_history_path,
                 "risk_strategy_bridge": self.risk_strategy_bridge_path,
                 "risk_bridge_outcomes": self.risk_bridge_outcomes_path,
                 "risk_bridge_history": self.risk_bridge_history_path,
@@ -213,7 +220,7 @@ class DailyControlReport:
     def _blockers(self, reports: dict) -> list[dict]:
         blockers = []
         for name, report in reports.items():
-            if name == "live_readiness" and report.get("_missing"):
+            if name in {"live_readiness", "risk_advice_history"} and report.get("_missing"):
                 continue
             if report.get("_missing"):
                 blockers.append({
@@ -402,6 +409,22 @@ class DailyControlReport:
             "live_enforcement": bool((risk_policy.get("meta") or {}).get("live_enforcement")),
         }
 
+    def _risk_advice_history_status(self, reports: dict) -> dict:
+        history = reports.get("risk_advice_history", {}) or {}
+        summary = history.get("summary", {}) or {}
+        return {
+            "tracked_symbols": _safe_int(summary.get("tracked_symbols")),
+            "days_observed": _safe_int(summary.get("days_observed")),
+            "stable_days_required": _safe_int(summary.get("stable_days_required")),
+            "data_driven_risk_down_symbols": _safe_int(summary.get("data_driven_risk_down_symbols")),
+            "stable_data_down_symbols": _safe_int(summary.get("stable_data_down_symbols")),
+            "market_context_only_symbols": _safe_int(summary.get("market_context_only_symbols")),
+            "review_only_symbols": _safe_int(summary.get("review_only_symbols")),
+            "risk_up_symbols": _safe_int(summary.get("risk_up_symbols")),
+            "verdict": summary.get("verdict"),
+            "live_enforcement": bool((history.get("meta") or {}).get("live_enforcement")),
+        }
+
     def _risk_strategy_status(self, reports: dict) -> dict:
         bridge = reports.get("risk_strategy_bridge", {}) or {}
         summary = bridge.get("summary", {}) or {}
@@ -548,6 +571,7 @@ class DailyControlReport:
         approval = reports.get("approval_inbox", {}) or {}
         shadow_live = reports.get("shadow_live", {}) or {}
         risk_policy = reports.get("risk_policy", {}) or {}
+        risk_advice_history = reports.get("risk_advice_history", {}) or {}
         risk_strategy = reports.get("risk_strategy_bridge", {}) or {}
         risk_outcomes = reports.get("risk_bridge_outcomes", {}) or {}
         risk_history = reports.get("risk_bridge_history", {}) or {}
@@ -583,6 +607,7 @@ class DailyControlReport:
             "approval_inbox": approval.get("summary", {}),
             "shadow_live": shadow_live.get("summary", {}),
             "risk_policy": risk_policy.get("summary", {}),
+            "risk_advice_history": risk_advice_history.get("summary", {}),
             "risk_strategy_bridge": risk_strategy.get("summary", {}),
             "risk_bridge_outcomes": risk_outcomes.get("summary", {}),
             "risk_bridge_history": risk_history.get("summary", {}),
@@ -608,6 +633,7 @@ class DailyControlReport:
         approval_status: dict,
         shadow_live_status: dict,
         risk_policy_status: dict,
+        risk_advice_history_status: dict,
         risk_strategy_status: dict,
         risk_outcome_status: dict,
         risk_history_status: dict,
@@ -655,6 +681,10 @@ class DailyControlReport:
             actions.append("Risk policy is mostly market-context risk-down; treat it as caution, not coin-specific proof.")
         if risk_policy_status.get("risk_up"):
             actions.append("Risk-up advice requires explicit human approval and must stay disabled.")
+        if risk_advice_history_status.get("verdict") == "stable_data_down_candidates":
+            actions.append("Risk advice history has stable data-down candidates; keep read-only until bridge outcomes confirm them.")
+        elif risk_advice_history_status.get("tracked_symbols"):
+            actions.append("Risk advice history is collecting multi-day stability; repeated same-day runs are not counted as new evidence.")
         if risk_strategy_status.get("would_adjust_open_trades"):
             actions.append("Risk strategy bridge would reduce recent open trade sizing; review before live wiring.")
         if risk_outcome_status.get("verdict") == "risk_down_helpful":
@@ -715,6 +745,7 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
     approval = report.get("approval_status", {}) or {}
     shadow_live = report.get("shadow_live_status", {}) or {}
     risk_policy = report.get("risk_policy_status", {}) or {}
+    risk_advice_history = report.get("risk_advice_history_status", {}) or {}
     risk_strategy = report.get("risk_strategy_status", {}) or {}
     risk_outcomes = report.get("risk_outcome_status", {}) or {}
     risk_history = report.get("risk_history_status", {}) or {}
@@ -757,6 +788,12 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
             f"market_only={risk_policy.get('market_context_only', 0)} "
             f"avg_long={risk_policy.get('average_long_risk_multiplier', 1.0)} "
             f"avg_short={risk_policy.get('average_short_risk_multiplier', 1.0)}"
+        ),
+        (
+            f"Risk advice history tracked={risk_advice_history.get('tracked_symbols', 0)} "
+            f"days={risk_advice_history.get('days_observed', 0)} "
+            f"stable_down={risk_advice_history.get('stable_data_down_symbols', 0)} "
+            f"verdict={risk_advice_history.get('verdict')}"
         ),
         (
             f"Risk bridge decisions={risk_strategy.get('loaded_decisions', 0)} "

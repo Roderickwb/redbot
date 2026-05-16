@@ -77,13 +77,14 @@ class OperatorCockpit:
         risk_outcome = control.get("risk_outcome_status", {}) or {}
         risk_history = control.get("risk_history_status", {}) or {}
         risk_guard = control.get("risk_guard_status", {}) or {}
+        gpt_efficiency = control.get("gpt_efficiency_status", {}) or {}
         shadow_live = control.get("shadow_live_status", {}) or {}
 
         live_changes = self._live_changes(control, shadow_live, risk_policy, risk_strategy, risk_outcome, risk_history)
         health = self._health(blockers)
         action_needed = self._action_needed(blockers, approvals, approval_status, promotion, risk_history)
         status = self._status(health, action_needed, control.get("status"))
-        learning_summary = self._learning_summary(learning, experiments, promotion, approval_status)
+        learning_summary = self._learning_summary(learning, experiments, promotion, approval_status, gpt_efficiency)
         risk_summary = self._risk_summary(risk_policy, risk_strategy, risk_outcome, risk_history, risk_guard)
         daily_decision = self._daily_decision(live_changes, health, action_needed, learning_summary, risk_summary)
 
@@ -224,7 +225,7 @@ class OperatorCockpit:
             return "WATCH"
         return fallback or "WATCH"
 
-    def _learning_summary(self, learning: dict, experiments: dict, promotion: dict, approval: dict) -> dict:
+    def _learning_summary(self, learning: dict, experiments: dict, promotion: dict, approval: dict, gpt_efficiency: dict) -> dict:
         ml = learning.get("ml_edge", {}) or {}
         hypotheses = learning.get("hypotheses", {}) or {}
         market = learning.get("market_regime", {}) or {}
@@ -241,6 +242,11 @@ class OperatorCockpit:
             "approval_reject_candidates": _safe_int(approval.get("reject_candidate")),
             "market_regime": market.get("regime"),
             "market_bias": market.get("directional_bias"),
+            "gpt_decisions": _safe_int(gpt_efficiency.get("decisions")),
+            "gpt_hold_rate_pct": _safe_float(gpt_efficiency.get("hold_rate_pct")),
+            "gpt_open_rate_pct": _safe_float(gpt_efficiency.get("open_rate_pct")),
+            "gpt_cf_avg_r": _safe_float(gpt_efficiency.get("cf_avg_r")),
+            "gpt_efficiency_verdict": gpt_efficiency.get("verdict"),
         }
 
     def _risk_summary(self, risk_policy: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, risk_guard: dict) -> dict:
@@ -340,6 +346,12 @@ def format_cockpit_message(cockpit: dict) -> str:
         (
             f"- Market: {learning.get('market_regime')} "
             f"bias={learning.get('market_bias')}"
+        ),
+        (
+            f"- GPT: decisions={learning.get('gpt_decisions', 0)} "
+            f"hold={learning.get('gpt_hold_rate_pct', 0.0)}% "
+            f"open={learning.get('gpt_open_rate_pct', 0.0)}% "
+            f"verdict={learning.get('gpt_efficiency_verdict')}"
         ),
         "",
         "Risk:",

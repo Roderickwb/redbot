@@ -240,6 +240,7 @@ class StrategyProfileProposer:
         all_flags = flags + [flag for flag in mapped_flags if flag not in flags]
         risk_multiplier = min(1.0, max(0.25, float(proposal.get("risk_multiplier", 1.0) or 1.0)))
         n_trades = int(metrics.get("trade_open", 0) or 0)
+        expectancy = self._profile_expectancy(metrics)
 
         return {
             "symbol": proposal.get("symbol"),
@@ -253,7 +254,10 @@ class StrategyProfileProposer:
             "short_edge": 0.0,
             "bias": proposal.get("bias", "neutral"),
             "winrate": round(float(metrics.get("trade_winrate_pct", 0.0) or 0.0) / 100.0, 3),
-            "expectancy_R": 0.0,
+            "expectancy_R": expectancy["value"],
+            "expectancy_R_source": expectancy["source"],
+            "expectancy_R_sample": expectancy["sample"],
+            "expectancy_R_status": expectancy["status"],
             "max_drawdown_R": 0.0,
             "hold_missed_rate": round(float(metrics.get("missed_rate_pct", 0.0) or 0.0) / 100.0, 3),
             "hold_behavior": proposal.get("hold_behavior", "unknown"),
@@ -261,6 +265,27 @@ class StrategyProfileProposer:
             "flags": all_flags,
             "learning_confidence": proposal.get("confidence"),
             "learning_metrics": metrics,
+        }
+
+    def _profile_expectancy(self, metrics: Dict[str, Any]) -> Dict[str, Any]:
+        cf_simulated = int(metrics.get("cf_simulated", 0) or 0)
+        cf_avg_r = float(metrics.get("cf_avg_r", 0.0) or 0.0)
+        trades = int(metrics.get("trade_open", 0) or 0)
+
+        if cf_simulated > 0:
+            status = "low_sample" if cf_simulated < self.min_events else "ok"
+            return {
+                "value": round(cf_avg_r, 4),
+                "source": "counterfactual_avg_r",
+                "sample": cf_simulated,
+                "status": status,
+            }
+
+        return {
+            "value": 0.0,
+            "source": "none",
+            "sample": trades,
+            "status": "no_r_sample",
         }
 
     def _build_summary(self, proposals: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:

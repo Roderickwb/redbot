@@ -41,6 +41,7 @@ DEFAULT_RISK_GUARD_REPORT = os.path.join("analysis", "risk", "latest_risk_guard_
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
+DEFAULT_GPT_DECISION_REPORT = os.path.join("analysis", "gpt_decisions", "latest_gpt_decision_report.json")
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -92,6 +93,7 @@ class DailyControlReport:
         ml_edge_path: str = DEFAULT_ML_EDGE_REPORT,
         alerts_path: str = DEFAULT_ALERT_REPORT,
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
+        gpt_decision_path: str = DEFAULT_GPT_DECISION_REPORT,
     ):
         self.daily_job_path = daily_job_path
         self.advisor_path = advisor_path
@@ -109,6 +111,7 @@ class DailyControlReport:
         self.ml_edge_path = ml_edge_path
         self.alerts_path = alerts_path
         self.market_regime_path = market_regime_path
+        self.gpt_decision_path = gpt_decision_path
 
     def build_report(self) -> dict:
         reports = {
@@ -128,6 +131,7 @@ class DailyControlReport:
             "ml_edge": load_json(self.ml_edge_path),
             "alerts": load_json(self.alerts_path),
             "market_regime": load_json(self.market_regime_path),
+            "gpt_decisions": load_json(self.gpt_decision_path),
         }
 
         blockers = self._blockers(reports)
@@ -141,9 +145,10 @@ class DailyControlReport:
         risk_outcome_status = self._risk_outcome_status(reports)
         risk_history_status = self._risk_history_status(reports)
         risk_guard_status = self._risk_guard_status(reports)
+        gpt_efficiency_status = self._gpt_efficiency_status(reports)
         learning_status = self._learning_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
-        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, learning_status)
+        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, gpt_efficiency_status, learning_status)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -161,6 +166,7 @@ class DailyControlReport:
             "risk_outcome_status": risk_outcome_status,
             "risk_history_status": risk_history_status,
             "risk_guard_status": risk_guard_status,
+            "gpt_efficiency_status": gpt_efficiency_status,
             "next_actions": next_actions,
             "sources": {
                 "daily_job": self.daily_job_path,
@@ -179,6 +185,7 @@ class DailyControlReport:
                 "ml_edge_model": self.ml_edge_path,
                 "alerts": self.alerts_path,
                 "market_regime": self.market_regime_path,
+                "gpt_decisions": self.gpt_decision_path,
             },
         }
 
@@ -408,6 +415,31 @@ class DailyControlReport:
             "live_enforcement": bool((guard.get("meta") or {}).get("live_enforcement")),
         }
 
+    def _gpt_efficiency_status(self, reports: dict) -> dict:
+        gpt = reports.get("gpt_decisions", {}) or {}
+        totals = gpt.get("totals", {}) or {}
+        open_rate = _safe_float(totals.get("open_rate_pct"))
+        hold_rate = _safe_float(totals.get("hold_rate_pct"))
+        decisions = _safe_int(totals.get("events"))
+
+        if decisions == 0:
+            verdict = "no_labeled_gpt_decisions"
+        elif decisions >= 100 and hold_rate >= 90.0 and open_rate <= 10.0:
+            verdict = "mostly_hold_review_cost"
+        else:
+            verdict = "normal"
+
+        return {
+            "decisions": decisions,
+            "hold": _safe_int(totals.get("hold")),
+            "open": _safe_int(totals.get("open")),
+            "hold_rate_pct": hold_rate,
+            "open_rate_pct": open_rate,
+            "cf_avg_r": _safe_float(totals.get("cf_avg_r")),
+            "zero_conf_pct": _safe_float(totals.get("zero_conf_pct")),
+            "verdict": verdict,
+        }
+
     def _operating_state(self, reports: dict, blockers: list[dict], approval_queue: list[dict]) -> dict:
         advisor = reports.get("advisor", {}) or {}
         registry = reports.get("registry", {}) or {}
@@ -421,6 +453,7 @@ class DailyControlReport:
         risk_outcomes = reports.get("risk_bridge_outcomes", {}) or {}
         risk_history = reports.get("risk_bridge_history", {}) or {}
         risk_guard = reports.get("risk_guard", {}) or {}
+        gpt_decisions = reports.get("gpt_decisions", {}) or {}
 
         if blockers:
             status = "ACTION_NEEDED"
@@ -452,6 +485,7 @@ class DailyControlReport:
             "risk_bridge_outcomes": risk_outcomes.get("summary", {}),
             "risk_bridge_history": risk_history.get("summary", {}),
             "risk_guard": risk_guard.get("summary", {}),
+            "gpt_decisions": gpt_decisions.get("totals", {}),
         }
 
     def _next_actions(
@@ -467,6 +501,7 @@ class DailyControlReport:
         risk_outcome_status: dict,
         risk_history_status: dict,
         risk_guard_status: dict,
+        gpt_efficiency_status: dict,
         learning_status: dict,
     ) -> list[str]:
         if blockers:
@@ -506,6 +541,8 @@ class DailyControlReport:
             actions.append("Risk guards look too strict in shadow replay; do not wire live.")
         elif risk_guard_status.get("guard_triggers"):
             actions.append("Risk guards are seeing pressure in shadow mode; keep them read-only while sample grows.")
+        if gpt_efficiency_status.get("verdict") == "mostly_hold_review_cost":
+            actions.append("GPT decisions are mostly HOLD; evaluate a shadow pre-GPT gate before reducing live calls.")
         if promotion_status.get("ready_for_human_review"):
             actions.append("Review promotion-gate candidates before approving any experiment.")
         if promotion_status.get("blocked"):

@@ -39,7 +39,7 @@ from src.config.config import yaml_config  # al door main geladen
 from src.indicator_analysis.indicators import IndicatorAnalysis
 from src.notifier.bus import send as bus_send
 from src.ai.gpt_trend_decider import get_gpt_action, GPT_TREND_DECIDER_VERSION
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 from src.sentiment.external_sentiment import get_external_sentiment
 from src.analysis.coin_profile_loader import load_coin_profile_json
@@ -1156,11 +1156,47 @@ class TrendStrategy4H:
             )
             self._daily_snapshot_sent_date = today
 
+    def _profile_asof_label(self, coin_profile: dict) -> str:
+        raw = (coin_profile or {}).get("generated_at_utc")
+        if not raw:
+            return "unknown"
+
+        text = str(raw)
+        try:
+            if text.endswith("Z"):
+                created = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            else:
+                created = datetime.fromisoformat(text)
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds() / 3600.0
+            return f"{text} UTC age={age_hours:.1f}h"
+        except Exception:
+            return f"{text} UTC"
+
+    def _profile_expectancy_label(self, coin_profile: dict) -> str:
+        profile = coin_profile or {}
+        source = str(profile.get("expectancy_R_source") or "unknown")
+        status = str(profile.get("expectancy_R_status") or "unknown")
+        sample = profile.get("expectancy_R_sample")
+
+        if source in ("none", "unknown") or status == "no_r_sample":
+            return "n/a"
+
+        try:
+            value = float(profile.get("expectancy_R"))
+        except Exception:
+            return "n/a"
+
+        if sample is None:
+            return f"{value:+.2f}({source})"
+        return f"{value:+.2f}({source},n={sample})"
+
     def _notify_gpt_hold(self, symbol: str, conf: float, trend_4h: str, trend_1h: str, sentiment: dict,
                          coin_profile: dict, decision: dict):
 
         # --- profile provenance (bewijs of coin_profile echt gebruikt is) ---
-        generated_at = (coin_profile or {}).get("generated_at_utc", "unknown")
+        generated_at = self._profile_asof_label(coin_profile)
         profile_loaded = bool(coin_profile)  # {} / None => False
         profile_source = (coin_profile or {}).get("source", "unknown")
         rm_is_default = (not profile_loaded) and float((coin_profile or {}).get("risk_multiplier", 1.0)) == 1.0
@@ -1173,7 +1209,7 @@ class TrendStrategy4H:
         risk_mult = float((coin_profile or {}).get("risk_multiplier", 1.0))
         bias = (coin_profile or {}).get("bias", "neutral")
         n_trades = int((coin_profile or {}).get("n_trades", 0))
-        expR = float((coin_profile or {}).get("expectancy_R", 0.0))
+        expR = self._profile_expectancy_label(coin_profile)
 
         tags = decision.get("journal_tags") or []
         tag_str = ",".join([str(t) for t in tags[:4]])
@@ -1183,14 +1219,14 @@ class TrendStrategy4H:
             f"Conf: {conf:.0f}% | Tags: {tag_str}\n"
             f"Trend: 4h {trend_4h.upper()} | 1h {trend_1h.upper()}\n"
             f"Sent: M={sent_macro.upper()} C={sent_coin.upper()} Ch={sent_chain.upper()}\n"
-            f"Profile: risk={risk_mult:.2f}({rm_origin}) | src={profile_source} | asof={generated_at} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
+            f"Profile: risk={risk_mult:.2f}({rm_origin}) | src={profile_source} | asof={generated_at} | bias={bias} | n={n_trades} | expR={expR}"
         )
 
 
     def _notify_gpt_open(self, symbol: str, decision_label: str, conf: float, trend_4h: str, trend_1h: str,
                          sentiment: dict, coin_profile: dict, decision: dict):
         # --- profile provenance (bewijs of coin_profile echt gebruikt is) ---
-        generated_at = (coin_profile or {}).get("generated_at_utc", "unknown")
+        generated_at = self._profile_asof_label(coin_profile)
         profile_loaded = bool(coin_profile)  # {} / None => False
         profile_source = (coin_profile or {}).get("source", "unknown")
         rm_is_default = (not profile_loaded) and float((coin_profile or {}).get("risk_multiplier", 1.0)) == 1.0
@@ -1203,7 +1239,7 @@ class TrendStrategy4H:
         risk_mult = float((coin_profile or {}).get("risk_multiplier", 1.0))
         bias = (coin_profile or {}).get("bias", "neutral")
         n_trades = int((coin_profile or {}).get("n_trades", 0))
-        expR = float((coin_profile or {}).get("expectancy_R", 0.0))
+        expR = self._profile_expectancy_label(coin_profile)
 
         tags = decision.get("journal_tags") or []
         tag_str = ",".join([str(t) for t in tags[:4]])
@@ -1213,7 +1249,7 @@ class TrendStrategy4H:
             f"Conf: {conf:.0f}% | Tags: {tag_str}\n"
             f"Trend: 4h {trend_4h.upper()} | 1h {trend_1h.upper()}\n"
             f"Sent: M={sent_macro.upper()} C={sent_coin.upper()} Ch={sent_chain.upper()}\n"
-            f"Profile: risk={risk_mult:.2f}({rm_origin}) | src={profile_source} | asof={generated_at} | bias={bias} | n={n_trades} | expR={expR:+.2f}"
+            f"Profile: risk={risk_mult:.2f}({rm_origin}) | src={profile_source} | asof={generated_at} | bias={bias} | n={n_trades} | expR={expR}"
         )
 
     # ---------------------------------------------------------

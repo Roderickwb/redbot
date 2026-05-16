@@ -291,6 +291,8 @@ class OperatorCockpit:
             "guard_triggers": _safe_int(risk_guard.get("guard_triggers")),
             "guard_net_saved_r": _safe_float(risk_guard.get("estimated_net_saved_r")),
             "guard_verdict": risk_guard.get("verdict"),
+            "guard_primary_issue": (risk_guard.get("primary_issue") or {}).get("guard"),
+            "guard_issue_net_r": _safe_float((risk_guard.get("primary_issue") or {}).get("estimated_net_saved_r")),
             "live_enforcement": bool(risk_history.get("live_enforcement")),
         }
 
@@ -449,7 +451,8 @@ def format_cockpit_message(cockpit: dict) -> str:
             f"- Guards: trades={risk.get('guard_trades', 0)} "
             f"triggers={risk.get('guard_triggers', 0)} "
             f"net_R={risk.get('guard_net_saved_r', 0.0)} "
-            f"verdict={risk.get('guard_verdict')}"
+            f"verdict={risk.get('guard_verdict')} "
+            f"issue={risk.get('guard_primary_issue')}"
         ),
     ]
 

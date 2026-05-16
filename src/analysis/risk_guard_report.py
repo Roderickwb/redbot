@@ -202,6 +202,7 @@ class RiskGuardReport:
         by_guard = Counter(row.get("guard") for row in guard_events)
         days = {row.get("day") for row in trades if row.get("day")}
         weeks = {row.get("week") for row in trades if row.get("week")}
+        guard_breakdown = self._guard_breakdown(guard_events)
         return {
             "loaded_open_trades": len(trades),
             "days_observed": len(days),
@@ -213,6 +214,9 @@ class RiskGuardReport:
             "estimated_missed_r": round(missed_r, 6),
             "estimated_net_saved_r": round(saved_r - missed_r, 6),
             "verdict": self._verdict(len(trades), len(guard_events), saved_r - missed_r, missed_r),
+            "primary_issue": self._primary_issue(guard_breakdown),
+            "guard_breakdown": guard_breakdown,
+            "calibration_advice": self._calibration_advice(guard_breakdown),
             "top_saved_symbols": self._top_symbols(guard_events, "estimated_saved_r"),
             "top_missed_symbols": self._top_symbols(guard_events, "estimated_missed_r"),
         }
@@ -241,6 +245,105 @@ class RiskGuardReport:
         ]
         result.sort(key=lambda item: item.get(metric, 0.0), reverse=True)
         return result[:10]
+
+    def _guard_breakdown(self, guard_events: list[dict]) -> list[dict]:
+        buckets: dict[str, dict] = {}
+        for row in guard_events:
+            guard = row.get("guard") or "unknown"
+            bucket = buckets.setdefault(guard, {
+                "guard": guard,
+                "triggers": 0,
+                "estimated_saved_r": 0.0,
+                "estimated_missed_r": 0.0,
+                "estimated_net_saved_r": 0.0,
+                "winner_triggers": 0,
+                "loss_triggers": 0,
+            })
+            saved = _safe_float(row.get("estimated_saved_r"))
+            missed = _safe_float(row.get("estimated_missed_r"))
+            bucket["triggers"] += 1
+            bucket["estimated_saved_r"] += saved
+            bucket["estimated_missed_r"] += missed
+            bucket["estimated_net_saved_r"] += saved - missed
+            if missed > 0:
+                bucket["winner_triggers"] += 1
+            elif saved > 0:
+                bucket["loss_triggers"] += 1
+
+        result = []
+        for bucket in buckets.values():
+            triggers = _safe_int(bucket.get("triggers"))
+            missed = _safe_float(bucket.get("estimated_missed_r"))
+            saved = _safe_float(bucket.get("estimated_saved_r"))
+            net = _safe_float(bucket.get("estimated_net_saved_r"))
+            if triggers == 0:
+                verdict = "no_pressure"
+            elif missed > max(1.0, saved):
+                verdict = "too_strict"
+            elif net >= 1.0 and missed <= saved:
+                verdict = "helpful"
+            else:
+                verdict = "mixed"
+            result.append({
+                "guard": bucket["guard"],
+                "triggers": triggers,
+                "winner_triggers": _safe_int(bucket.get("winner_triggers")),
+                "loss_triggers": _safe_int(bucket.get("loss_triggers")),
+                "estimated_saved_r": round(saved, 6),
+                "estimated_missed_r": round(missed, 6),
+                "estimated_net_saved_r": round(net, 6),
+                "verdict": verdict,
+            })
+        result.sort(
+            key=lambda item: (
+                item.get("verdict") == "too_strict",
+                item.get("estimated_missed_r", 0.0),
+                item.get("triggers", 0),
+            ),
+            reverse=True,
+        )
+        return result
+
+    def _primary_issue(self, guard_breakdown: list[dict]) -> Optional[dict]:
+        for item in guard_breakdown:
+            if item.get("verdict") == "too_strict":
+                return item
+        return guard_breakdown[0] if guard_breakdown else None
+
+    def _calibration_advice(self, guard_breakdown: list[dict]) -> list[dict]:
+        advice = []
+        for item in guard_breakdown:
+            guard = item.get("guard")
+            verdict = item.get("verdict")
+            if verdict == "too_strict":
+                recommendation = self._too_strict_recommendation(guard)
+            elif verdict == "helpful":
+                recommendation = "Keep this guard candidate in shadow; evidence is helpful but still read-only."
+            elif verdict == "mixed":
+                recommendation = "Keep collecting evidence; do not wire this guard live yet."
+            else:
+                recommendation = "No action; this guard has no meaningful pressure."
+            advice.append({
+                "guard": guard,
+                "verdict": verdict,
+                "recommendation": recommendation,
+                "triggers": item.get("triggers", 0),
+                "estimated_net_saved_r": item.get("estimated_net_saved_r", 0.0),
+            })
+        return advice
+
+    def _too_strict_recommendation(self, guard: Optional[str]) -> str:
+        if guard == "max_daily_opens":
+            return "Raise max_daily_opens in shadow or add regime/symbol filters before live wiring."
+        if guard == "max_daily_symbol_opens":
+            return "Raise max_daily_symbol_opens in shadow or require a recent loss before blocking same-symbol opens."
+        if guard == "loss_streak_cooldown":
+            return "Increase loss_streak_limit in shadow or require negative daily R before cooldown."
+        if guard == "daily_loss_limit":
+            return "Lower the daily loss trigger only after checking it did not block recovery trades."
+        if guard == "weekly_drawdown_guard":
+            return "Keep weekly drawdown as shadow-only until multi-week evidence is available."
+        return "This guard is too strict in replay; tune threshold before any live wiring."
 
     def _ts_to_utc(self, timestamp_ms: Any) -> Optional[str]:
         ts = _safe_int(timestamp_ms)

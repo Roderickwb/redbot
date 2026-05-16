@@ -453,6 +453,8 @@ class DailyControlReport:
             "estimated_missed_r": _safe_float(summary.get("estimated_missed_r")),
             "estimated_net_saved_r": _safe_float(summary.get("estimated_net_saved_r")),
             "verdict": summary.get("verdict"),
+            "primary_issue": summary.get("primary_issue"),
+            "calibration_advice": summary.get("calibration_advice", [])[:5],
             "by_guard": summary.get("by_guard", {}),
             "live_enforcement": bool((guard.get("meta") or {}).get("live_enforcement")),
         }
@@ -659,7 +661,12 @@ class DailyControlReport:
         if risk_guard_status.get("verdict") == "guards_look_helpful":
             actions.append("Risk guards look helpful in shadow replay; keep collecting evidence before live wiring.")
         elif risk_guard_status.get("verdict") == "guards_too_strict":
-            actions.append("Risk guards look too strict in shadow replay; do not wire live.")
+            issue = risk_guard_status.get("primary_issue") or {}
+            guard_name = issue.get("guard")
+            if guard_name:
+                actions.append(f"Risk guard {guard_name} looks too strict in shadow replay; tune threshold before live wiring.")
+            else:
+                actions.append("Risk guards look too strict in shadow replay; do not wire live.")
         elif risk_guard_status.get("guard_triggers"):
             actions.append("Risk guards are seeing pressure in shadow mode; keep them read-only while sample grows.")
         if gpt_efficiency_status.get("verdict") == "mostly_hold_review_cost":
@@ -761,7 +768,8 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
             f"Risk guards trades={risk_guard.get('loaded_open_trades', 0)} "
             f"triggers={risk_guard.get('guard_triggers', 0)} "
             f"net_saved_R={risk_guard.get('estimated_net_saved_r', 0.0)} "
-            f"verdict={risk_guard.get('verdict')}"
+            f"verdict={risk_guard.get('verdict')} "
+            f"issue={(risk_guard.get('primary_issue') or {}).get('guard')}"
         ),
         (
             f"Live readiness eligible={live_readiness.get('eligible_for_live_wiring', 0)} "

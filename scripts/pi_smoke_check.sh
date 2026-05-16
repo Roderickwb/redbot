@@ -74,7 +74,8 @@ for name in (
         print(f" status={result.get('status')} blockers={result.get('blockers')} approvals={result.get('approval_queue')}")
     elif name == "risk_guard_report":
         summary = result.get("summary") or {}
-        print(f" verdict={summary.get('verdict')} triggers={summary.get('guard_triggers')}")
+        issue = (summary.get("primary_issue") or {}).get("guard")
+        print(f" verdict={summary.get('verdict')} triggers={summary.get('guard_triggers')} issue={issue}")
     elif name == "live_readiness_gate":
         summary = result.get("summary") or {}
         print(

@@ -145,6 +145,8 @@ class LiveReadinessGate:
             "estimated_saved_r": _safe_float(summary.get("estimated_saved_r")),
             "estimated_missed_r": _safe_float(summary.get("estimated_missed_r")),
             "verdict": verdict,
+            "primary_issue": summary.get("primary_issue"),
+            "calibration_advice": summary.get("calibration_advice", [])[:5],
         }
         if self._safety_blocks(safety):
             status, reason = "blocked", "safety_blocks_live_changes"

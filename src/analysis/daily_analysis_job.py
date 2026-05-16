@@ -468,6 +468,7 @@ def _build_operator_cockpit(send_cockpit: bool) -> dict:
     report = run_operator_cockpit(send=send_cockpit)
     return {
         "status": report.get("status"),
+        "daily_decision": report.get("daily_decision", {}),
         "live_changes": report.get("live_changes", {}),
         "bot_health": report.get("bot_health", {}),
         "action_needed": report.get("action_needed", {}),

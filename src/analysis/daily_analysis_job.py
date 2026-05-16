@@ -81,6 +81,7 @@ from src.analysis.risk_bridge_history import run_risk_bridge_history
 from src.analysis.risk_guard_report import run_risk_guard_report
 from src.analysis.risk_policy import run_risk_policy
 from src.analysis.risk_strategy_bridge import run_risk_strategy_bridge
+from src.analysis.safety_control import run_safety_control_report
 from src.analysis.shadow_live_bridge import run_shadow_live_bridge
 from src.analysis.shadow_model_evaluator import (
     ShadowModelEvaluator,
@@ -268,6 +269,22 @@ def _build_pre_gpt_gate_report(limit: int) -> dict:
     }
 
 
+def _build_safety_control_report() -> dict:
+    report = run_safety_control_report()
+    return {
+        "status": report.get("status"),
+        "kill_switch_active": report.get("kill_switch_active"),
+        "live_entry_orders_allowed": report.get("live_entry_orders_allowed"),
+        "live_enforcement_allowed": report.get("live_enforcement_allowed"),
+        "meltdown_active": (report.get("meltdown") or {}).get("active"),
+        "meltdown_reason": (report.get("meltdown") or {}).get("reason"),
+        "reason": report.get("reason"),
+        "updated_utc": report.get("updated_utc"),
+        "audit_events": (report.get("audit") or {}).get("events", 0),
+        "output_path": report.get("output_path"),
+    }
+
+
 def _build_ml_training_dataset(limit: int, structured_only: bool) -> dict:
     db = DatabaseManager(db_path=DB_FILE)
     try:
@@ -446,6 +463,7 @@ def _build_operator_cockpit(send_cockpit: bool) -> dict:
         "action_needed": report.get("action_needed", {}),
         "learning": report.get("learning", {}),
         "risk": report.get("risk", {}),
+        "safety": report.get("safety", {}),
         "next_actions": report.get("next_actions", []),
         "output_path": report.get("output_path"),
         "telegram_sent": report.get("telegram_sent", False),
@@ -499,6 +517,9 @@ def run_daily_analysis_job(
             send_health=send_health,
             force_health_send=force_health_send,
         ),
+    )
+    steps["safety_control"] = _run_step(
+        lambda: _build_safety_control_report(),
     )
     steps["market_regime"] = _run_step(
         lambda: _build_market_regime_report(),

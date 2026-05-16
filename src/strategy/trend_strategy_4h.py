@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 from src.sentiment.external_sentiment import get_external_sentiment
 from src.analysis.coin_profile_loader import load_coin_profile_json
+from src.analysis.safety_control import SafetyControl, append_audit_event, write_meltdown_state
 from src.analysis.market_regime import MarketRegimeAnalyzer
 from src.meltdown_manager.meltdown_manager import MeltdownManager
 
@@ -401,7 +402,13 @@ class TrendStrategy4H:
 
         if self.meltdown_manager:
             try:
-                if self.meltdown_manager.update_meltdown_state(self, symbol):
+                meltdown_active = self.meltdown_manager.update_meltdown_state(self, symbol)
+                write_meltdown_state(
+                    active=meltdown_active,
+                    reason=self.meltdown_manager.meltdown_reason,
+                    source="trend_strategy_4h",
+                )
+                if meltdown_active:
                     self.logger.warning(
                         "[%s] Meltdown active (%s) => skip new trend entries.",
                         symbol,
@@ -2001,6 +2008,28 @@ class TrendStrategy4H:
             return
 
         cfg = yaml_config.get("trend_strategy_4h", {})
+
+        if self.trading_mode == "auto":
+            allowed, reason = SafetyControl().live_entry_allowed()
+            if not allowed:
+                self.logger.warning("[SAFETY][%s] live entry blocked: %s", symbol, reason)
+                append_audit_event(
+                    event_type="live_entry_blocked",
+                    actor="trend_strategy_4h",
+                    reason=reason,
+                    payload={
+                        "symbol": symbol,
+                        "side": side,
+                        "entry_price": float(entry_price),
+                        "atr": float(atr_value),
+                    },
+                )
+                self._notify(
+                    f"🛑 SAFETY BLOCK | {symbol}\n"
+                    f"Live entry blocked before order.\n"
+                    f"Reason: {reason}"
+                )
+                return None
 
         # 1) Basis EUR-range uit config
         base_min_eur = _to_decimal(cfg.get("base_min_eur", "10"))   # minimum per trade

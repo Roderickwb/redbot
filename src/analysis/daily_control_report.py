@@ -43,6 +43,7 @@ DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
 DEFAULT_GPT_DECISION_REPORT = os.path.join("analysis", "gpt_decisions", "latest_gpt_decision_report.json")
 DEFAULT_PRE_GPT_GATE_REPORT = os.path.join("analysis", "gpt_decisions", "latest_pre_gpt_gate_report.json")
+DEFAULT_SAFETY_CONTROL_REPORT = os.path.join("analysis", "safety", "latest_safety_control_report.json")
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -96,6 +97,7 @@ class DailyControlReport:
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
         gpt_decision_path: str = DEFAULT_GPT_DECISION_REPORT,
         pre_gpt_gate_path: str = DEFAULT_PRE_GPT_GATE_REPORT,
+        safety_control_path: str = DEFAULT_SAFETY_CONTROL_REPORT,
     ):
         self.daily_job_path = daily_job_path
         self.advisor_path = advisor_path
@@ -115,6 +117,7 @@ class DailyControlReport:
         self.market_regime_path = market_regime_path
         self.gpt_decision_path = gpt_decision_path
         self.pre_gpt_gate_path = pre_gpt_gate_path
+        self.safety_control_path = safety_control_path
 
     def build_report(self) -> dict:
         reports = {
@@ -136,6 +139,7 @@ class DailyControlReport:
             "market_regime": load_json(self.market_regime_path),
             "gpt_decisions": load_json(self.gpt_decision_path),
             "pre_gpt_gate": load_json(self.pre_gpt_gate_path),
+            "safety_control": load_json(self.safety_control_path),
         }
 
         blockers = self._blockers(reports)
@@ -151,9 +155,10 @@ class DailyControlReport:
         risk_guard_status = self._risk_guard_status(reports)
         gpt_efficiency_status = self._gpt_efficiency_status(reports)
         pre_gpt_gate_status = self._pre_gpt_gate_status(reports)
+        safety_status = self._safety_status(reports)
         learning_status = self._learning_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
-        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, gpt_efficiency_status, pre_gpt_gate_status, learning_status)
+        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, learning_status)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -173,6 +178,7 @@ class DailyControlReport:
             "risk_guard_status": risk_guard_status,
             "gpt_efficiency_status": gpt_efficiency_status,
             "pre_gpt_gate_status": pre_gpt_gate_status,
+            "safety_status": safety_status,
             "next_actions": next_actions,
             "sources": {
                 "daily_job": self.daily_job_path,
@@ -193,6 +199,7 @@ class DailyControlReport:
                 "market_regime": self.market_regime_path,
                 "gpt_decisions": self.gpt_decision_path,
                 "pre_gpt_gate": self.pre_gpt_gate_path,
+                "safety_control": self.safety_control_path,
             },
         }
 
@@ -235,6 +242,25 @@ class DailyControlReport:
                     "action": "Fix runtime/data health before approving strategy changes.",
                     "code": alert.get("code"),
                 })
+
+        safety = reports.get("safety_control", {}) or {}
+        if safety.get("kill_switch_active"):
+            blockers.append({
+                "level": "high",
+                "area": "safety",
+                "finding": f"Kill-switch is active: {safety.get('reason')}",
+                "action": "Live entry orders are blocked until the kill-switch is cleared explicitly.",
+                "code": "KILL_SWITCH_ACTIVE",
+            })
+        meltdown = safety.get("meltdown") or {}
+        if meltdown.get("active"):
+            blockers.append({
+                "level": "high",
+                "area": "safety",
+                "finding": f"Meltdown manager is active: {meltdown.get('reason')}",
+                "action": "New entries are paused by the market/portfolio meltdown guard.",
+                "code": "MELTDOWN_ACTIVE",
+            })
         return blockers
 
     def _approval_queue(self, reports: dict) -> list[dict]:
@@ -463,6 +489,24 @@ class DailyControlReport:
             "live_enforcement": bool((gate.get("meta") or {}).get("live_enforcement")),
         }
 
+    def _safety_status(self, reports: dict) -> dict:
+        safety = reports.get("safety_control", {}) or {}
+        return {
+            "status": safety.get("status") or "UNKNOWN",
+            "kill_switch_active": bool(safety.get("kill_switch_active")),
+            "live_entry_orders_allowed": bool(safety.get("live_entry_orders_allowed", True)),
+            "live_enforcement_allowed": bool(safety.get("live_enforcement_allowed")),
+            "live_risk_wiring_allowed": bool(safety.get("live_risk_wiring_allowed")),
+            "live_strategy_wiring_allowed": bool(safety.get("live_strategy_wiring_allowed")),
+            "reason": safety.get("reason"),
+            "updated_utc": safety.get("updated_utc"),
+            "meltdown_active": bool((safety.get("meltdown") or {}).get("active")),
+            "meltdown_reason": (safety.get("meltdown") or {}).get("reason"),
+            "meltdown_updated_utc": (safety.get("meltdown") or {}).get("updated_utc"),
+            "audit_events": _safe_int((safety.get("audit") or {}).get("events")),
+            "output_path": safety.get("output_path"),
+        }
+
     def _operating_state(self, reports: dict, blockers: list[dict], approval_queue: list[dict]) -> dict:
         advisor = reports.get("advisor", {}) or {}
         registry = reports.get("registry", {}) or {}
@@ -478,6 +522,7 @@ class DailyControlReport:
         risk_guard = reports.get("risk_guard", {}) or {}
         gpt_decisions = reports.get("gpt_decisions", {}) or {}
         pre_gpt_gate = reports.get("pre_gpt_gate", {}) or {}
+        safety = reports.get("safety_control", {}) or {}
 
         if blockers:
             status = "ACTION_NEEDED"
@@ -511,6 +556,13 @@ class DailyControlReport:
             "risk_guard": risk_guard.get("summary", {}),
             "gpt_decisions": gpt_decisions.get("totals", {}),
             "pre_gpt_gate": pre_gpt_gate.get("summary", {}),
+            "safety_control": {
+                "status": safety.get("status"),
+                "kill_switch_active": safety.get("kill_switch_active"),
+                "meltdown_active": (safety.get("meltdown") or {}).get("active"),
+                "live_entry_orders_allowed": safety.get("live_entry_orders_allowed"),
+                "live_enforcement_allowed": safety.get("live_enforcement_allowed"),
+            },
         }
 
     def _next_actions(
@@ -528,6 +580,7 @@ class DailyControlReport:
         risk_guard_status: dict,
         gpt_efficiency_status: dict,
         pre_gpt_gate_status: dict,
+        safety_status: dict,
         learning_status: dict,
     ) -> list[str]:
         if blockers:
@@ -537,6 +590,14 @@ class DailyControlReport:
             ]
 
         actions = []
+        if safety_status.get("kill_switch_active"):
+            actions.append("Kill-switch is active; clear it explicitly only after verifying why it was enabled.")
+        if safety_status.get("meltdown_active"):
+            actions.append("Meltdown manager is active; wait for market/portfolio re-entry conditions before new entries.")
+        elif not safety_status.get("live_entry_orders_allowed", True):
+            actions.append("Live entry orders are disabled by safety state; inspect safety control before auto mode.")
+        if not safety_status.get("live_enforcement_allowed"):
+            actions.append("Live enforcement wiring is disabled by safety state; keep autonomous changes read-only.")
         if approval_status.get("review_for_approval"):
             actions.append("Approval inbox has experiments ready for explicit approve/reject review.")
         if approval_status.get("reject_candidate"):

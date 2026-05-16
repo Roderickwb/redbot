@@ -72,6 +72,7 @@ class OperatorCockpit:
         experiments = control.get("experiment_status", {}) or {}
         promotion = control.get("promotion_status", {}) or {}
         approval_status = control.get("approval_status", {}) or {}
+        safety = control.get("safety_status", {}) or {}
         risk_policy = control.get("risk_policy_status", {}) or {}
         risk_strategy = control.get("risk_strategy_status", {}) or {}
         risk_outcome = control.get("risk_outcome_status", {}) or {}
@@ -81,7 +82,7 @@ class OperatorCockpit:
         pre_gpt_gate = control.get("pre_gpt_gate_status", {}) or {}
         shadow_live = control.get("shadow_live_status", {}) or {}
 
-        live_changes = self._live_changes(control, shadow_live, risk_policy, risk_strategy, risk_outcome, risk_history)
+        live_changes = self._live_changes(control, shadow_live, risk_policy, risk_strategy, risk_outcome, risk_history, safety)
         health = self._health(blockers)
         action_needed = self._action_needed(blockers, approvals, approval_status, promotion, risk_history)
         status = self._status(health, action_needed, control.get("status"))
@@ -105,6 +106,7 @@ class OperatorCockpit:
             },
             "learning": learning_summary,
             "risk": risk_summary,
+            "safety": self._safety_summary(safety),
             "next_actions": self._next_actions(control, daily_decision),
             "sources": {
                 "daily_control": self.control_path,
@@ -143,7 +145,7 @@ class OperatorCockpit:
             "sources": {"daily_control": self.control_path},
         }
 
-    def _live_changes(self, control: dict, shadow_live: dict, risk_policy: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict) -> dict:
+    def _live_changes(self, control: dict, shadow_live: dict, risk_policy: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, safety: dict) -> dict:
         live_enforcement = any([
             bool(risk_policy.get("live_enforcement")),
             bool(risk_strategy.get("live_enforcement")),
@@ -151,7 +153,10 @@ class OperatorCockpit:
             bool(risk_history.get("live_enforcement")),
         ])
         active_shadow = _safe_int(shadow_live.get("active_shadow_policies"))
-        if live_enforcement:
+        if safety.get("kill_switch_active"):
+            status = "BLOCKED"
+            headline = f"Kill-switch active: {safety.get('reason')}"
+        elif live_enforcement:
             status = "ACTIVE"
             headline = "Live enforcement is enabled somewhere in the risk/adaptation layer."
         else:
@@ -161,6 +166,9 @@ class OperatorCockpit:
             "status": status,
             "headline": headline,
             "live_enforcement": live_enforcement,
+            "kill_switch_active": bool(safety.get("kill_switch_active")),
+            "live_entry_orders_allowed": bool(safety.get("live_entry_orders_allowed", True)),
+            "live_enforcement_allowed": bool(safety.get("live_enforcement_allowed")),
             "active_shadow_policies": active_shadow,
             "control_status": control.get("status"),
         }
@@ -277,6 +285,19 @@ class OperatorCockpit:
             "live_enforcement": bool(risk_history.get("live_enforcement")),
         }
 
+    def _safety_summary(self, safety: dict) -> dict:
+        return {
+            "status": safety.get("status") or "UNKNOWN",
+            "kill_switch_active": bool(safety.get("kill_switch_active")),
+            "live_entry_orders_allowed": bool(safety.get("live_entry_orders_allowed", True)),
+            "live_enforcement_allowed": bool(safety.get("live_enforcement_allowed")),
+            "meltdown_active": bool(safety.get("meltdown_active")),
+            "meltdown_reason": safety.get("meltdown_reason"),
+            "reason": safety.get("reason"),
+            "updated_utc": safety.get("updated_utc"),
+            "audit_events": _safe_int(safety.get("audit_events")),
+        }
+
     def _daily_decision(self, live_changes: dict, health: dict, action_needed: dict, learning: dict, risk: dict) -> dict:
         if health.get("status") != "OK":
             return {
@@ -324,6 +345,7 @@ class OperatorCockpit:
 def format_cockpit_message(cockpit: dict) -> str:
     learning = cockpit.get("learning", {}) or {}
     risk = cockpit.get("risk", {}) or {}
+    safety = cockpit.get("safety", {}) or {}
     live = cockpit.get("live_changes", {}) or {}
     health = cockpit.get("bot_health", {}) or {}
     action = cockpit.get("action_needed", {}) or {}
@@ -334,6 +356,12 @@ def format_cockpit_message(cockpit: dict) -> str:
         str(decision.get("label") or "TODAY: UNKNOWN"),
         f"Reason: {decision.get('reason')}",
         f"Live changes: {live.get('status', 'UNKNOWN')}",
+        (
+            f"Safety: {safety.get('status', 'UNKNOWN')} | "
+            f"kill={safety.get('kill_switch_active', False)} | "
+            f"meltdown={safety.get('meltdown_active', False)} | "
+            f"live_entries={safety.get('live_entry_orders_allowed', False)}"
+        ),
         f"Bot health: {health.get('status', 'UNKNOWN')} (blockers={health.get('blockers', 0)})",
         f"Action needed: {action.get('status', 'UNKNOWN')} - {action.get('headline')}",
         "",
@@ -446,6 +474,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             "action_needed": cockpit.get("action_needed"),
             "learning": cockpit.get("learning"),
             "risk": cockpit.get("risk"),
+            "safety": cockpit.get("safety"),
             "next_actions": cockpit.get("next_actions"),
             "output_path": cockpit.get("output_path"),
             "telegram_sent": cockpit.get("telegram_sent"),

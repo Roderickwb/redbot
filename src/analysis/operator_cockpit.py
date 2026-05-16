@@ -78,13 +78,14 @@ class OperatorCockpit:
         risk_history = control.get("risk_history_status", {}) or {}
         risk_guard = control.get("risk_guard_status", {}) or {}
         gpt_efficiency = control.get("gpt_efficiency_status", {}) or {}
+        pre_gpt_gate = control.get("pre_gpt_gate_status", {}) or {}
         shadow_live = control.get("shadow_live_status", {}) or {}
 
         live_changes = self._live_changes(control, shadow_live, risk_policy, risk_strategy, risk_outcome, risk_history)
         health = self._health(blockers)
         action_needed = self._action_needed(blockers, approvals, approval_status, promotion, risk_history)
         status = self._status(health, action_needed, control.get("status"))
-        learning_summary = self._learning_summary(learning, experiments, promotion, approval_status, gpt_efficiency)
+        learning_summary = self._learning_summary(learning, experiments, promotion, approval_status, gpt_efficiency, pre_gpt_gate)
         risk_summary = self._risk_summary(risk_policy, risk_strategy, risk_outcome, risk_history, risk_guard)
         daily_decision = self._daily_decision(live_changes, health, action_needed, learning_summary, risk_summary)
 
@@ -225,7 +226,7 @@ class OperatorCockpit:
             return "WATCH"
         return fallback or "WATCH"
 
-    def _learning_summary(self, learning: dict, experiments: dict, promotion: dict, approval: dict, gpt_efficiency: dict) -> dict:
+    def _learning_summary(self, learning: dict, experiments: dict, promotion: dict, approval: dict, gpt_efficiency: dict, pre_gpt_gate: dict) -> dict:
         ml = learning.get("ml_edge", {}) or {}
         hypotheses = learning.get("hypotheses", {}) or {}
         market = learning.get("market_regime", {}) or {}
@@ -247,6 +248,11 @@ class OperatorCockpit:
             "gpt_open_rate_pct": _safe_float(gpt_efficiency.get("open_rate_pct")),
             "gpt_cf_avg_r": _safe_float(gpt_efficiency.get("cf_avg_r")),
             "gpt_efficiency_verdict": gpt_efficiency.get("verdict"),
+            "pre_gpt_would_skip": _safe_int(pre_gpt_gate.get("would_skip_gpt")),
+            "pre_gpt_call_reduction_pct": _safe_float(pre_gpt_gate.get("call_reduction_pct")),
+            "pre_gpt_skipped_opens": _safe_int(pre_gpt_gate.get("skipped_opens")),
+            "pre_gpt_net_saved_r": _safe_float(pre_gpt_gate.get("estimated_net_saved_r")),
+            "pre_gpt_verdict": pre_gpt_gate.get("verdict"),
         }
 
     def _risk_summary(self, risk_policy: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, risk_guard: dict) -> dict:
@@ -352,6 +358,13 @@ def format_cockpit_message(cockpit: dict) -> str:
             f"hold={learning.get('gpt_hold_rate_pct', 0.0)}% "
             f"open={learning.get('gpt_open_rate_pct', 0.0)}% "
             f"verdict={learning.get('gpt_efficiency_verdict')}"
+        ),
+        (
+            f"- Pre-GPT gate: skip={learning.get('pre_gpt_would_skip', 0)} "
+            f"save_calls={learning.get('pre_gpt_call_reduction_pct', 0.0)}% "
+            f"skip_opens={learning.get('pre_gpt_skipped_opens', 0)} "
+            f"net_R={learning.get('pre_gpt_net_saved_r', 0.0)} "
+            f"verdict={learning.get('pre_gpt_verdict')}"
         ),
         "",
         "Risk:",

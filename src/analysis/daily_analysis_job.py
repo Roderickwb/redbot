@@ -74,6 +74,7 @@ from src.analysis.opportunity_reporter import (
 )
 from src.analysis.operator_cockpit import run_operator_cockpit
 from src.analysis.promotion_gate import run_promotion_gate
+from src.analysis.pre_gpt_gate_report import run_pre_gpt_gate_report
 from src.analysis.recommendation_registry import RecommendationRegistry
 from src.analysis.risk_bridge_outcome_evaluator import run_risk_bridge_outcome_evaluator
 from src.analysis.risk_bridge_history import run_risk_bridge_history
@@ -253,6 +254,14 @@ def _build_risk_bridge_history() -> dict:
 
 def _build_risk_guard_report(limit: int) -> dict:
     report = run_risk_guard_report(limit=limit)
+    return {
+        "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
+    }
+
+
+def _build_pre_gpt_gate_report(limit: int) -> dict:
+    report = run_pre_gpt_gate_report(limit=limit)
     return {
         "summary": report.get("summary", {}),
         "output_path": report.get("output_path"),
@@ -477,6 +486,9 @@ def run_daily_analysis_job(
     )
     steps["gpt_decision_report"] = _run_step(
         lambda: _build_gpt_report(limit=report_limit),
+    )
+    steps["pre_gpt_gate_report"] = _run_step(
+        lambda: _build_pre_gpt_gate_report(limit=report_limit),
     )
     steps["chart_vision_report"] = _run_step(
         lambda: _build_chart_report(limit=report_limit, structured_only=structured_chart_only),

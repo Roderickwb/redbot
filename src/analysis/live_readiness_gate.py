@@ -172,19 +172,17 @@ class LiveReadinessGate:
             "estimated_saved_r": _safe_float(summary.get("estimated_saved_r")),
             "estimated_missed_r": _safe_float(summary.get("estimated_missed_r")),
             "verdict": verdict,
+            "primary_issue": summary.get("primary_issue"),
+            "calibration_advice": summary.get("calibration_advice", [])[:5],
         }
-        if self._safety_blocks(safety):
-            status, reason = "blocked", "safety_blocks_live_changes"
-            action = "Keep risk guards read-only until kill-switch/meltdown state is clear."
+        status = "calibration_only"
+        reason = verdict or "risk_guards_are_hypothetical_calibration"
+        if verdict == "guards_too_strict":
+            action = "Treat current guard thresholds as calibration-only; do not count them as live candidates."
         elif verdict == "guards_look_helpful":
-            status, reason = "ready_for_operator_review", "risk_guards_shadow_positive"
-            action = "Operator may review risk guard thresholds before any live wiring."
-        elif verdict == "guards_too_strict":
-            status, reason = "blocked", "risk_guards_too_strict"
-            action = "Do not wire these guards live; thresholds need tuning or more evidence."
+            action = "Use this only as evidence for future threshold design; require a separate approved live policy."
         else:
-            status, reason = "waiting_for_more_evidence", verdict or "risk_guards_not_ready"
-            action = "Keep risk guards in shadow while more open-trade outcomes accumulate."
+            action = "Keep guard thresholds as analysis-only until data proposes a policy range."
         return self._decision("risk", "risk_guards", status, reason, action, evidence, safety)
 
     def _promotion_decision(self, promotion: dict, safety: dict) -> dict:
@@ -303,6 +301,7 @@ class LiveReadinessGate:
             "approved_but_safety_locked": by_status.get("approved_but_safety_locked", 0),
             "blocked": by_status.get("blocked", 0),
             "waiting": by_status.get("waiting_for_more_evidence", 0),
+            "calibration_only": by_status.get("calibration_only", 0),
         }
 
 

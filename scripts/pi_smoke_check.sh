@@ -81,7 +81,8 @@ for name in (
         print(
             f" eligible={summary.get('eligible_for_live_wiring')} "
             f"review={summary.get('ready_for_operator_review')} "
-            f"blocked={summary.get('blocked')} waiting={summary.get('waiting')}"
+            f"blocked={summary.get('blocked')} waiting={summary.get('waiting')} "
+            f"calibration={summary.get('calibration_only')}"
         )
     elif name == "pre_gpt_gate_report":
         summary = result.get("summary") or {}

@@ -528,6 +528,7 @@ class DailyControlReport:
             "approved_but_safety_locked": _safe_int(summary.get("approved_but_safety_locked")),
             "blocked": _safe_int(summary.get("blocked")),
             "waiting": _safe_int(summary.get("waiting")),
+            "calibration_only": _safe_int(summary.get("calibration_only")),
             "by_status": summary.get("by_status", {}),
             "by_area": summary.get("by_area", {}),
             "read_only": bool((readiness.get("meta") or {}).get("read_only", True)),
@@ -775,7 +776,8 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
             f"Live readiness eligible={live_readiness.get('eligible_for_live_wiring', 0)} "
             f"review={live_readiness.get('ready_for_operator_review', 0)} "
             f"blocked={live_readiness.get('blocked', 0)} "
-            f"waiting={live_readiness.get('waiting', 0)}"
+            f"waiting={live_readiness.get('waiting', 0)} "
+            f"calibration={live_readiness.get('calibration_only', 0)}"
         ),
     ]
 

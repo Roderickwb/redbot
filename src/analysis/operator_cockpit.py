@@ -317,6 +317,7 @@ class OperatorCockpit:
             "approved_but_safety_locked": _safe_int(live_readiness.get("approved_but_safety_locked")),
             "blocked": _safe_int(live_readiness.get("blocked")),
             "waiting": _safe_int(live_readiness.get("waiting")),
+            "calibration_only": _safe_int(live_readiness.get("calibration_only")),
             "live_enforcement": bool(live_readiness.get("live_enforcement")),
         }
 
@@ -350,12 +351,6 @@ class OperatorCockpit:
                 "label": "TODAY: REVIEW REQUIRED",
                 "severity": "review",
                 "reason": f"Risk bridge history verdict is {risk.get('history_verdict')}.",
-            }
-        if risk.get("guard_verdict") in {"guards_look_helpful", "guards_too_strict"}:
-            return {
-                "label": "TODAY: REVIEW REQUIRED",
-                "severity": "review",
-                "reason": f"Risk guard verdict is {risk.get('guard_verdict')}.",
             }
         return {
             "label": "TODAY: NO ACTION REQUIRED",
@@ -397,7 +392,8 @@ def format_cockpit_message(cockpit: dict) -> str:
             f"Live readiness: eligible={live_readiness.get('eligible_for_live_wiring', 0)} "
             f"review={live_readiness.get('ready_for_operator_review', 0)} "
             f"blocked={live_readiness.get('blocked', 0)} "
-            f"waiting={live_readiness.get('waiting', 0)}"
+            f"waiting={live_readiness.get('waiting', 0)} "
+            f"calibration={live_readiness.get('calibration_only', 0)}"
         ),
         "",
         "Learning:",

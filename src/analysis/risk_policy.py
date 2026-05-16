@@ -190,6 +190,14 @@ class RiskPolicyBuilder:
             flags=flags,
             market=market,
         )
+        advice = self._advice(
+            symbol=symbol,
+            profile=source_profile,
+            flags=flags,
+            market=market,
+            directional_policy=directional_policy,
+            profile_multiplier=profile_mult,
+        )
         actions = self._actions(
             symbol,
             final_mult,
@@ -217,6 +225,7 @@ class RiskPolicyBuilder:
             "n_trades": _safe_int(source_profile.get("n_trades")),
             "expectancy_R": round(_safe_float(source_profile.get("expectancy_R")), 4),
             "flags": sorted(flags),
+            "advice": advice,
             "actions": actions,
             "reasons": self._reasons(source_profile, flags, market, promotion, approval, ml_edge),
             "source": source_profile.get("source", "profile_proposals"),
@@ -333,6 +342,58 @@ class RiskPolicyBuilder:
             },
         }
 
+    def _advice(
+        self,
+        symbol: str,
+        profile: dict,
+        flags: set[str],
+        market: dict,
+        directional_policy: dict,
+        profile_multiplier: float,
+    ) -> dict:
+        normalized_flags = {str(flag).upper() for flag in flags}
+        data_reasons = []
+        review_reasons = []
+        expectancy = _safe_float(profile.get("expectancy_R"))
+        n_trades = _safe_int(profile.get("n_trades"))
+
+        if profile_multiplier < 1.0:
+            data_reasons.append("learning_profile_suggests_lower_risk")
+        if "DRAWDOWN_RISK" in normalized_flags:
+            data_reasons.append("drawdown_risk_flag")
+        if "COUNTERFACTUAL_EDGE_NEGATIVE" in normalized_flags:
+            data_reasons.append("counterfactual_edge_negative")
+        if expectancy < 0 and n_trades > 0:
+            data_reasons.append("negative_expectancy_observed")
+        if "FILTER_REVIEW" in normalized_flags:
+            review_reasons.append("filter_review_needed")
+        if "COUNTERFACTUAL_EDGE_POSITIVE" in normalized_flags:
+            review_reasons.append("possible_positive_edge_review_only")
+
+        market_reasons = []
+        if market.get("regime") == "risk_off":
+            market_reasons.append("market_risk_off")
+        if market.get("directional_bias"):
+            market_reasons.append(f"market_bias={market.get('directional_bias')}")
+
+        long_policy = (directional_policy.get("long") or {})
+        short_policy = (directional_policy.get("short") or {})
+        risk_down = bool(data_reasons)
+        review_only = bool(review_reasons)
+        return {
+            "symbol": symbol,
+            "risk_down": risk_down,
+            "risk_up": False,
+            "review_only": review_only,
+            "market_context_only": bool(market_reasons) and not risk_down,
+            "long_multiplier": long_policy.get("risk_multiplier"),
+            "short_multiplier": short_policy.get("risk_multiplier"),
+            "data_reasons": data_reasons,
+            "market_reasons": market_reasons,
+            "review_reasons": review_reasons,
+            "human_approval_required_for_risk_up": True,
+        }
+
     def _actions(
         self,
         symbol: str,
@@ -424,6 +485,9 @@ class RiskPolicyBuilder:
         by_mode = Counter(policy.get("policy_mode") for policy in policies)
         by_long_mode = Counter(((policy.get("directional_policy") or {}).get("long") or {}).get("policy_mode") for policy in policies)
         by_short_mode = Counter(((policy.get("directional_policy") or {}).get("short") or {}).get("policy_mode") for policy in policies)
+        data_driven_risk_down = [p for p in policies if (p.get("advice") or {}).get("risk_down")]
+        market_context_only = [p for p in policies if (p.get("advice") or {}).get("market_context_only")]
+        review_only = [p for p in policies if (p.get("advice") or {}).get("review_only")]
         risk_down = [p for p in policies if _safe_float(p.get("risk_multiplier"), 1.0) < 1.0]
         cap_longs = [
             p for p in policies
@@ -461,6 +525,35 @@ class RiskPolicyBuilder:
             "average_risk_multiplier": avg_mult,
             "average_long_risk_multiplier": avg_long_mult,
             "average_short_risk_multiplier": avg_short_mult,
+            "data_driven_risk_down": len(data_driven_risk_down),
+            "market_context_only": len(market_context_only),
+            "review_only": len(review_only),
+            "risk_up": 0,
+            "data_driven_risk_down_symbols": [
+                {
+                    "symbol": p.get("symbol"),
+                    "long_multiplier": (p.get("advice") or {}).get("long_multiplier"),
+                    "short_multiplier": (p.get("advice") or {}).get("short_multiplier"),
+                    "reasons": (p.get("advice") or {}).get("data_reasons", []),
+                }
+                for p in data_driven_risk_down[:20]
+            ],
+            "market_context_only_symbols": [
+                {
+                    "symbol": p.get("symbol"),
+                    "long_multiplier": (p.get("advice") or {}).get("long_multiplier"),
+                    "short_multiplier": (p.get("advice") or {}).get("short_multiplier"),
+                    "reasons": (p.get("advice") or {}).get("market_reasons", []),
+                }
+                for p in market_context_only[:20]
+            ],
+            "review_only_symbols": [
+                {
+                    "symbol": p.get("symbol"),
+                    "reasons": (p.get("advice") or {}).get("review_reasons", []),
+                }
+                for p in review_only[:20]
+            ],
             "risk_down_symbols": [
                 {"symbol": p.get("symbol"), "risk_multiplier": p.get("risk_multiplier"), "policy_mode": p.get("policy_mode")}
                 for p in risk_down[:20]

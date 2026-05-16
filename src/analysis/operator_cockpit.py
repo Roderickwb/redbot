@@ -276,6 +276,10 @@ class OperatorCockpit:
         return {
             "policy_symbols": _safe_int(risk_policy.get("total_symbols")),
             "risk_down": _safe_int(risk_policy.get("risk_down")),
+            "data_driven_risk_down": _safe_int(risk_policy.get("data_driven_risk_down")),
+            "market_context_only": _safe_int(risk_policy.get("market_context_only")),
+            "review_only": _safe_int(risk_policy.get("review_only")),
+            "risk_up": _safe_int(risk_policy.get("risk_up")),
             "cap_new_longs": _safe_int(risk_policy.get("cap_new_longs")),
             "avg_long_multiplier": _safe_float(risk_policy.get("average_long_risk_multiplier"), 1.0),
             "avg_short_multiplier": _safe_float(risk_policy.get("average_short_risk_multiplier"), 1.0),
@@ -430,6 +434,9 @@ def format_cockpit_message(cockpit: dict) -> str:
         (
             f"- Policy: symbols={risk.get('policy_symbols', 0)} "
             f"risk_down={risk.get('risk_down', 0)} "
+            f"data_down={risk.get('data_driven_risk_down', 0)} "
+            f"market_only={risk.get('market_context_only', 0)} "
+            f"risk_up={risk.get('risk_up', 0)} "
             f"cap_longs={risk.get('cap_new_longs', 0)}"
         ),
         (

@@ -385,6 +385,10 @@ class DailyControlReport:
             "average_long_risk_multiplier": _safe_float(summary.get("average_long_risk_multiplier"), 1.0),
             "average_short_risk_multiplier": _safe_float(summary.get("average_short_risk_multiplier"), 1.0),
             "risk_down": len(summary.get("risk_down_symbols", []) or []),
+            "data_driven_risk_down": _safe_int(summary.get("data_driven_risk_down")),
+            "market_context_only": _safe_int(summary.get("market_context_only")),
+            "review_only": _safe_int(summary.get("review_only")),
+            "risk_up": _safe_int(summary.get("risk_up")),
             "long_risk_down": len(summary.get("long_risk_down_symbols", []) or []),
             "short_risk_down": len(summary.get("short_risk_down_symbols", []) or []),
             "cap_new_longs": len(summary.get("cap_new_long_symbols", []) or []),
@@ -645,8 +649,12 @@ class DailyControlReport:
             actions.append("Review shadow-live matches before considering any live behavior change.")
         if risk_policy_status.get("cap_new_longs"):
             actions.append("Risk policy is recommending long-risk caps; keep it read-only until live wiring is approved.")
-        if risk_policy_status.get("risk_down"):
-            actions.append("Use risk policy as conservative risk-down input; never use it for risk-up without approval.")
+        if risk_policy_status.get("data_driven_risk_down"):
+            actions.append("Risk policy has data-driven risk-down advice; keep it read-only until enough history confirms it.")
+        elif risk_policy_status.get("risk_down"):
+            actions.append("Risk policy is mostly market-context risk-down; treat it as caution, not coin-specific proof.")
+        if risk_policy_status.get("risk_up"):
+            actions.append("Risk-up advice requires explicit human approval and must stay disabled.")
         if risk_strategy_status.get("would_adjust_open_trades"):
             actions.append("Risk strategy bridge would reduce recent open trade sizing; review before live wiring.")
         if risk_outcome_status.get("verdict") == "risk_down_helpful":
@@ -745,6 +753,8 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
             f"long_down={risk_policy.get('long_risk_down', 0)} "
             f"short_down={risk_policy.get('short_risk_down', 0)} "
             f"cap_longs={risk_policy.get('cap_new_longs', 0)} "
+            f"data_down={risk_policy.get('data_driven_risk_down', 0)} "
+            f"market_only={risk_policy.get('market_context_only', 0)} "
             f"avg_long={risk_policy.get('average_long_risk_multiplier', 1.0)} "
             f"avg_short={risk_policy.get('average_short_risk_multiplier', 1.0)}"
         ),

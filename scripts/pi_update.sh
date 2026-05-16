@@ -29,6 +29,13 @@ bot_status() {
   done
 }
 
+bot_count() {
+  local pids
+  pids="$(bot_pids)"
+  [[ -z "$pids" ]] && echo 0 && return 0
+  echo "$pids" | wc -l
+}
+
 stop_bot() {
   local pids
   pids="$(bot_pids)"
@@ -65,10 +72,16 @@ stop_bot() {
 
 start_bot() {
   echo "== Start bot =="
-  if bot_status >/tmp/redbot_bot_status.txt 2>&1; then
+  local existing_count
+  existing_count="$(bot_count)"
+  if [[ "$existing_count" == "1" ]]; then
     echo "bot already running"
-    cat /tmp/redbot_bot_status.txt
+    bot_status || true
     return 0
+  fi
+  if [[ "$existing_count" -gt "1" ]]; then
+    echo "start repair: found $existing_count bot processes; stopping all before starting one clean instance"
+    stop_bot
   fi
   if [[ ! -x "$PYTHON_BIN" ]]; then
     echo "start failed: python not found or not executable: $PYTHON_BIN"
@@ -77,6 +90,30 @@ start_bot() {
   mkdir -p "$(dirname "$BOT_LOG")"
   nohup "$PYTHON_BIN" -m src.main >> "$BOT_LOG" 2>&1 &
   echo "bot started pid=$! log=$BOT_LOG"
+  sleep 3
+  local count
+  count="$(bot_count)"
+  if [[ "$count" != "1" ]]; then
+    echo "start warning: expected 1 bot process, found $count"
+    bot_status || true
+    exit 1
+  fi
+}
+
+ensure_single_bot() {
+  local count
+  count="$(bot_count)"
+  if [[ "$count" == "1" ]]; then
+    return 0
+  fi
+  if [[ "$count" == "0" ]]; then
+    echo "final repair: bot is stopped; starting one instance"
+    start_bot
+    return 0
+  fi
+  echo "final repair: found $count bot processes; restarting cleanly"
+  stop_bot
+  start_bot
 }
 
 echo "== Red Bot Update =="
@@ -96,6 +133,9 @@ SEND_COCKPIT="$SEND_COCKPIT" "$ROOT_DIR/scripts/pi_smoke_check.sh"
 echo
 
 start_bot
+echo
+
+ensure_single_bot
 echo
 
 echo "== Final bot status =="

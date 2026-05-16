@@ -44,6 +44,7 @@ DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest
 DEFAULT_GPT_DECISION_REPORT = os.path.join("analysis", "gpt_decisions", "latest_gpt_decision_report.json")
 DEFAULT_PRE_GPT_GATE_REPORT = os.path.join("analysis", "gpt_decisions", "latest_pre_gpt_gate_report.json")
 DEFAULT_SAFETY_CONTROL_REPORT = os.path.join("analysis", "safety", "latest_safety_control_report.json")
+DEFAULT_LIVE_READINESS_GATE = os.path.join("analysis", "live_readiness", "latest_live_readiness_gate.json")
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -98,6 +99,7 @@ class DailyControlReport:
         gpt_decision_path: str = DEFAULT_GPT_DECISION_REPORT,
         pre_gpt_gate_path: str = DEFAULT_PRE_GPT_GATE_REPORT,
         safety_control_path: str = DEFAULT_SAFETY_CONTROL_REPORT,
+        live_readiness_path: str = DEFAULT_LIVE_READINESS_GATE,
     ):
         self.daily_job_path = daily_job_path
         self.advisor_path = advisor_path
@@ -118,6 +120,7 @@ class DailyControlReport:
         self.gpt_decision_path = gpt_decision_path
         self.pre_gpt_gate_path = pre_gpt_gate_path
         self.safety_control_path = safety_control_path
+        self.live_readiness_path = live_readiness_path
 
     def build_report(self) -> dict:
         reports = {
@@ -140,6 +143,7 @@ class DailyControlReport:
             "gpt_decisions": load_json(self.gpt_decision_path),
             "pre_gpt_gate": load_json(self.pre_gpt_gate_path),
             "safety_control": load_json(self.safety_control_path),
+            "live_readiness": load_json(self.live_readiness_path),
         }
 
         blockers = self._blockers(reports)
@@ -156,9 +160,10 @@ class DailyControlReport:
         gpt_efficiency_status = self._gpt_efficiency_status(reports)
         pre_gpt_gate_status = self._pre_gpt_gate_status(reports)
         safety_status = self._safety_status(reports)
+        live_readiness_status = self._live_readiness_status(reports)
         learning_status = self._learning_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
-        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, learning_status)
+        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, live_readiness_status, learning_status)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -179,6 +184,7 @@ class DailyControlReport:
             "gpt_efficiency_status": gpt_efficiency_status,
             "pre_gpt_gate_status": pre_gpt_gate_status,
             "safety_status": safety_status,
+            "live_readiness_status": live_readiness_status,
             "next_actions": next_actions,
             "sources": {
                 "daily_job": self.daily_job_path,
@@ -200,12 +206,15 @@ class DailyControlReport:
                 "gpt_decisions": self.gpt_decision_path,
                 "pre_gpt_gate": self.pre_gpt_gate_path,
                 "safety_control": self.safety_control_path,
+                "live_readiness": self.live_readiness_path,
             },
         }
 
     def _blockers(self, reports: dict) -> list[dict]:
         blockers = []
         for name, report in reports.items():
+            if name == "live_readiness" and report.get("_missing"):
+                continue
             if report.get("_missing"):
                 blockers.append({
                     "level": "high",
@@ -507,6 +516,22 @@ class DailyControlReport:
             "output_path": safety.get("output_path"),
         }
 
+    def _live_readiness_status(self, reports: dict) -> dict:
+        readiness = reports.get("live_readiness", {}) or {}
+        summary = readiness.get("summary", {}) or {}
+        return {
+            "total": _safe_int(summary.get("total")),
+            "eligible_for_live_wiring": _safe_int(summary.get("eligible_for_live_wiring")),
+            "ready_for_operator_review": _safe_int(summary.get("ready_for_operator_review")),
+            "approved_but_safety_locked": _safe_int(summary.get("approved_but_safety_locked")),
+            "blocked": _safe_int(summary.get("blocked")),
+            "waiting": _safe_int(summary.get("waiting")),
+            "by_status": summary.get("by_status", {}),
+            "by_area": summary.get("by_area", {}),
+            "read_only": bool((readiness.get("meta") or {}).get("read_only", True)),
+            "live_enforcement": bool((readiness.get("meta") or {}).get("live_enforcement")),
+        }
+
     def _operating_state(self, reports: dict, blockers: list[dict], approval_queue: list[dict]) -> dict:
         advisor = reports.get("advisor", {}) or {}
         registry = reports.get("registry", {}) or {}
@@ -523,6 +548,7 @@ class DailyControlReport:
         gpt_decisions = reports.get("gpt_decisions", {}) or {}
         pre_gpt_gate = reports.get("pre_gpt_gate", {}) or {}
         safety = reports.get("safety_control", {}) or {}
+        live_readiness = reports.get("live_readiness", {}) or {}
 
         if blockers:
             status = "ACTION_NEEDED"
@@ -556,6 +582,7 @@ class DailyControlReport:
             "risk_guard": risk_guard.get("summary", {}),
             "gpt_decisions": gpt_decisions.get("totals", {}),
             "pre_gpt_gate": pre_gpt_gate.get("summary", {}),
+            "live_readiness": live_readiness.get("summary", {}),
             "safety_control": {
                 "status": safety.get("status"),
                 "kill_switch_active": safety.get("kill_switch_active"),
@@ -581,6 +608,7 @@ class DailyControlReport:
         gpt_efficiency_status: dict,
         pre_gpt_gate_status: dict,
         safety_status: dict,
+        live_readiness_status: dict,
         learning_status: dict,
     ) -> list[str]:
         if blockers:
@@ -598,6 +626,12 @@ class DailyControlReport:
             actions.append("Live entry orders are disabled by safety state; inspect safety control before auto mode.")
         if not safety_status.get("live_enforcement_allowed"):
             actions.append("Live enforcement wiring is disabled by safety state; keep autonomous changes read-only.")
+        if live_readiness_status.get("eligible_for_live_wiring"):
+            actions.append("Live readiness has eligible candidates; require explicit operator approval before wiring.")
+        if live_readiness_status.get("ready_for_operator_review"):
+            actions.append("Live readiness has candidates for operator review; keep them read-only until approved.")
+        if live_readiness_status.get("approved_but_safety_locked"):
+            actions.append("Live readiness has safety-locked candidates; do not wire while safety blocks enforcement.")
         if approval_status.get("review_for_approval"):
             actions.append("Approval inbox has experiments ready for explicit approve/reject review.")
         if approval_status.get("reject_candidate"):
@@ -669,6 +703,7 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
     risk_outcomes = report.get("risk_outcome_status", {}) or {}
     risk_history = report.get("risk_history_status", {}) or {}
     risk_guard = report.get("risk_guard_status", {}) or {}
+    live_readiness = report.get("live_readiness_status", {}) or {}
 
     lines = [
         f"Daily Control [{report.get('status')}]",
@@ -727,6 +762,12 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
             f"triggers={risk_guard.get('guard_triggers', 0)} "
             f"net_saved_R={risk_guard.get('estimated_net_saved_r', 0.0)} "
             f"verdict={risk_guard.get('verdict')}"
+        ),
+        (
+            f"Live readiness eligible={live_readiness.get('eligible_for_live_wiring', 0)} "
+            f"review={live_readiness.get('ready_for_operator_review', 0)} "
+            f"blocked={live_readiness.get('blocked', 0)} "
+            f"waiting={live_readiness.get('waiting', 0)}"
         ),
     ]
 

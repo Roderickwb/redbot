@@ -81,14 +81,16 @@ class OperatorCockpit:
         gpt_efficiency = control.get("gpt_efficiency_status", {}) or {}
         pre_gpt_gate = control.get("pre_gpt_gate_status", {}) or {}
         shadow_live = control.get("shadow_live_status", {}) or {}
+        live_readiness = control.get("live_readiness_status", {}) or {}
 
         live_changes = self._live_changes(control, shadow_live, risk_policy, risk_strategy, risk_outcome, risk_history, safety)
         health = self._health(blockers)
-        action_needed = self._action_needed(blockers, approvals, approval_status, promotion, risk_history)
+        action_needed = self._action_needed(blockers, approvals, approval_status, promotion, risk_history, live_readiness)
         status = self._status(health, action_needed, control.get("status"))
         learning_summary = self._learning_summary(learning, experiments, promotion, approval_status, gpt_efficiency, pre_gpt_gate)
         risk_summary = self._risk_summary(risk_policy, risk_strategy, risk_outcome, risk_history, risk_guard)
-        daily_decision = self._daily_decision(live_changes, health, action_needed, learning_summary, risk_summary)
+        live_readiness_summary = self._live_readiness_summary(live_readiness)
+        daily_decision = self._daily_decision(live_changes, health, action_needed, learning_summary, risk_summary, live_readiness_summary)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -107,6 +109,7 @@ class OperatorCockpit:
             "learning": learning_summary,
             "risk": risk_summary,
             "safety": self._safety_summary(safety),
+            "live_readiness": live_readiness_summary,
             "next_actions": self._next_actions(control, daily_decision),
             "sources": {
                 "daily_control": self.control_path,
@@ -186,7 +189,7 @@ class OperatorCockpit:
             "finding": "No runtime or pipeline blockers.",
         }
 
-    def _action_needed(self, blockers: list[dict], approvals: list[dict], approval_status: dict, promotion: dict, risk_history: dict) -> dict:
+    def _action_needed(self, blockers: list[dict], approvals: list[dict], approval_status: dict, promotion: dict, risk_history: dict, live_readiness: dict) -> dict:
         if blockers:
             return {
                 "status": "YES",
@@ -204,6 +207,12 @@ class OperatorCockpit:
                 "status": "YES",
                 "urgent": False,
                 "headline": "Approval inbox has candidates for explicit approval/rejection.",
+            }
+        if _safe_int(live_readiness.get("eligible_for_live_wiring")) or _safe_int(live_readiness.get("ready_for_operator_review")):
+            return {
+                "status": "YES",
+                "urgent": False,
+                "headline": "Live readiness has candidates for operator review.",
             }
         if risk_history.get("verdict") in {"stable_risk_down_helpful", "risk_down_too_strict"}:
             return {
@@ -298,7 +307,18 @@ class OperatorCockpit:
             "audit_events": _safe_int(safety.get("audit_events")),
         }
 
-    def _daily_decision(self, live_changes: dict, health: dict, action_needed: dict, learning: dict, risk: dict) -> dict:
+    def _live_readiness_summary(self, live_readiness: dict) -> dict:
+        return {
+            "total": _safe_int(live_readiness.get("total")),
+            "eligible_for_live_wiring": _safe_int(live_readiness.get("eligible_for_live_wiring")),
+            "ready_for_operator_review": _safe_int(live_readiness.get("ready_for_operator_review")),
+            "approved_but_safety_locked": _safe_int(live_readiness.get("approved_but_safety_locked")),
+            "blocked": _safe_int(live_readiness.get("blocked")),
+            "waiting": _safe_int(live_readiness.get("waiting")),
+            "live_enforcement": bool(live_readiness.get("live_enforcement")),
+        }
+
+    def _daily_decision(self, live_changes: dict, health: dict, action_needed: dict, learning: dict, risk: dict, live_readiness: dict) -> dict:
         if health.get("status") != "OK":
             return {
                 "label": "TODAY: STOP / FIX",
@@ -316,6 +336,12 @@ class OperatorCockpit:
                 "label": "TODAY: REVIEW REQUIRED",
                 "severity": "review",
                 "reason": action_needed.get("headline"),
+            }
+        if live_readiness.get("eligible_for_live_wiring") or live_readiness.get("ready_for_operator_review"):
+            return {
+                "label": "TODAY: REVIEW REQUIRED",
+                "severity": "review",
+                "reason": "Live readiness has candidates for operator review.",
             }
         if risk.get("history_verdict") in {"stable_risk_down_helpful", "risk_down_too_strict"}:
             return {
@@ -346,6 +372,7 @@ def format_cockpit_message(cockpit: dict) -> str:
     learning = cockpit.get("learning", {}) or {}
     risk = cockpit.get("risk", {}) or {}
     safety = cockpit.get("safety", {}) or {}
+    live_readiness = cockpit.get("live_readiness", {}) or {}
     live = cockpit.get("live_changes", {}) or {}
     health = cockpit.get("bot_health", {}) or {}
     action = cockpit.get("action_needed", {}) or {}
@@ -364,6 +391,12 @@ def format_cockpit_message(cockpit: dict) -> str:
         ),
         f"Bot health: {health.get('status', 'UNKNOWN')} (blockers={health.get('blockers', 0)})",
         f"Action needed: {action.get('status', 'UNKNOWN')} - {action.get('headline')}",
+        (
+            f"Live readiness: eligible={live_readiness.get('eligible_for_live_wiring', 0)} "
+            f"review={live_readiness.get('ready_for_operator_review', 0)} "
+            f"blocked={live_readiness.get('blocked', 0)} "
+            f"waiting={live_readiness.get('waiting', 0)}"
+        ),
         "",
         "Learning:",
         (
@@ -475,6 +508,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             "learning": cockpit.get("learning"),
             "risk": cockpit.get("risk"),
             "safety": cockpit.get("safety"),
+            "live_readiness": cockpit.get("live_readiness"),
             "next_actions": cockpit.get("next_actions"),
             "output_path": cockpit.get("output_path"),
             "telegram_sent": cockpit.get("telegram_sent"),

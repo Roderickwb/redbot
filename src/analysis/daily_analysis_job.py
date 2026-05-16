@@ -48,6 +48,7 @@ from src.analysis.gpt_decision_reporter import (
     DEFAULT_OUTPUT_DIR as GPT_OUTPUT_DIR,
     write_json as write_gpt_json,
 )
+from src.analysis.live_readiness_gate import run_live_readiness_gate
 from src.analysis.experiment_planner import run_experiment_planner, send_experiment_digest
 from src.analysis.market_regime import (
     MarketRegimeAnalyzer,
@@ -285,6 +286,15 @@ def _build_safety_control_report() -> dict:
     }
 
 
+def _build_live_readiness_gate() -> dict:
+    report = run_live_readiness_gate()
+    return {
+        "summary": report.get("summary", {}),
+        "safety": report.get("safety", {}),
+        "output_path": report.get("output_path"),
+    }
+
+
 def _build_ml_training_dataset(limit: int, structured_only: bool) -> dict:
     db = DatabaseManager(db_path=DB_FILE)
     try:
@@ -464,6 +474,7 @@ def _build_operator_cockpit(send_cockpit: bool) -> dict:
         "learning": report.get("learning", {}),
         "risk": report.get("risk", {}),
         "safety": report.get("safety", {}),
+        "live_readiness": report.get("live_readiness", {}),
         "next_actions": report.get("next_actions", []),
         "output_path": report.get("output_path"),
         "telegram_sent": report.get("telegram_sent", False),
@@ -625,6 +636,9 @@ def run_daily_analysis_job(
     )
     steps["post_advisor_risk_guard_report"] = _run_step(
         lambda: _build_risk_guard_report(limit=report_limit),
+    )
+    steps["live_readiness_gate"] = _run_step(
+        lambda: _build_live_readiness_gate(),
     )
 
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]

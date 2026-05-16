@@ -3,6 +3,20 @@ cd ~/redbot
 source venv/bin/activate
 python -m src.main
 
+# vaste update/check flow op de Pi
+cd ~/redbot
+./scripts/pi_update.sh
+
+Dit script doet automatisch:
+1. bot netjes stoppen
+2. git pull origin master
+3. smoke-check uitvoeren
+4. bot opnieuw starten
+5. status tonen
+
+Gebruik dit als standaard na een nieuwe push.
+Je hoeft geen chmod, pkill of losse smoke-check meer te draaien.
+
 # Alleen readm logs
 cd ~/redbot/logs
 tail -f naammodule.log
@@ -18,16 +32,21 @@ grep -i "OPEN SHORT" pullback_strategy.log filtert direct alleen de regels met d
 less +F pullback_strategy.log opent het log in “scrollbare” modus, en Shift+F gaat naar de live tail.
 
 # check of bot nog draait
-ps aux | grep main.pycd 
+ps aux | grep "python -m src.main" | grep -v grep
 
-Kill pip
+# bot handmatig netjes stoppen als dat echt nodig is
+pkill -INT -f "python -m src.main"
 
-pkill -9 python
+# noodstop als de bot echt vast hangt en netjes stoppen niet werkt
+pkill -9 -f "python -m src.main"
 
 # git pull Pi
 cd ~/redbot
 ls -a
 git pull origin master
+
+# aanbevolen: gebruik liever de vaste updateflow
+./scripts/pi_update.sh
 
 # toegang tot .env in Pi
 cd ~/redbot

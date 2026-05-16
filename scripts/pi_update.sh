@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/home/redbot/redbot}"
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/venv/bin/python3}"
-BOT_PATTERN="${BOT_PATTERN:-python -m src.main}"
+BOT_PATTERN="${BOT_PATTERN:-src.main}"
 BOT_LOG="${BOT_LOG:-$ROOT_DIR/logs/redbot_main.log}"
 REMOTE="${REMOTE:-origin}"
 BRANCH="${BRANCH:-master}"

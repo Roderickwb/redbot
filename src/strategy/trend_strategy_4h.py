@@ -2003,6 +2003,44 @@ class TrendStrategy4H:
     # ---------------------------------------------------------
     # Trading (dryrun/auto) - sizing op basis van max EUR × risk_mult
     # ---------------------------------------------------------
+    @staticmethod
+    def _order_response_accepted(response) -> bool:
+        if not isinstance(response, dict):
+            return False
+        if response.get("order_id") or response.get("orderId"):
+            return True
+        status = str(response.get("status", "")).lower()
+        return status in ("ok", "accepted", "filled", "closed")
+
+    def _place_live_order_confirmed(self, side: str, symbol: str, amount: float, context: str):
+        try:
+            response = self.order_client.place_order(side, symbol, amount, ordertype="market")
+        except Exception as e:
+            self.logger.error("[LIVE ORDER][%s][%s] order failed; state unchanged: %s", context, symbol, e)
+            append_audit_event(
+                event_type="live_order_failed",
+                actor="trend_strategy_4h",
+                reason=str(e),
+                payload={"context": context, "symbol": symbol, "side": side, "amount": amount},
+            )
+            return None
+
+        if not self._order_response_accepted(response):
+            self.logger.error(
+                "[LIVE ORDER][%s][%s] order not confirmed; state unchanged: %s",
+                context, symbol, response,
+            )
+            append_audit_event(
+                event_type="live_order_unconfirmed",
+                actor="trend_strategy_4h",
+                reason="order response missing accepted id/status",
+                payload={"context": context, "symbol": symbol, "side": side, "amount": amount, "response": response},
+            )
+            return None
+
+        self.logger.info("[LIVE ORDER][%s][%s] confirmed: %s", context, symbol, response)
+        return response
+
     def _open_position(self, symbol: str, side: str, entry_price: Decimal, atr_value: Decimal):
         if symbol in self.open_positions:
             return
@@ -2098,12 +2136,17 @@ class TrendStrategy4H:
                 self.logger.error("[OPEN][%s] trade niet opgeslagen in DB => positie niet geopend: %s", symbol, e)
                 return None
 
-        # 6) Echte order alleen in auto
+        # 6) Echte order alleen in auto. Alleen bij bevestiging mag RAM-state open gaan.
+        live_order_response = None
         if self.trading_mode == "auto":
-            try:
-                self.order_client.place_order(side, symbol, amount_float, ordertype="market")
-            except Exception as e:
-                self.logger.warning("[order] %s", e)
+            live_order_response = self._place_live_order_confirmed(side, symbol, amount_float, context="open")
+            if live_order_response is None:
+                if master_id:
+                    try:
+                        self.db_manager.update_trade(master_id, {"status": "order_failed"})
+                    except Exception:
+                        pass
+                return None
 
         # 7) State in RAM
         self.open_positions[symbol] = {
@@ -2258,12 +2301,13 @@ class TrendStrategy4H:
 
         trade_side = "sell" if side == "buy" else "buy"  # long -> verkopen; short -> terugkopen
 
-        # auto: echte order
+        # auto: echte order. Alleen bij bevestiging mag DB/RAM-state sluiten.
         if self.trading_mode == "auto":
-            try:
-                self.order_client.place_order(trade_side, symbol, float(amt_to_close), ordertype="market")
-            except Exception as e:
-                self.logger.warning("[order child] %s", e)
+            live_order_response = self._place_live_order_confirmed(
+                trade_side, symbol, float(amt_to_close), context="close"
+            )
+            if live_order_response is None:
+                return None
 
         # DB child in dryrun/auto
         if self.trading_mode in ("dryrun", "auto"):

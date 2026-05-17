@@ -20,9 +20,30 @@ from src.exchange.kraken.kraken_mixed_client import KrakenMixedClient
 
 import requests  # <-- voor de except-block
 
-def is_candle_closed(candle_timestamp_ms: int, interval_str: str) -> bool:
+INTERVAL_MS = {
+    "1m": 60_000,
+    "5m": 5 * 60_000,
+    "15m": 15 * 60_000,
+    "30m": 30 * 60_000,
+    "1h": 60 * 60_000,
+    "4h": 4 * 60 * 60_000,
+    "1d": 24 * 60 * 60_000,
+}
+
+def is_candle_closed(candle_timestamp_ms: int, interval_str: str, margin_ms: int = 30_000) -> bool:
+    interval_ms = INTERVAL_MS.get(str(interval_str))
+    if interval_ms is None:
+        return int(time.time() * 1000) >= int(candle_timestamp_ms)
     now_ms = int(time.time() * 1000)
-    return now_ms >= candle_timestamp_ms
+    return now_ms >= int(candle_timestamp_ms) + interval_ms + int(margin_ms)
+
+def _is_aligned_candle_ts(candle_timestamp_ms: int, interval: str) -> bool:
+    ts = datetime.utcfromtimestamp(int(candle_timestamp_ms) / 1000.0)
+    if interval == "1h":
+        return ts.minute == 0
+    if interval == "4h":
+        return ts.minute == 0 and (ts.hour % 4) == 0
+    return True
 
 class Executor:
     def __init__(
@@ -295,23 +316,12 @@ class Executor:
     # [NEW] Hulpmethode die checkt of er een nieuwe candle in table_name staat voor (symbol, interval)
     #       én of die candle closed is. Return True als strategy nog niet heeft verwerkt.
     def _has_new_closed_candle(self, table_name, symbol, interval) -> bool:
-        """
-        Ongewijzigd: wordt nog gebruikt door breakout en alt-scanner.
-        Voor pullback (15m) niet meer gebruikt, want we doen 2-pass skip-not-closed.
-        """
-        df = self.db_manager.fetch_data(table_name, limit=1, market=symbol, interval=interval)
+        """Return True once for the newest fully closed candle.
 
-        # DEBUG: if trend seems silent, show what we actually see in DB for 1h/4h
-        if interval in ("1h", "4h"):
-            if df.empty:
-                self.logger.info(f"[_has_new_closed_candle][DEBUG] {symbol}-{interval} => DB empty")
-            else:
-                newest_ts = int(df['timestamp'].iloc[0])
-                now_ms = int(time.time() * 1000)
-                self.logger.info(
-                    f"[_has_new_closed_candle][DEBUG] {symbol}-{interval} newest_ts={newest_ts} "
-                    f"now_ms={now_ms} closed={now_ms >= newest_ts}"
-                )
+        Kraken OHLC rows are timestamped at candle open. Fetch a few rows so a
+        newly opened live candle does not hide the previous closed candle.
+        """
+        df = self.db_manager.fetch_data(table_name, limit=5, market=symbol, interval=interval)
 
         if df.empty:
             self.logger.debug(
@@ -319,49 +329,40 @@ class Executor:
             )
             return False
 
-        newest_ts = df["timestamp"].iloc[0]
-        self.logger.debug(
-            f"[_has_new_closed_candle] table={table_name}, sym={symbol}, interval={interval}, newest_ts={newest_ts}"
-        )
+        try:
+            candidates = sorted([int(ts) for ts in df["timestamp"].tolist()], reverse=True)
+        except Exception as e:
+            self.logger.warning("[_has_new_closed_candle] invalid timestamps for %s-%s: %s", symbol, interval, e)
+            return False
 
-        # Hard guard: voorkom “tussenstanden” voor 1h/4h
-        ts = datetime.utcfromtimestamp(newest_ts / 1000.0)  # UTC
-        if interval == "1h":
-            if ts.minute != 0:
-                self.logger.debug(f"[_has_new_closed_candle] guard 1h: minute={ts.minute} != 0 => skip.")
-                return False
-        elif interval == "4h":
-            if ts.minute != 0 or (ts.hour % 4) != 0:
-                self.logger.debug(
-                    f"[_has_new_closed_candle] guard 4h: {ts.hour:02d}:{ts.minute:02d} not a 4h close => skip.")
-                return False
+        newest_closed_ts = None
+        for candidate_ts in candidates:
+            if not _is_aligned_candle_ts(candidate_ts, interval):
+                continue
+            if is_candle_closed(candidate_ts, interval):
+                newest_closed_ts = candidate_ts
+                break
 
-        # Check of candle closed
-        closed = is_candle_closed(newest_ts, interval)
-        if not closed:
+        if newest_closed_ts is None:
+            newest_ts = candidates[0] if candidates else None
             self.logger.debug(
-                f"[_has_new_closed_candle] Candle ts={newest_ts} is NOT closed for {symbol}-{interval}"
+                f"[_has_new_closed_candle] no fully closed candle for {symbol}-{interval}; newest_ts={newest_ts}"
             )
             return False
 
-        # Key in self.last_closed_ts
         key = (table_name, symbol, interval)
         last_seen_ts = self.last_closed_ts.get(key, 0)
-        self.logger.debug(
-            f"[_has_new_closed_candle] last_seen_ts={last_seen_ts} for key={key}"
-        )
-
-        if newest_ts > last_seen_ts:
-            self.last_closed_ts[key] = newest_ts
+        if newest_closed_ts > last_seen_ts:
+            self.last_closed_ts[key] = newest_closed_ts
             self.logger.debug(
-                f"[_has_new_closed_candle] Found NEW candle => store {newest_ts} as last_seen."
+                f"[_has_new_closed_candle] Found NEW closed candle => store {newest_closed_ts} as last_seen."
             )
             return True
-        else:
-            self.logger.debug(
-                f"[_has_new_closed_candle] newest_ts={newest_ts} <= last_seen_ts={last_seen_ts}, skip."
-            )
-            return False
+
+        self.logger.debug(
+            f"[_has_new_closed_candle] newest_closed_ts={newest_closed_ts} <= last_seen_ts={last_seen_ts}, skip."
+        )
+        return False
 
     # hulpfunctie om naar het eerstvolgende kwartiermoment te wachten
     def _sleep_until_next_quarter_hour(self):

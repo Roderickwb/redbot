@@ -1,20 +1,24 @@
-from src.analysis.coin_profile_generator import (
-    load_analysis_files,
-    derive_profile,
-    write_profiles_to_db,
-)
+"""Deprecated live coin-profile writer.
 
-STRATEGY_NAME = "trend_4h"
+This script used to write directly to strategy_name="trend_4h", which can affect
+live sizing. Keep it disabled; use strategy_learning_job/strategy_profile_proposer
+for proposed profiles and promote through operator approval later.
+"""
+
+from __future__ import annotations
+
+import json
+
 
 def run():
-    analyses = load_analysis_files()
-    profiles = {}
-    for symbol, analysis in analyses.items():
-        profiles[symbol] = derive_profile(analysis)
+    result = {
+        "status": "disabled",
+        "reason": "direct live coin profile writes are disabled; use proposed profiles + operator approval",
+        "live_effect": False,
+    }
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return result
 
-    write_profiles_to_db(profiles, strategy_name=STRATEGY_NAME)
 
 if __name__ == "__main__":
     run()
-
-

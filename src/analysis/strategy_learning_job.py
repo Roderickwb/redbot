@@ -9,7 +9,7 @@ One run:
 - builds the rolling-window strategy event report
 - writes the latest report to disk
 
-This job does not change trading rules or coin profiles yet.
+This job does not change trading rules. Profile writes, when enabled, go to the proposed namespace, not live strategy profiles.
 """
 
 from __future__ import annotations

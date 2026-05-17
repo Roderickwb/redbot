@@ -28,6 +28,8 @@ echo "== Compile critical modules =="
   src/analysis/live_readiness_gate.py \
   src/analysis/pre_gpt_gate_report.py \
   src/analysis/strategy_profile_proposer.py \
+  src/analysis/coin_profile_generator.py \
+  src/analysis/run_daily_coin_profiles.py \
   src/strategy/trend_strategy_4h.py
 echo "compile: OK"
 echo

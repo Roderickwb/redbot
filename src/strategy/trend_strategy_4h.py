@@ -2528,6 +2528,75 @@ class TrendStrategy4H:
         except Exception as e:
             self.logger.debug("[signals] kon niet opslaan: %s", e)
 
+    def _rebuild_position_state_from_trades(
+        self,
+        *,
+        master_id: int,
+        position_id: str,
+        side: str,
+        entry_price: Decimal,
+        current_amount: Decimal,
+        atr_value: Decimal,
+        master_timestamp_ms: int,
+    ) -> dict:
+        state = {
+            "tp1_done": False,
+            "trail_active": False,
+            "trail_high": entry_price,
+            "opened_ts": int((master_timestamp_ms or int(time.time() * 1000)) / 1000),
+            "breakeven_applied": False,
+            "initial_amount": current_amount,
+            "realized_pnl": Decimal("0"),
+            "total_fees": Decimal("0"),
+        }
+        if not position_id:
+            return state
+
+        try:
+            rows = self.db_manager.execute_query(
+                """
+                SELECT timestamp, side, amount, price, status, pnl_eur, fees
+                  FROM trades
+                 WHERE is_master=0
+                   AND position_id=?
+                   AND strategy_name=?
+                 ORDER BY timestamp ASC, id ASC
+                """,
+                (position_id, self.STRATEGY_NAME),
+            ) or []
+        except Exception as e:
+            self.logger.warning("[reload] child trade read failed for %s: %s", position_id, e)
+            return state
+
+        closed_amount = Decimal("0")
+        for ts_ms, child_side, amount, price, child_status, pnl_eur, fees in rows:
+            child_amount = _to_decimal(amount)
+            child_price = _to_decimal(price)
+            closed_amount += child_amount
+            state["realized_pnl"] += _to_decimal(pnl_eur)
+            state["total_fees"] += _to_decimal(fees)
+            if str(child_status or "").lower() in {"partial", "closed"}:
+                state["tp1_done"] = True
+                state["trail_active"] = current_amount > 0
+                state["breakeven_applied"] = bool(self.breakeven_after_tp1)
+                if side == "buy":
+                    state["trail_high"] = max(_to_decimal(state["trail_high"]), child_price)
+                else:
+                    state["trail_high"] = min(_to_decimal(state["trail_high"]), child_price)
+
+        if closed_amount > 0:
+            state["initial_amount"] = current_amount + closed_amount
+
+        self.logger.info(
+            "[reload][%s] state rebuilt: tp1_done=%s trail_active=%s initial_amount=%s realized_pnl=%s",
+            position_id,
+            state["tp1_done"],
+            state["trail_active"],
+            state["initial_amount"],
+            state["realized_pnl"],
+        )
+        return state
+
     def _load_open_positions_from_db(self):
         """
         Load open/partial MASTER trades (strategy_name='trend_4h') from DB
@@ -2536,7 +2605,7 @@ class TrendStrategy4H:
         try:
             rows = self.db_manager.execute_query(
                 """
-                SELECT id, symbol, side, amount, price, position_id, position_type, status
+                SELECT id, timestamp, symbol, side, amount, price, position_id, position_type, status
                   FROM trades
                  WHERE is_master=1
                    AND status IN ('open','partial')
@@ -2552,7 +2621,7 @@ class TrendStrategy4H:
             self.logger.info("[reload] no open/partial trend_4h masters found.")
             return
 
-        for (db_id, symbol, side, amount, entry_price, position_id, position_type, status) in rows:
+        for (db_id, master_ts, symbol, side, amount, entry_price, position_id, position_type, status) in rows:
             self.logger.info(
                 "[reload][DB] candidate master: id=%s symbol=%s status=%s amount=%s",
                 db_id, symbol, status, amount
@@ -2579,19 +2648,32 @@ class TrendStrategy4H:
                 self.logger.info("[reload][%s] no ATR available => skip restore.", symbol)
                 continue
 
+            rebuilt_state = self._rebuild_position_state_from_trades(
+                master_id=db_id,
+                position_id=position_id,
+                side=side,
+                entry_price=_to_decimal(entry_price),
+                current_amount=_to_decimal(amount),
+                atr_value=_to_decimal(atr_val),
+                master_timestamp_ms=int(master_ts or 0),
+            )
+
             self.open_positions[symbol] = {
                 "side": side,  # "buy" or "sell"
                 "entry_price": _to_decimal(entry_price),
                 "amount": _to_decimal(amount),
                 "atr": _to_decimal(atr_val),
-                "tp1_done": False,
-                "trail_active": False,
-                "trail_high": _to_decimal(entry_price),
+                "tp1_done": rebuilt_state.get("tp1_done", False),
+                "trail_active": rebuilt_state.get("trail_active", False),
+                "trail_high": rebuilt_state.get("trail_high", _to_decimal(entry_price)),
                 "position_id": position_id,
                 "position_type": position_type,
                 "master_id": db_id,
-                "opened_ts": int(time.time()),  # default since DB has no open timestamp
-                "breakeven_applied": False
+                "opened_ts": rebuilt_state.get("opened_ts", int(time.time())),
+                "breakeven_applied": rebuilt_state.get("breakeven_applied", False),
+                "initial_amount": rebuilt_state.get("initial_amount", _to_decimal(amount)),
+                "realized_pnl": rebuilt_state.get("realized_pnl", Decimal("0")),
+                "total_fees": rebuilt_state.get("total_fees", Decimal("0"))
             }
 
             self.logger.info(

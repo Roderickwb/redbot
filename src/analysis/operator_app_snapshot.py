@@ -27,7 +27,7 @@ DEFAULT_SOURCES = {
     "safety_control": os.path.join("analysis", "safety", "latest_safety_control_report.json"),
     "approval_inbox": os.path.join("analysis", "approvals", "latest_approval_inbox.json"),
     "operator_decisions": os.path.join("analysis", "operator_decisions", "latest_operator_decisions.json"),
-    "live_readiness": os.path.join("analysis", "live_readiness", "latest_live_readiness_gate_report.json"),
+    "live_readiness": os.path.join("analysis", "live_readiness", "latest_live_readiness_gate.json"),
     "risk_advice_history": os.path.join("analysis", "risk", "latest_risk_advice_history_report.json"),
 }
 
@@ -106,7 +106,11 @@ class OperatorAppSnapshot:
             name: {"status": _source_status(payload), "path": self.sources.get(name)}
             for name, payload in loaded.items()
         }
-        missing_or_error = [name for name, item in source_health.items() if item["status"] != "ok"]
+        critical_sources = {"operator_cockpit", "daily_control", "safety_control"}
+        missing_or_error = [
+            name for name, item in source_health.items()
+            if item["status"] != "ok" and name in critical_sources
+        ]
 
         app_status = self._app_status(cockpit, safety, missing_or_error)
         summary = self._summary(cockpit, control, safety, approvals, decisions, live_readiness, risk_advice_history)
@@ -136,7 +140,9 @@ class OperatorAppSnapshot:
         }
 
     def _app_status(self, cockpit: dict, safety: dict, missing_or_error: list[str]) -> str:
-        if safety.get("kill_switch_active") or safety.get("meltdown_active"):
+        meltdown = safety.get("meltdown") or {}
+        meltdown_active = bool(safety.get("meltdown_active") or meltdown.get("active"))
+        if safety.get("kill_switch_active") or meltdown_active:
             return "ACTION_NEEDED"
         if cockpit.get("status") in {"ACTION_NEEDED", "REVIEW"}:
             return str(cockpit.get("status"))
@@ -154,7 +160,7 @@ class OperatorAppSnapshot:
             "cockpit_status": cockpit.get("status"),
             "control_status": control.get("status"),
             "kill_switch_active": bool(safety.get("kill_switch_active")),
-            "meltdown_active": bool(safety.get("meltdown_active")),
+            "meltdown_active": bool(safety.get("meltdown_active") or (safety.get("meltdown") or {}).get("active")),
             "live_entry_orders_allowed": bool(safety.get("live_entry_orders_allowed", True)),
             "live_enforcement_allowed": bool(safety.get("live_enforcement_allowed")),
             "approval_items": _safe_int(approval_summary.get("total")),

@@ -75,6 +75,7 @@ from src.analysis.opportunity_reporter import (
 )
 from src.analysis.operator_app_snapshot import run_operator_app_snapshot
 from src.analysis.operator_cockpit import run_operator_cockpit
+from src.analysis.operator_decisions import run_operator_decisions
 from src.analysis.promotion_gate import run_promotion_gate
 from src.analysis.pre_gpt_gate_report import run_pre_gpt_gate_report
 from src.analysis.recommendation_registry import RecommendationRegistry
@@ -476,6 +477,14 @@ def _build_daily_control(send_control: bool) -> dict:
     }
 
 
+def _build_operator_decisions() -> dict:
+    report = run_operator_decisions()
+    return {
+        "status": report.get("status"),
+        "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
+    }
+
 def _build_operator_app_snapshot() -> dict:
     report = run_operator_app_snapshot()
     return {
@@ -711,6 +720,9 @@ def run_daily_analysis_job(
     )
     steps["operator_cockpit"] = _run_step(
         lambda: _build_operator_cockpit(send_cockpit=send_cockpit),
+    )
+    steps["operator_decisions"] = _run_step(
+        lambda: _build_operator_decisions(),
     )
     steps["operator_app_snapshot"] = _run_step(
         lambda: _build_operator_app_snapshot(),

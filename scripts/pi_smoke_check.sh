@@ -69,6 +69,7 @@ for name in (
     "pre_gpt_gate_report",
     "daily_control_report",
     "operator_cockpit",
+    "operator_decisions",
     "operator_app_snapshot",
 ):
     step = steps.get(name) or {}
@@ -77,6 +78,9 @@ for name in (
     if name == "operator_app_snapshot":
         summary = result.get("summary") or {}
         print(f" status={result.get('status')} cards={result.get('cards')} live_effect={summary.get('live_effect')}")
+    elif name == "operator_decisions":
+        summary = result.get("summary") or {}
+        print(f" status={result.get('status')} total={summary.get('total')} live_effect={summary.get('live_effect')}")
     elif name == "operator_cockpit":
         decision = (result.get("daily_decision") or {}).get("label")
         print(f" decision={decision}")

@@ -235,6 +235,7 @@ class TrendStrategy4H:
         # Dagelijkse strategy-statistieken; snapshot moet periodiek vanuit executor aangeroepen worden.
         self._daily_stats = self._new_daily_stats()
         self._daily_snapshot_sent_date = None
+        self._last_meltdown_failure_alert_ts = 0.0
 
         self.logger.info("[TrendStrategy4H] initialised (enabled=%s, mode=%s)", self.enabled, self.trading_mode)
         self.logger.info("[TrendStrategy4H] meltdown_enabled=%s", self.meltdown_enabled)
@@ -266,6 +267,19 @@ class TrendStrategy4H:
         except Exception:
             # notificatie mag nooit de strategie slopen
             pass
+
+    def _notify_meltdown_check_failed(self, symbol: str, reason: str):
+        now_ts = time.time()
+        if now_ts - self._last_meltdown_failure_alert_ts < 900:
+            return
+        self._last_meltdown_failure_alert_ts = now_ts
+        self._notify(
+            f"SAFETY BLOCK | {symbol}\n"
+            "Meltdown check failed; new entries are blocked.\n"
+            "Open positions continue normal management.\n"
+            f"Reason: {reason}"
+        )
+
     def _save_strategy_event(self, event_data: dict):
         """Opslag van strategy-events voor analyse/ML."""
         try:
@@ -416,8 +430,21 @@ class TrendStrategy4H:
                     )
                     return
             except Exception as e:
-                # Meltdown mag de strategie niet slopen; bij fout geen nieuwe meltdown trigger.
-                self.logger.warning("[%s] Meltdown check failed => continue without trigger: %s", symbol, e)
+                reason = f"meltdown_check_failed: {e}"
+                self.logger.warning("[%s] Meltdown check failed => block new entries: %s", symbol, e)
+                write_meltdown_state(
+                    active=True,
+                    reason=reason,
+                    source="trend_strategy_4h_fail_closed",
+                )
+                append_audit_event(
+                    event_type="meltdown_check_failed_block_entry",
+                    actor="trend_strategy_4h",
+                    reason=reason,
+                    payload={"symbol": symbol},
+                )
+                self._notify_meltdown_check_failed(symbol, reason)
+                return
 
         self._daily_stats["checked"] += 1
         self._daily_snapshot_if_due() # Alleen versturen binnen het 17:30-17:34 window.

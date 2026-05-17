@@ -90,6 +90,7 @@ class MlEdgeModel:
         test_size_pct: float = DEFAULT_TEST_SIZE_PCT,
         force_train: bool = False,
         output_dir: str = DEFAULT_OUTPUT_DIR,
+        feature_set: str = POST_GPT_FEATURE_SET,
     ) -> dict:
         rows = _load_jsonl(self.dataset_path, limit=limit)
         readiness = self._readiness(rows, min_rows, min_positive, min_negative, force_train)

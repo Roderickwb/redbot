@@ -23,6 +23,7 @@ echo "== Compile critical modules =="
   src/analysis/daily_analysis_job.py \
   src/analysis/daily_control_report.py \
   src/analysis/operator_cockpit.py \
+  src/analysis/operator_decisions.py \
   src/analysis/risk_advice_history.py \
   src/analysis/live_readiness_gate.py \
   src/analysis/pre_gpt_gate_report.py \

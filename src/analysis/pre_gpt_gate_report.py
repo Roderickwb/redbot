@@ -122,6 +122,8 @@ class PreGptGateReport:
                 "limit": limit,
                 "loaded_events": len(events),
                 "live_enforcement": False,
+                "feature_set": "pre_gpt_context_v1",
+                "forbidden_features": ["gpt_action", "gpt_confidence", "gpt_scores", "primary_veto"],
             },
             "summary": totals,
             "by_reason": [{"reason": key, "events": value} for key, value in by_reason.most_common(20)],
@@ -139,7 +141,7 @@ class PreGptGateReport:
     def _load_events(self, limit: int) -> list[dict]:
         rows = self.db.execute_query(
             """
-            SELECT id, timestamp, symbol, gpt_action, gpt_confidence, features_json, outcome_json
+            SELECT id, timestamp, symbol, trend_dir, algo_signal, gpt_action, gpt_confidence, features_json, outcome_json
             FROM strategy_events
             WHERE event_type = 'gpt_decision'
               AND outcome_status = 'labeled'
@@ -148,7 +150,7 @@ class PreGptGateReport:
             """,
             (int(limit),),
         )
-        cols = ["id", "timestamp", "symbol", "gpt_action", "gpt_confidence", "features_json", "outcome_json"]
+        cols = ["id", "timestamp", "symbol", "trend_dir", "algo_signal", "gpt_action", "gpt_confidence", "features_json", "outcome_json"]
         return [dict(zip(cols, row)) for row in rows] if rows else []
 
     def _evaluate_event(self, event: dict) -> dict:
@@ -164,7 +166,7 @@ class PreGptGateReport:
         symbol = str(event.get("symbol") or "UNKNOWN")
         reasons = []
 
-        direction = self._direction(features, action)
+        direction = self._direction(features, event.get("algo_signal"), event.get("trend_dir"))
         market_regime = str(market.get("regime") or "").lower()
         market_bias = str(market.get("directional_bias") or "").lower()
         risk_mult = _safe_float(profile.get("risk_multiplier"), 1.0)
@@ -204,16 +206,22 @@ class PreGptGateReport:
             "cf_label": counterfactual.get("label"),
         }
 
-    def _direction(self, features: dict, action: str) -> str:
-        if action == "OPEN_LONG":
+    def _direction(self, features: dict, algo_signal: Any, trend_dir: Any) -> str:
+        signal = str(algo_signal or "").lower()
+        if "long" in signal:
             return "long"
-        if action == "OPEN_SHORT":
+        if "short" in signal:
             return "short"
         chart = features.get("chart_features") or {}
         for timeframe in ("1h", "4h"):
             intended = ((chart.get(timeframe) or {}).get("intended_direction") or "").lower()
             if intended in ("long", "short"):
                 return intended
+        trend = str(trend_dir or "").lower()
+        if trend == "bull":
+            return "long"
+        if trend == "bear":
+            return "short"
         return "unknown"
 
     def _verdict(self, totals: dict) -> str:

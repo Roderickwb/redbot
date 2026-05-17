@@ -20,6 +20,9 @@ echo
 echo "== Compile critical modules =="
 "$PYTHON_BIN" -m py_compile \
   src/analysis/safety_control.py \
+  src/database_manager/database_manager.py \
+  src/ai/gpt_trend_decider.py \
+  src/analysis/ml_edge_model.py \
   src/analysis/daily_analysis_job.py \
   src/analysis/daily_control_report.py \
   src/analysis/operator_cockpit.py \

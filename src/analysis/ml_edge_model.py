@@ -37,6 +37,8 @@ DEFAULT_MIN_ROWS = 1000
 DEFAULT_MIN_POSITIVE = 150
 DEFAULT_MIN_NEGATIVE = 150
 DEFAULT_TEST_SIZE_PCT = 25.0
+POST_GPT_FEATURE_SET = "post_gpt_decision_v1"
+PRE_GPT_FEATURE_SET = "pre_gpt_context_v1"
 
 
 def _load_jsonl(path: str, limit: Optional[int] = None) -> list[dict]:
@@ -101,6 +103,8 @@ class MlEdgeModel:
                 "min_negative": min_negative,
                 "test_size_pct": test_size_pct,
                 "force_train": force_train,
+                "feature_set": feature_set,
+                "feature_contract": self._feature_contract(feature_set),
             },
             "readiness": readiness,
             "dataset_summary": self._dataset_summary(rows),
@@ -114,7 +118,7 @@ class MlEdgeModel:
             return report
 
         try:
-            trained = self._train(rows, test_size_pct=test_size_pct, output_dir=output_dir)
+            trained = self._train(rows, test_size_pct=test_size_pct, output_dir=output_dir, feature_set=feature_set)
             report["model"] = trained
         except Exception as e:
             report["model"] = {
@@ -190,7 +194,7 @@ class MlEdgeModel:
             "by_chop_subtype": dict(by_chop_subtype),
         }
 
-    def _train(self, rows: list[dict], test_size_pct: float, output_dir: str) -> dict:
+    def _train(self, rows: list[dict], test_size_pct: float, output_dir: str, feature_set: str) -> dict:
         try:
             import joblib
             import numpy as np
@@ -209,8 +213,8 @@ class MlEdgeModel:
         train_rows = rows[:split_idx]
         test_rows = rows[split_idx:]
 
-        x_train = [self._feature_dict(row) for row in train_rows]
-        x_test = [self._feature_dict(row) for row in test_rows]
+        x_train = [self._feature_dict(row, feature_set=feature_set) for row in train_rows]
+        x_test = [self._feature_dict(row, feature_set=feature_set) for row in test_rows]
         y_r_train = [_target_cf_r(row) for row in train_rows]
         y_r_test = [_target_cf_r(row) for row in test_rows]
         y_pos_train = [_target_positive(row) for row in train_rows]
@@ -248,7 +252,7 @@ class MlEdgeModel:
         joblib.dump({
             "regressor": regressor,
             "classifier": classifier,
-            "feature_version": "ml_edge_v1",
+            "feature_version": feature_set,
         }, model_path)
 
         auc = None
@@ -261,7 +265,7 @@ class MlEdgeModel:
         return {
             "status": "trained",
             "model_path": model_path,
-            "feature_version": "ml_edge_v1",
+            "feature_version": feature_set,
             "train_rows": len(train_rows),
             "test_rows": len(test_rows),
             "metrics": {
@@ -278,7 +282,20 @@ class MlEdgeModel:
             "sample_predictions": self._sample_predictions(test_rows, pred_r, pred_proba),
         }
 
-    def _feature_dict(self, row: dict) -> dict:
+    def _feature_contract(self, feature_set: str) -> dict:
+        if feature_set == PRE_GPT_FEATURE_SET:
+            return {
+                "allowed_timing": "before_gpt_call",
+                "forbidden_fields": ["gpt_action", "gpt_confidence", "gpt_scores", "primary_veto", "learning_effect"],
+                "live_effect": False,
+            }
+        return {
+            "allowed_timing": "after_gpt_decision",
+            "forbidden_fields": [],
+            "live_effect": False,
+        }
+
+    def _feature_dict(self, row: dict, feature_set: str = POST_GPT_FEATURE_SET) -> dict:
         features = row.get("features") or {}
         scores = features.get("scores") or {}
         regime = features.get("market_regime") or {}
@@ -308,6 +325,10 @@ class MlEdgeModel:
             "profile_n_trades": _safe_float(profile.get("n_trades")),
             "profile_expectancy_R": _safe_float(profile.get("expectancy_R")),
         }
+        if feature_set == PRE_GPT_FEATURE_SET:
+            for key in ("primary_veto", "gpt_action", "gpt_confidence", "score_trend", "score_entry", "score_risk", "score_learning", "score_sentiment"):
+                result.pop(key, None)
+
         result.update(self._chart_features(c1, prefix="c1"))
         result.update(self._chart_features(c4, prefix="c4"))
 

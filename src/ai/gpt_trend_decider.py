@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import logging
 from typing import Any, Dict, Tuple
@@ -547,6 +548,22 @@ def _build_dataset(
         "sentiment": sentiment or {},
     }
 
+
+def _stable_hash(value: Any) -> str:
+    raw = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+def _gpt_decision_id(symbol: str, strategy_name: str, algo_signal: str, request_hash: str, response_hash: str) -> str:
+    raw = json.dumps({
+        "symbol": symbol,
+        "strategy_name": strategy_name,
+        "algo_signal": algo_signal,
+        "gpt_version": GPT_TREND_DECIDER_VERSION,
+        "request_hash": request_hash,
+        "response_hash": response_hash,
+    }, sort_keys=True, ensure_ascii=False)
+    return "gpt_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
 def ask_gpt_trend_decider(test_message: str) -> str:
     """
     Kleine test-helper (optioneel).
@@ -668,6 +685,13 @@ def get_gpt_decision(
     # 2) Normaliseren
     decision = normalize_decision(raw)
 
+    request_hash = _stable_hash(dataset)
+    response_hash = _stable_hash(decision)
+    decision_id = _gpt_decision_id(symbol, strategy_name, algo_signal, request_hash, response_hash)
+    decision["_gpt_decision_id"] = decision_id
+    decision["_gpt_request_hash"] = request_hash
+    decision["_gpt_response_hash"] = response_hash
+
     # 3) Optioneel: in DB loggen
     if db is not None:
         ts_now = get_current_utc_timestamp_ms()
@@ -689,6 +713,9 @@ def get_gpt_decision(
                 "response_json": decision,       # genormaliseerde output
                 "gpt_version": GPT_TREND_DECIDER_VERSION,
                 "trade_id": None,                # trade bestaat hier nog niet
+                "decision_id": decision_id,
+                "request_hash": request_hash,
+                "response_hash": response_hash,
             })
         except Exception as e:
             logger.error("[GPT][%s] save_gpt_decision failed: %s", symbol, e)

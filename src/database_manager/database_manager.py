@@ -468,6 +468,7 @@ class DatabaseManager:
         Veilig om elke startup te draaien.
         """
         # gpt_decisions upgrades
+        self._ensure_column("gpt_decisions", "decision_id", "TEXT")
         self._ensure_column("gpt_decisions", "request_hash", "TEXT")
         self._ensure_column("gpt_decisions", "response_hash", "TEXT")
 
@@ -476,6 +477,7 @@ class DatabaseManager:
 
         # indexes (voorbeeld)
         self._ensure_index("CREATE INDEX IF NOT EXISTS idx_gpt_decisions_ts ON gpt_decisions(timestamp)")
+        self._ensure_index("CREATE UNIQUE INDEX IF NOT EXISTS idx_gpt_decisions_decision_id ON gpt_decisions(decision_id) WHERE decision_id IS NOT NULL")
         self._ensure_index("CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(timestamp)")
 
     # --------------------------------------------------------------------------
@@ -2518,6 +2520,7 @@ class DatabaseManager:
             sql = """
             CREATE TABLE IF NOT EXISTS gpt_decisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                decision_id TEXT,
                 timestamp INTEGER,
                 symbol TEXT,
                 strategy_name TEXT,
@@ -2529,6 +2532,8 @@ class DatabaseManager:
                 request_json TEXT,       -- volledige payload die je naar GPT stuurde
                 response_json TEXT,      -- volledige response van GPT
                 gpt_version TEXT,        -- bv. GPT_TREND_DECIDER_VERSION
+                request_hash TEXT,
+                response_hash TEXT,
                 trade_id INTEGER         -- optioneel: gekoppelde trade (of NULL)
             );
             """
@@ -2856,31 +2861,26 @@ class DatabaseManager:
 
     def save_gpt_decision(self, decision_data: dict):
         """
-        Slaat één GPT-beslissing op in 'gpt_decisions'.
+        Slaat een GPT-beslissing op in gpt_decisions.
 
-        Verwachte keys in decision_data (alles optioneel behalve timestamp/symbol/strategy_name
-        is in de praktijk):
-
-          {
-            "timestamp": int_ms,
-            "symbol": "BTC-EUR",
-            "strategy_name": "trend_4h",
-
-            "algo_signal": "LONG",
-            "gpt_action": "OPEN_LONG",
-            "confidence": 87,
-            "rationale": "Sterke uptrend 1h/4h, pullback gekocht",
-            "journal_tags": ["trend_follow", "strong_adx"],
-
-            "request_json": "<volledige JSON die je naar GPT stuurde>",
-            "response_json": "<volledige JSON die GPT terugstuurde>",
-            "gpt_version": "2025-11-15",
-
-            "trade_id": 123   # of None
-          }
+        Dedup-v1: als decision_id al bestaat, wordt geen tweede GPT-row
+        aangemaakt. Een latere call mag wel trade_id invullen zodra een
+        bevestigde trade aan dezelfde GPT-beslissing gekoppeld wordt.
         """
         try:
+            import hashlib
             import json
+
+            def _json_string(value):
+                if isinstance(value, (dict, list)):
+                    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+                return value
+
+            def _hash(value):
+                if value in (None, ""):
+                    return None
+                raw = value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False)
+                return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
             ts = decision_data.get("timestamp", get_current_utc_timestamp_ms())
             symbol = decision_data.get("symbol", "UNKNOWN")
@@ -2891,27 +2891,50 @@ class DatabaseManager:
             confidence = decision_data.get("confidence", 0)
             rationale = decision_data.get("rationale", None)
 
-            # journal_tags komt vaak als list; we slaan het op als JSON-string
             tags = decision_data.get("journal_tags", None)
-            if isinstance(tags, (list, dict)):
-                journal_tags = json.dumps(tags)
-            else:
-                journal_tags = tags  # mag ook al een string zijn
+            journal_tags = _json_string(tags)
 
-            request_json = decision_data.get("request_json", None)
-            response_json = decision_data.get("response_json", None)
-
-            # <<< NIEUW: altijd safe naar string maken als het dict/list is
-            if isinstance(request_json, (dict, list)):
-                request_json = json.dumps(request_json)
-            if isinstance(response_json, (dict, list)):
-                response_json = json.dumps(response_json)
+            request_json = _json_string(decision_data.get("request_json", None))
+            response_json = _json_string(decision_data.get("response_json", None))
+            request_hash = decision_data.get("request_hash") or _hash(request_json)
+            response_hash = decision_data.get("response_hash") or _hash(response_json)
 
             gpt_version = decision_data.get("gpt_version", None)
             trade_id = decision_data.get("trade_id", None)
+            decision_id = decision_data.get("decision_id")
+            if not decision_id and request_hash and response_hash:
+                base = json.dumps({
+                    "symbol": symbol,
+                    "strategy_name": strategy_name,
+                    "algo_signal": algo_signal,
+                    "gpt_version": gpt_version,
+                    "request_hash": request_hash,
+                    "response_hash": response_hash,
+                }, sort_keys=True, ensure_ascii=False)
+                decision_id = "gpt_" + hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
+
+            if decision_id:
+                existing = self.execute_query(
+                    "SELECT id, trade_id FROM gpt_decisions WHERE decision_id=? LIMIT 1",
+                    (decision_id,),
+                )
+                if existing:
+                    existing_id, existing_trade_id = existing[0]
+                    if trade_id and not existing_trade_id:
+                        self.execute_query(
+                            "UPDATE gpt_decisions SET trade_id=? WHERE id=?",
+                            (trade_id, existing_id),
+                        )
+                        logger.info(
+                            f"[save_gpt_decision] updated existing decision_id={decision_id} with trade_id={trade_id}"
+                        )
+                    else:
+                        logger.info(f"[save_gpt_decision] duplicate decision_id={decision_id} ignored")
+                    return existing_id
 
             sql = """
             INSERT INTO gpt_decisions (
+              decision_id,
               timestamp,
               symbol,
               strategy_name,
@@ -2922,13 +2945,16 @@ class DatabaseManager:
               journal_tags,
               request_json,
               response_json,
+              request_hash,
+              response_hash,
               gpt_version,
               trade_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
 
             vals = (
+                decision_id,
                 ts,
                 symbol,
                 strategy_name,
@@ -2939,16 +2965,21 @@ class DatabaseManager:
                 journal_tags,
                 request_json,
                 response_json,
+                request_hash,
+                response_hash,
                 gpt_version,
-                trade_id
+                trade_id,
             )
 
             self.execute_query(sql, vals)
             inserted_id = self.cursor.lastrowid
-            logger.info(f"[save_gpt_decision] new row id={inserted_id}, symbol={symbol}, action={gpt_action}")
+            logger.info(
+                f"[save_gpt_decision] new row id={inserted_id}, decision_id={decision_id}, symbol={symbol}, action={gpt_action}"
+            )
+            return inserted_id
         except Exception as e:
             logger.error(f"[save_gpt_decision] Fout: {e}")
-
+            return None
     def save_coin_analysis_summary(self, record: dict):
         """
         Slaat 1 rij op in 'coin_analysis_summary'.

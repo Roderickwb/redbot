@@ -919,7 +919,14 @@ class TrendStrategy4H:
             # === GPT-beslissing normaliseren ===
             conf = float(decision.get("confidence", 0))
             rationale = decision.get("rationale", "")
+            decision_id = decision.get("_gpt_decision_id")
+            request_hash = decision.get("_gpt_request_hash")
+            response_hash = decision.get("_gpt_response_hash")
             decision_features = {
+                "decision_id": decision_id,
+                "request_hash": request_hash,
+                "response_hash": response_hash,
+                "feature_set": "post_gpt_decision_v1",
                 "rationale": rationale,
                 "journal_tags": decision.get("journal_tags", []),
                 "scores": decision.get("scores", {}),
@@ -949,6 +956,9 @@ class TrendStrategy4H:
                         "request_json": None,             # optioneel: kan ook dataset zijn
                         "response_json": decision,
                         "gpt_version": GPT_TREND_DECIDER_VERSION,
+                        "decision_id": decision_id,
+                        "request_hash": request_hash,
+                        "response_hash": response_hash,
                     })
                 except Exception as e:
                     self.logger.warning(
@@ -1041,6 +1051,9 @@ class TrendStrategy4H:
                         "request_json": None,
                         "response_json": decision,
                         "gpt_version": GPT_TREND_DECIDER_VERSION,
+                        "decision_id": decision_id,
+                        "request_hash": request_hash,
+                        "response_hash": response_hash,
                     })
                 except Exception as e:
                     self.logger.warning(

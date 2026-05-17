@@ -73,6 +73,7 @@ from src.analysis.opportunity_reporter import (
     DEFAULT_OUTPUT_DIR as OPPORTUNITY_OUTPUT_DIR,
     write_json as write_opportunity_json,
 )
+from src.analysis.operator_app_snapshot import run_operator_app_snapshot
 from src.analysis.operator_cockpit import run_operator_cockpit
 from src.analysis.promotion_gate import run_promotion_gate
 from src.analysis.pre_gpt_gate_report import run_pre_gpt_gate_report
@@ -475,6 +476,16 @@ def _build_daily_control(send_control: bool) -> dict:
     }
 
 
+def _build_operator_app_snapshot() -> dict:
+    report = run_operator_app_snapshot()
+    return {
+        "status": report.get("status"),
+        "summary": report.get("summary", {}),
+        "cards": len(report.get("cards", []) or []),
+        "actions": report.get("actions", {}),
+        "output_path": report.get("output_path"),
+    }
+
 def _build_operator_cockpit(send_cockpit: bool) -> dict:
     report = run_operator_cockpit(send=send_cockpit)
     return {
@@ -700,6 +711,9 @@ def run_daily_analysis_job(
     )
     steps["operator_cockpit"] = _run_step(
         lambda: _build_operator_cockpit(send_cockpit=send_cockpit),
+    )
+    steps["operator_app_snapshot"] = _run_step(
+        lambda: _build_operator_app_snapshot(),
     )
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]
     payload["failed_steps"] = failed_steps

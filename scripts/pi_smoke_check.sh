@@ -23,6 +23,7 @@ echo "== Compile critical modules =="
   src/analysis/daily_analysis_job.py \
   src/analysis/daily_control_report.py \
   src/analysis/operator_cockpit.py \
+  src/analysis/operator_app_snapshot.py \
   src/analysis/operator_decisions.py \
   src/analysis/risk_advice_history.py \
   src/analysis/live_readiness_gate.py \
@@ -68,11 +69,15 @@ for name in (
     "pre_gpt_gate_report",
     "daily_control_report",
     "operator_cockpit",
+    "operator_app_snapshot",
 ):
     step = steps.get(name) or {}
     result = step.get("result") or {}
     print(f"{name}: {step.get('status')}", end="")
-    if name == "operator_cockpit":
+    if name == "operator_app_snapshot":
+        summary = result.get("summary") or {}
+        print(f" status={result.get('status')} cards={result.get('cards')} live_effect={summary.get('live_effect')}")
+    elif name == "operator_cockpit":
         decision = (result.get("daily_decision") or {}).get("label")
         print(f" decision={decision}")
     elif name == "daily_control_report":

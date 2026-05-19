@@ -9,7 +9,7 @@ One run:
 - builds the rolling-window strategy event report
 - writes the latest report to disk
 
-This job does not change trading rules. Profile writes, when enabled, go to the proposed namespace, not live strategy profiles.
+This job does not change trading rules. Profile writes update the live coin-profile context used by GPT, matching the existing hourly learning flow.
 """
 
 from __future__ import annotations

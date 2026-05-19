@@ -199,7 +199,7 @@ class StrategyProfileProposer:
         self,
         learning_payload: Dict[str, Any],
         db: Optional[DatabaseManager] = None,
-        strategy_name: str = PROPOSED_STRATEGY_NAME,
+        strategy_name: str = LIVE_STRATEGY_NAME,
     ) -> int:
         local_db = db is None
         if db is None:
@@ -214,7 +214,7 @@ class StrategyProfileProposer:
                 strategy_name=strategy_name,
                 profile=profile,
                 updated_ts=updated_ts,
-                source="strategy_events_learning_proposed",
+                source="strategy_events_learning",
             )
 
         if local_db:
@@ -365,8 +365,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_PATH, help="Proposal output JSON path.")
     parser.add_argument("--min-events", type=int, default=30, help="Min events for medium confidence.")
     parser.add_argument("--min-trades", type=int, default=5, help="Min trades for trade-quality confidence.")
-    parser.add_argument("--write-db", action="store_true", help="Write learning profiles to proposed coin_profiles namespace, not live strategy profiles.")
-    parser.add_argument("--strategy-name", type=str, default=PROPOSED_STRATEGY_NAME, help="Target namespace for profile writes. Use trend_4h_proposed unless explicitly promoting.")
+    parser.add_argument("--write-db", action="store_true", help="Write learning profiles to the live coin_profiles namespace used by GPT.")
+    parser.add_argument("--strategy-name", type=str, default=LIVE_STRATEGY_NAME, help="Target namespace for profile writes. Default trend_4h is the live GPT context.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")

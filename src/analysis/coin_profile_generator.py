@@ -13,7 +13,7 @@ ANALYSIS_DIR = os.path.join("analysis", "coins")
 
 # Map waar we de coin_profiles wegschrijven
 OUTPUT_DIR = os.path.join("analysis", "coin_profiles")
-PROPOSED_STRATEGY_NAME = "trend_4h_proposed"
+LIVE_STRATEGY_NAME = "trend_4h"
 
 logger = logging.getLogger("coin_profile_generator")
 
@@ -67,7 +67,7 @@ def write_profiles(profiles: Dict[str, Dict[str, Any]]) -> None:
 
 def write_profiles_to_db(
     profiles: Dict[str, Dict[str, Any]],
-    strategy_name: str = PROPOSED_STRATEGY_NAME,
+    strategy_name: str = LIVE_STRATEGY_NAME,
     db: Optional[DatabaseManager] = None,
 ) -> None:
     """
@@ -117,7 +117,7 @@ def write_profiles_to_db(
                 bias,
                 n_trades,
                 expectancy_r,
-                "derived_trades_daily_proposed",
+                "derived_trades_daily",
                 updated_ts,
                 profile_json,
             ),
@@ -192,7 +192,7 @@ def derive_profile(analysis: Dict[str, Any]) -> Dict[str, Any]:
 
         "profile_version": "v1",
         "generated_at_utc": generated_at_utc,
-        "source": "derived_trades_daily_proposed",
+        "source": "derived_trades_daily",
         "n_trades": n_trades,
 
         "market_regime": regime,
@@ -218,7 +218,7 @@ def generate_coin_profiles(db: Optional[DatabaseManager] = None) -> int:
     """
     Genereert profiles vanuit analysis/coins/*.json en schrijft ze naar:
       - JSON files (analysis/coin_profiles/)
-      - DB table coin_profiles under trend_4h_proposed by default
+      - DB table coin_profiles under trend_4h by default
     """
     print("[coin_profile] Start genereren coin profiles...")
     analyses = load_analysis_files()
@@ -228,7 +228,7 @@ def generate_coin_profiles(db: Optional[DatabaseManager] = None) -> int:
         profiles[symbol] = derive_profile(analysis)
 
     write_profiles(profiles)
-    write_profiles_to_db(profiles, strategy_name=PROPOSED_STRATEGY_NAME, db=db)
+    write_profiles_to_db(profiles, strategy_name=LIVE_STRATEGY_NAME, db=db)
     print("[coin_profile] Klaar.")
 
     return len(profiles)

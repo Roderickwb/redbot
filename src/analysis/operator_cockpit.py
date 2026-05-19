@@ -257,9 +257,18 @@ class OperatorCockpit:
         market = learning.get("market_regime", {}) or {}
         return {
             "ml_status": ml.get("status"),
+            "ml_model_status": ml.get("model_status"),
+            "ml_feature_set": ml.get("feature_set"),
             "ml_rows": _safe_int(ml.get("rows")),
             "ml_positive": _safe_int(ml.get("positive")),
             "ml_non_positive": _safe_int(ml.get("non_positive")),
+            "ml_auc": ml.get("classification_auc"),
+            "ml_accuracy": _safe_float(ml.get("classification_accuracy")),
+            "ml_mae_r": _safe_float(ml.get("regression_mae_r")),
+            "ml_rmse_r": _safe_float(ml.get("regression_rmse_r")),
+            "ml_avg_predicted_r": _safe_float(ml.get("avg_predicted_r")),
+            "ml_avg_actual_r": _safe_float(ml.get("avg_actual_r")),
+            "ml_avg_p_positive": _safe_float(ml.get("avg_p_positive")),
             "hypotheses_promotable": _safe_int(hypotheses.get("promotable")),
             "experiments_planned": _safe_int(experiments.get("planned")),
             "experiments_ready": _safe_int(experiments.get("ready_for_approval")),
@@ -416,9 +425,17 @@ def format_cockpit_message(cockpit: dict) -> str:
         "Learning:",
         (
             f"- ML: {learning.get('ml_status')} "
+            f"model={learning.get('ml_model_status')} "
             f"rows={learning.get('ml_rows', 0)} "
             f"pos={learning.get('ml_positive', 0)} "
             f"non_pos={learning.get('ml_non_positive', 0)}"
+        ),
+        (
+            f"- ML metrics: auc={learning.get('ml_auc')} "
+            f"acc={learning.get('ml_accuracy', 0.0)} "
+            f"mae_R={learning.get('ml_mae_r', 0.0)} "
+            f"avg_pred_R={learning.get('ml_avg_predicted_r', 0.0)} "
+            f"feature={learning.get('ml_feature_set')}"
         ),
         (
             f"- Experiments: planned={learning.get('experiments_planned', 0)} "

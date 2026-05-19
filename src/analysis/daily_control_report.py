@@ -303,6 +303,10 @@ class DailyControlReport:
         hypothesis_summary = registry.get("hypothesis_summary", {}) or {}
         market = reports.get("market_regime", {}) or {}
 
+        metrics = model.get("metrics", {}) or {}
+        prediction_summary = model.get("prediction_summary", {}) or {}
+        meta = ml_edge.get("meta", {}) or {}
+
         return {
             "ml_edge": {
                 "status": readiness.get("status") or model.get("status") or "unknown",
@@ -310,6 +314,19 @@ class DailyControlReport:
                 "positive": _safe_int(readiness.get("positive")),
                 "non_positive": _safe_int(readiness.get("non_positive")),
                 "model_status": model.get("status"),
+                "model_reason": model.get("reason"),
+                "model_path": model.get("model_path"),
+                "feature_set": meta.get("feature_set") or model.get("feature_version"),
+                "feature_contract": meta.get("feature_contract", {}),
+                "metrics": metrics,
+                "prediction_summary": prediction_summary,
+                "regression_mae_r": _safe_float(metrics.get("regression_mae_r")),
+                "regression_rmse_r": _safe_float(metrics.get("regression_rmse_r")),
+                "classification_accuracy": _safe_float(metrics.get("classification_accuracy")),
+                "classification_auc": metrics.get("classification_auc"),
+                "avg_predicted_r": _safe_float(prediction_summary.get("avg_predicted_r")),
+                "avg_actual_r": _safe_float(prediction_summary.get("avg_actual_r")),
+                "avg_p_positive": _safe_float(prediction_summary.get("avg_p_positive")),
                 "reason": readiness.get("reason"),
             },
             "hypotheses": {
@@ -729,6 +746,12 @@ class DailyControlReport:
         ml = learning_status.get("ml_edge", {})
         if ml.get("status") == "insufficient_data":
             actions.append("Keep collecting structured labeled events before using ML predictions.")
+        elif ml.get("model_status") == "trained":
+            actions.append("ML edge model is trained shadow-only; review validation metrics before any live use.")
+        elif ml.get("model_status") == "dependency_missing":
+            actions.append("ML has enough data, but training dependencies are missing; verify sklearn/joblib on the Pi.")
+        elif ml.get("status") == "ready":
+            actions.append("ML has enough data but no trained model output yet; inspect the ML edge model report.")
         if approval_queue:
             actions.append("Review human-approval recommendations; no automatic live changes are made.")
         if not actions:

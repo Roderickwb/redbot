@@ -352,14 +352,21 @@ def _build_ml_edge_model(limit: int) -> dict:
     report = MlEdgeModel().build_report(limit=limit)
     output_path = os.path.join(ML_EDGE_OUTPUT_DIR, ML_EDGE_LATEST_FILE)
     write_ml_edge_json(output_path, report)
+    meta = report.get("meta", {}) or {}
+    model = report.get("model", {}) or {}
     return {
-        "loaded_rows": report.get("meta", {}).get("loaded_rows", 0),
+        "loaded_rows": meta.get("loaded_rows", 0),
+        "feature_set": meta.get("feature_set"),
+        "feature_contract": meta.get("feature_contract", {}),
         "readiness": report.get("readiness", {}),
-        "model_status": (report.get("model") or {}).get("status"),
-        "metrics": (report.get("model") or {}).get("metrics", {}),
+        "model_status": model.get("status"),
+        "model_reason": model.get("reason"),
+        "model_path": model.get("model_path"),
+        "metrics": model.get("metrics", {}),
+        "prediction_summary": model.get("prediction_summary", {}),
+        "sample_predictions": len(model.get("sample_predictions", []) or []),
         "output_path": output_path,
     }
-
 
 def _build_opportunity_report(limit: int) -> dict:
     db = DatabaseManager(db_path=DB_FILE)

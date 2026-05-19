@@ -78,7 +78,19 @@ for name in (
     step = steps.get(name) or {}
     result = step.get("result") or {}
     print(f"{name}: {step.get('status')}", end="")
-    if name == "operator_app_snapshot":
+    if name == "ml_edge_model":
+        readiness = result.get("readiness") or {}
+        metrics = result.get("metrics") or {}
+        prediction_summary = result.get("prediction_summary") or {}
+        print(
+            f" readiness={readiness.get('status')} "
+            f"model={result.get('model_status')} rows={readiness.get('rows')} "
+            f"auc={metrics.get('classification_auc')} "
+            f"acc={metrics.get('classification_accuracy')} "
+            f"mae_R={metrics.get('regression_mae_r')} "
+            f"avg_pred_R={prediction_summary.get('avg_predicted_r')}"
+        )
+    elif name == "operator_app_snapshot":
         summary = result.get("summary") or {}
         print(f" status={result.get('status')} cards={result.get('cards')} live_effect={summary.get('live_effect')}")
     elif name == "operator_decisions":

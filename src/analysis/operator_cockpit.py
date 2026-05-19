@@ -254,6 +254,8 @@ class OperatorCockpit:
     def _learning_summary(self, learning: dict, experiments: dict, promotion: dict, approval: dict, gpt_efficiency: dict, pre_gpt_gate: dict) -> dict:
         ml = learning.get("ml_edge", {}) or {}
         hypotheses = learning.get("hypotheses", {}) or {}
+        indicator_edge = learning.get("indicator_edge", {}) or {}
+        indicator_top = indicator_edge.get("top_feature") or {}
         market = learning.get("market_regime", {}) or {}
         return {
             "ml_status": ml.get("status"),
@@ -269,6 +271,11 @@ class OperatorCockpit:
             "ml_avg_predicted_r": _safe_float(ml.get("avg_predicted_r")),
             "ml_avg_actual_r": _safe_float(ml.get("avg_actual_r")),
             "ml_avg_p_positive": _safe_float(ml.get("avg_p_positive")),
+            "indicator_edge_status": indicator_edge.get("status"),
+            "indicator_ranked_features": _safe_int(indicator_edge.get("ranked_features")),
+            "indicator_symbols_ranked": _safe_int(indicator_edge.get("symbols_ranked")),
+            "indicator_top_feature": indicator_top.get("feature"),
+            "indicator_top_edge_r": _safe_float(indicator_top.get("edge_r")),
             "hypotheses_promotable": _safe_int(hypotheses.get("promotable")),
             "experiments_planned": _safe_int(experiments.get("planned")),
             "experiments_ready": _safe_int(experiments.get("ready_for_approval")),
@@ -436,6 +443,12 @@ def format_cockpit_message(cockpit: dict) -> str:
             f"mae_R={learning.get('ml_mae_r', 0.0)} "
             f"avg_pred_R={learning.get('ml_avg_predicted_r', 0.0)} "
             f"feature={learning.get('ml_feature_set')}"
+        ),
+        (
+            f"- Indicator edge: status={learning.get('indicator_edge_status')} "
+            f"ranked={learning.get('indicator_ranked_features', 0)} "
+            f"top={learning.get('indicator_top_feature')} "
+            f"edge_R={learning.get('indicator_top_edge_r', 0.0)}"
         ),
         (
             f"- Experiments: planned={learning.get('experiments_planned', 0)} "

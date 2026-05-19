@@ -23,6 +23,7 @@ echo "== Compile critical modules =="
   src/database_manager/database_manager.py \
   src/ai/gpt_trend_decider.py \
   src/analysis/ml_edge_model.py \
+  src/analysis/indicator_edge_report.py \
   src/analysis/daily_analysis_job.py \
   src/analysis/daily_control_report.py \
   src/analysis/operator_cockpit.py \
@@ -66,6 +67,7 @@ steps = d.get("steps") or {}
 for name in (
     "safety_control",
     "ml_edge_model",
+    "indicator_edge_report",
     "risk_guard_report",
     "risk_advice_history",
     "live_readiness_gate",
@@ -89,6 +91,13 @@ for name in (
             f"acc={metrics.get('classification_accuracy')} "
             f"mae_R={metrics.get('regression_mae_r')} "
             f"avg_pred_R={prediction_summary.get('avg_predicted_r')}"
+        )
+    elif name == "indicator_edge_report":
+        summary = result.get("summary") or {}
+        top = result.get("top_feature") or summary.get("top_feature") or {}
+        print(
+            f" status={result.get('status')} ranked={summary.get('ranked_features')} "
+            f"top={top.get('feature')} edge_R={top.get('edge_r')}"
         )
     elif name == "operator_app_snapshot":
         summary = result.get("summary") or {}

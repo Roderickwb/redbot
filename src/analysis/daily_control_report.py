@@ -40,6 +40,7 @@ DEFAULT_RISK_BRIDGE_OUTCOMES = os.path.join("analysis", "risk", "latest_risk_bri
 DEFAULT_RISK_BRIDGE_HISTORY = os.path.join("analysis", "risk", "latest_risk_bridge_history_report.json")
 DEFAULT_RISK_GUARD_REPORT = os.path.join("analysis", "risk", "latest_risk_guard_report.json")
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
+DEFAULT_INDICATOR_EDGE_REPORT = os.path.join("analysis", "indicator_edge", "latest_indicator_edge_report.json")
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
 DEFAULT_GPT_DECISION_REPORT = os.path.join("analysis", "gpt_decisions", "latest_gpt_decision_report.json")
@@ -96,6 +97,7 @@ class DailyControlReport:
         risk_bridge_history_path: str = DEFAULT_RISK_BRIDGE_HISTORY,
         risk_guard_path: str = DEFAULT_RISK_GUARD_REPORT,
         ml_edge_path: str = DEFAULT_ML_EDGE_REPORT,
+        indicator_edge_path: str = DEFAULT_INDICATOR_EDGE_REPORT,
         alerts_path: str = DEFAULT_ALERT_REPORT,
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
         gpt_decision_path: str = DEFAULT_GPT_DECISION_REPORT,
@@ -118,6 +120,7 @@ class DailyControlReport:
         self.risk_bridge_history_path = risk_bridge_history_path
         self.risk_guard_path = risk_guard_path
         self.ml_edge_path = ml_edge_path
+        self.indicator_edge_path = indicator_edge_path
         self.alerts_path = alerts_path
         self.market_regime_path = market_regime_path
         self.gpt_decision_path = gpt_decision_path
@@ -142,6 +145,7 @@ class DailyControlReport:
             "risk_bridge_history": load_json(self.risk_bridge_history_path),
             "risk_guard": load_json(self.risk_guard_path),
             "ml_edge": load_json(self.ml_edge_path),
+            "indicator_edge": load_json(self.indicator_edge_path),
             "alerts": load_json(self.alerts_path),
             "market_regime": load_json(self.market_regime_path),
             "gpt_decisions": load_json(self.gpt_decision_path),
@@ -208,6 +212,7 @@ class DailyControlReport:
                 "risk_bridge_history": self.risk_bridge_history_path,
                 "risk_guard": self.risk_guard_path,
                 "ml_edge_model": self.ml_edge_path,
+                "indicator_edge": self.indicator_edge_path,
                 "alerts": self.alerts_path,
                 "market_regime": self.market_regime_path,
                 "gpt_decisions": self.gpt_decision_path,
@@ -220,7 +225,7 @@ class DailyControlReport:
     def _blockers(self, reports: dict) -> list[dict]:
         blockers = []
         for name, report in reports.items():
-            if name in {"live_readiness", "risk_advice_history"} and report.get("_missing"):
+            if name in {"live_readiness", "risk_advice_history", "indicator_edge"} and report.get("_missing"):
                 continue
             if report.get("_missing"):
                 blockers.append({
@@ -302,6 +307,8 @@ class DailyControlReport:
         registry = reports.get("registry", {}) or {}
         hypothesis_summary = registry.get("hypothesis_summary", {}) or {}
         market = reports.get("market_regime", {}) or {}
+        indicator_edge = reports.get("indicator_edge", {}) or {}
+        indicator_summary = indicator_edge.get("summary", {}) or {}
 
         metrics = model.get("metrics", {}) or {}
         prediction_summary = model.get("prediction_summary", {}) or {}
@@ -328,6 +335,15 @@ class DailyControlReport:
                 "avg_actual_r": _safe_float(prediction_summary.get("avg_actual_r")),
                 "avg_p_positive": _safe_float(prediction_summary.get("avg_p_positive")),
                 "reason": readiness.get("reason"),
+            },
+            "indicator_edge": {
+                "status": indicator_edge.get("status"),
+                "usable_rows": _safe_int(indicator_summary.get("usable_rows")),
+                "ranked_features": _safe_int(indicator_summary.get("ranked_features")),
+                "symbols_ranked": _safe_int(indicator_summary.get("symbols_ranked")),
+                "top_feature": indicator_summary.get("top_feature"),
+                "weak_feature": indicator_summary.get("weak_feature"),
+                "live_effect": bool((indicator_edge.get("meta") or {}).get("live_effect")),
             },
             "hypotheses": {
                 "total": _safe_int(hypothesis_summary.get("total")),

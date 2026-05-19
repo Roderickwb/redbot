@@ -42,6 +42,7 @@ from src.analysis.chart_vision_reporter import (
     write_json as write_chart_json,
 )
 from src.analysis.daily_control_report import run_daily_control_report
+from src.analysis.indicator_edge_report import run_indicator_edge_report
 from src.analysis.gpt_decision_reporter import (
     GptDecisionReporter,
     DEFAULT_LATEST_FILE as GPT_LATEST_FILE,
@@ -274,6 +275,19 @@ def _build_risk_guard_report(limit: int) -> dict:
         "output_path": report.get("output_path"),
     }
 
+
+def _build_indicator_edge_report(limit: int) -> dict:
+    report = run_indicator_edge_report(limit=limit)
+    summary = report.get("summary", {}) or {}
+    top = summary.get("top_feature") or {}
+    weak = summary.get("weak_feature") or {}
+    return {
+        "status": report.get("status"),
+        "summary": summary,
+        "top_feature": top,
+        "weak_feature": weak,
+        "output_path": report.get("output_path"),
+    }
 
 def _build_pre_gpt_gate_report(limit: int) -> dict:
     report = run_pre_gpt_gate_report(limit=limit)
@@ -603,6 +617,9 @@ def run_daily_analysis_job(
     )
     steps["ml_edge_model"] = _run_step(
         lambda: _build_ml_edge_model(limit=report_limit),
+    )
+    steps["indicator_edge_report"] = _run_step(
+        lambda: _build_indicator_edge_report(limit=report_limit),
     )
     steps["opportunity_report"] = _run_step(
         lambda: _build_opportunity_report(limit=report_limit),

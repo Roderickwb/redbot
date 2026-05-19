@@ -41,6 +41,7 @@ DEFAULT_RISK_BRIDGE_HISTORY = os.path.join("analysis", "risk", "latest_risk_brid
 DEFAULT_RISK_GUARD_REPORT = os.path.join("analysis", "risk", "latest_risk_guard_report.json")
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_INDICATOR_EDGE_REPORT = os.path.join("analysis", "indicator_edge", "latest_indicator_edge_report.json")
+DEFAULT_RECOMMENDATION_AGGREGATOR = os.path.join("analysis", "recommendations", "latest_recommendation_aggregator.json")
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
 DEFAULT_GPT_DECISION_REPORT = os.path.join("analysis", "gpt_decisions", "latest_gpt_decision_report.json")
@@ -98,6 +99,7 @@ class DailyControlReport:
         risk_guard_path: str = DEFAULT_RISK_GUARD_REPORT,
         ml_edge_path: str = DEFAULT_ML_EDGE_REPORT,
         indicator_edge_path: str = DEFAULT_INDICATOR_EDGE_REPORT,
+        recommendation_aggregator_path: str = DEFAULT_RECOMMENDATION_AGGREGATOR,
         alerts_path: str = DEFAULT_ALERT_REPORT,
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
         gpt_decision_path: str = DEFAULT_GPT_DECISION_REPORT,
@@ -121,6 +123,7 @@ class DailyControlReport:
         self.risk_guard_path = risk_guard_path
         self.ml_edge_path = ml_edge_path
         self.indicator_edge_path = indicator_edge_path
+        self.recommendation_aggregator_path = recommendation_aggregator_path
         self.alerts_path = alerts_path
         self.market_regime_path = market_regime_path
         self.gpt_decision_path = gpt_decision_path
@@ -146,6 +149,7 @@ class DailyControlReport:
             "risk_guard": load_json(self.risk_guard_path),
             "ml_edge": load_json(self.ml_edge_path),
             "indicator_edge": load_json(self.indicator_edge_path),
+            "recommendation_aggregator": load_json(self.recommendation_aggregator_path),
             "alerts": load_json(self.alerts_path),
             "market_regime": load_json(self.market_regime_path),
             "gpt_decisions": load_json(self.gpt_decision_path),
@@ -171,6 +175,7 @@ class DailyControlReport:
         safety_status = self._safety_status(reports)
         live_readiness_status = self._live_readiness_status(reports)
         learning_status = self._learning_status(reports)
+        recommendation_status = self._recommendation_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
         next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_advice_history_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, live_readiness_status, learning_status)
 
@@ -181,6 +186,7 @@ class DailyControlReport:
             "blockers": blockers,
             "approval_queue": approval_queue,
             "learning_status": learning_status,
+            "recommendation_status": recommendation_status,
             "experiment_status": experiment_status,
             "promotion_status": promotion_status,
             "approval_status": approval_status,
@@ -213,6 +219,7 @@ class DailyControlReport:
                 "risk_guard": self.risk_guard_path,
                 "ml_edge_model": self.ml_edge_path,
                 "indicator_edge": self.indicator_edge_path,
+                "recommendation_aggregator": self.recommendation_aggregator_path,
                 "alerts": self.alerts_path,
                 "market_regime": self.market_regime_path,
                 "gpt_decisions": self.gpt_decision_path,
@@ -225,7 +232,7 @@ class DailyControlReport:
     def _blockers(self, reports: dict) -> list[dict]:
         blockers = []
         for name, report in reports.items():
-            if name in {"live_readiness", "risk_advice_history", "indicator_edge"} and report.get("_missing"):
+            if name in {"live_readiness", "risk_advice_history", "indicator_edge", "recommendation_aggregator"} and report.get("_missing"):
                 continue
             if report.get("_missing"):
                 blockers.append({
@@ -358,6 +365,20 @@ class DailyControlReport:
             },
         }
 
+    def _recommendation_status(self, reports: dict) -> dict:
+        rec = reports.get("recommendation_aggregator", {}) or {}
+        summary = rec.get("summary", {}) or {}
+        return {
+            "status": rec.get("status"),
+            "total": _safe_int(summary.get("total")),
+            "needs_operator_review": _safe_int(summary.get("needs_operator_review")),
+            "auto_accept_as_context": _safe_int(summary.get("auto_accept_as_context")),
+            "wait_more_evidence": _safe_int(summary.get("wait_more_evidence")),
+            "blocked": _safe_int(summary.get("blocked")),
+            "by_status": summary.get("by_status", {}),
+            "top_review": summary.get("top_review", [])[:3],
+            "live_effect": bool(summary.get("live_effect")),
+        }
     def _experiment_status(self, reports: dict) -> dict:
         plan = reports.get("experiments", {}) or {}
         shadow = reports.get("shadow_results", {}) or {}

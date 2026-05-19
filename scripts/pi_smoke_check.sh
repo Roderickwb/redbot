@@ -24,6 +24,7 @@ echo "== Compile critical modules =="
   src/ai/gpt_trend_decider.py \
   src/analysis/ml_edge_model.py \
   src/analysis/indicator_edge_report.py \
+  src/analysis/recommendation_aggregator.py \
   src/analysis/daily_analysis_job.py \
   src/analysis/daily_control_report.py \
   src/analysis/operator_cockpit.py \
@@ -71,6 +72,7 @@ for name in (
     "risk_guard_report",
     "risk_advice_history",
     "live_readiness_gate",
+    "recommendation_aggregator",
     "pre_gpt_gate_report",
     "daily_control_report",
     "operator_cockpit",
@@ -129,6 +131,13 @@ for name in (
             f"review={summary.get('ready_for_operator_review')} "
             f"blocked={summary.get('blocked')} waiting={summary.get('waiting')} "
             f"calibration={summary.get('calibration_only')}"
+        )
+    elif name == "recommendation_aggregator":
+        summary = result.get("summary") or {}
+        print(
+            f" status={result.get('status')} review={summary.get('needs_operator_review')} "
+            f"auto_context={summary.get('auto_accept_as_context')} "
+            f"wait={summary.get('wait_more_evidence')} blocked={summary.get('blocked')}"
         )
     elif name == "pre_gpt_gate_report":
         summary = result.get("summary") or {}

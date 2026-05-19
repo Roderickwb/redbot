@@ -79,6 +79,7 @@ from src.analysis.operator_cockpit import run_operator_cockpit
 from src.analysis.operator_decisions import run_operator_decisions
 from src.analysis.promotion_gate import run_promotion_gate
 from src.analysis.pre_gpt_gate_report import run_pre_gpt_gate_report
+from src.analysis.recommendation_aggregator import run_recommendation_aggregator
 from src.analysis.recommendation_registry import RecommendationRegistry
 from src.analysis.risk_bridge_outcome_evaluator import run_risk_bridge_outcome_evaluator
 from src.analysis.risk_bridge_history import run_risk_bridge_history
@@ -486,6 +487,16 @@ def _build_shadow_live_bridge(hours: int) -> dict:
     }
 
 
+def _build_recommendation_aggregator() -> dict:
+    report = run_recommendation_aggregator()
+    return {
+        "status": report.get("status"),
+        "summary": report.get("summary", {}),
+        "operator_review_items": report.get("operator_review_items", [])[:5],
+        "output_path": report.get("output_path"),
+    }
+
+
 def _build_daily_control(send_control: bool) -> dict:
     report = run_daily_control_report(send=send_control)
     return {
@@ -702,7 +713,9 @@ def run_daily_analysis_job(
     steps["live_readiness_gate"] = _run_step(
         lambda: _build_live_readiness_gate(),
     )
-
+    steps["recommendation_aggregator"] = _run_step(
+        lambda: _build_recommendation_aggregator(),
+    )
     failed_steps = [name for name, step in steps.items() if step.get("status") != "ok"]
     advisor_result = steps.get("bot_advisor", {}).get("result") or {}
     advisor_status = advisor_result.get("status", "UNKNOWN")

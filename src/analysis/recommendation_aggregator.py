@@ -25,6 +25,7 @@ DEFAULT_RISK_BRIDGE_HISTORY = os.path.join("analysis", "risk", "latest_risk_brid
 DEFAULT_RISK_GUARD = os.path.join("analysis", "risk", "latest_risk_guard_report.json")
 DEFAULT_PRE_GPT_GATE = os.path.join("analysis", "gpt_decisions", "latest_pre_gpt_gate_report.json")
 DEFAULT_ML_EDGE = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
+DEFAULT_EXIT_MANAGEMENT = os.path.join("analysis", "exits", "latest_exit_management_report.json")
 
 STATUS_AUTO_CONTEXT = "auto_accept_as_context"
 STATUS_WAIT = "wait_more_evidence"
@@ -75,6 +76,7 @@ class RecommendationAggregator:
         risk_guard_path: str = DEFAULT_RISK_GUARD,
         pre_gpt_gate_path: str = DEFAULT_PRE_GPT_GATE,
         ml_edge_path: str = DEFAULT_ML_EDGE,
+        exit_management_path: str = DEFAULT_EXIT_MANAGEMENT,
     ):
         self.paths = {
             "indicator_edge": indicator_edge_path,
@@ -84,6 +86,7 @@ class RecommendationAggregator:
             "risk_guard": risk_guard_path,
             "pre_gpt_gate": pre_gpt_gate_path,
             "ml_edge": ml_edge_path,
+            "exit_management": exit_management_path,
         }
 
     def build_report(self) -> dict:
@@ -96,6 +99,7 @@ class RecommendationAggregator:
         items.extend(self._from_pre_gpt_gate(reports.get("pre_gpt_gate") or {}))
         items.extend(self._from_ml_edge(reports.get("ml_edge") or {}))
         items.extend(self._from_indicator_edge(reports.get("indicator_edge") or {}))
+        items.extend(self._from_exit_management(reports.get("exit_management") or {}))
 
         items = self._dedupe(items)
         items.sort(key=self._sort_key)
@@ -278,6 +282,46 @@ class RecommendationAggregator:
                 why="Evidence is not strong enough for a bundled context recommendation yet.",
                 default_action="wait",
                 evidence={"top_feature": top, "usable_rows": usable, "ranked_features": ranked},
+            )]
+        return []
+
+    def _from_exit_management(self, report: dict) -> list[dict]:
+        summary = report.get("summary", {}) or {}
+        verdict = summary.get("verdict")
+        positions = _safe_int(summary.get("positions_loaded"))
+        closed = _safe_int(summary.get("closed_positions"))
+        if verdict == "exit_logging_needs_reason_field":
+            return [self._item(
+                area="exits",
+                candidate_type="exit_reason_instrumentation",
+                status=STATUS_WAIT,
+                title="Exit report needs explicit close reasons",
+                headline=f"Exit report found {closed} closed positions, but close reasons are inferred from child trades.",
+                why="Before tuning TP/SL/trailing rules, the bot should persist explicit exit reasons so the app can judge exits with context.",
+                default_action="wait",
+                evidence={"positions": positions, "closed": closed, "summary": summary},
+            )]
+        if verdict == "exit_data_ready_for_review":
+            return [self._item(
+                area="exits",
+                candidate_type="exit_management_review",
+                status=STATUS_REVIEW,
+                title="Exit management is ready for review",
+                headline=f"Exit report has {closed} closed positions with win={summary.get('win_rate_pct')}% and pnl={summary.get('total_realized_pnl_eur')}.",
+                why="This is a human review item for later exit-rule tuning; no live behavior changes in app v1.",
+                default_action="wait",
+                evidence=summary,
+            )]
+        if positions:
+            return [self._item(
+                area="exits",
+                candidate_type="exit_management_collecting",
+                status=STATUS_WAIT,
+                title="Exit management is collecting evidence",
+                headline=f"Exit report is tracking {positions} positions and {closed} closed positions.",
+                why="Sample is still building before exit rules should be tuned.",
+                default_action="wait",
+                evidence=summary,
             )]
         return []
 

@@ -24,6 +24,7 @@ echo "== Compile critical modules =="
   src/ai/gpt_trend_decider.py \
   src/analysis/ml_edge_model.py \
   src/analysis/indicator_edge_report.py \
+  src/analysis/exit_management_report.py \
   src/analysis/recommendation_aggregator.py \
   src/analysis/daily_analysis_job.py \
   src/analysis/daily_control_report.py \
@@ -69,6 +70,7 @@ for name in (
     "safety_control",
     "ml_edge_model",
     "indicator_edge_report",
+    "exit_management_report",
     "risk_guard_report",
     "risk_advice_history",
     "live_readiness_gate",
@@ -100,6 +102,13 @@ for name in (
         print(
             f" status={result.get('status')} ranked={summary.get('ranked_features')} "
             f"top={top.get('feature')} edge_R={top.get('edge_r')}"
+        )
+    elif name == "exit_management_report":
+        summary = result.get("summary") or {}
+        print(
+            f" status={result.get('status')} positions={summary.get('positions_loaded')} "
+            f"closed={summary.get('closed_positions')} tp1={summary.get('positions_with_tp1_proxy')} "
+            f"pnl={summary.get('total_realized_pnl_eur')} verdict={summary.get('verdict')}"
         )
     elif name == "operator_app_snapshot":
         summary = result.get("summary") or {}

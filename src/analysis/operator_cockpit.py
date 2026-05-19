@@ -79,6 +79,7 @@ class OperatorCockpit:
         risk_outcome = control.get("risk_outcome_status", {}) or {}
         risk_history = control.get("risk_history_status", {}) or {}
         risk_guard = control.get("risk_guard_status", {}) or {}
+        exit_management = control.get("exit_management_status", {}) or {}
         gpt_efficiency = control.get("gpt_efficiency_status", {}) or {}
         pre_gpt_gate = control.get("pre_gpt_gate_status", {}) or {}
         shadow_live = control.get("shadow_live_status", {}) or {}
@@ -90,7 +91,7 @@ class OperatorCockpit:
         action_needed = self._action_needed(blockers, approvals, approval_status, promotion, risk_advice_history, risk_history, live_readiness)
         status = self._status(health, action_needed, control.get("status"))
         learning_summary = self._learning_summary(learning, experiments, promotion, approval_status, gpt_efficiency, pre_gpt_gate)
-        risk_summary = self._risk_summary(risk_policy, risk_advice_history, risk_strategy, risk_outcome, risk_history, risk_guard)
+        risk_summary = self._risk_summary(risk_policy, risk_advice_history, risk_strategy, risk_outcome, risk_history, risk_guard, exit_management)
         live_readiness_summary = self._live_readiness_summary(live_readiness)
         recommendation_summary = self._recommendation_summary(recommendation_status)
         daily_decision = self._daily_decision(live_changes, health, action_needed, learning_summary, risk_summary, live_readiness_summary)
@@ -299,7 +300,7 @@ class OperatorCockpit:
             "pre_gpt_verdict": pre_gpt_gate.get("verdict"),
         }
 
-    def _risk_summary(self, risk_policy: dict, risk_advice_history: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, risk_guard: dict) -> dict:
+    def _risk_summary(self, risk_policy: dict, risk_advice_history: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, risk_guard: dict, exit_management: dict) -> dict:
         return {
             "policy_symbols": _safe_int(risk_policy.get("total_symbols")),
             "risk_down": _safe_int(risk_policy.get("risk_down")),
@@ -329,6 +330,14 @@ class OperatorCockpit:
             "guard_verdict": risk_guard.get("verdict"),
             "guard_primary_issue": (risk_guard.get("primary_issue") or {}).get("guard"),
             "guard_issue_net_r": _safe_float((risk_guard.get("primary_issue") or {}).get("estimated_net_saved_r")),
+            "exit_positions": _safe_int(exit_management.get("positions_loaded")),
+            "exit_closed": _safe_int(exit_management.get("closed_positions")),
+            "exit_tp1_proxy": _safe_int(exit_management.get("positions_with_tp1_proxy")),
+            "exit_win_rate_pct": _safe_float(exit_management.get("win_rate_pct")),
+            "exit_total_pnl_eur": _safe_float(exit_management.get("total_realized_pnl_eur")),
+            "exit_avg_hold_hours": _safe_float(exit_management.get("avg_hold_hours_closed")),
+            "exit_reason_available": bool(exit_management.get("reason_available")),
+            "exit_verdict": exit_management.get("verdict"),
             "live_enforcement": bool(risk_history.get("live_enforcement")),
         }
 
@@ -525,6 +534,14 @@ def format_cockpit_message(cockpit: dict) -> str:
             f"net_R={risk.get('guard_net_saved_r', 0.0)} "
             f"verdict={risk.get('guard_verdict')} "
             f"issue={risk.get('guard_primary_issue')}"
+        ),
+        (
+            f"- Exits: positions={risk.get('exit_positions', 0)} "
+            f"closed={risk.get('exit_closed', 0)} "
+            f"tp1={risk.get('exit_tp1_proxy', 0)} "
+            f"win={risk.get('exit_win_rate_pct', 0.0)}% "
+            f"pnl={risk.get('exit_total_pnl_eur', 0.0)} "
+            f"verdict={risk.get('exit_verdict')}"
         ),
     ]
 

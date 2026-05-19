@@ -29,6 +29,7 @@ DEFAULT_SOURCES = {
     "operator_decisions": os.path.join("analysis", "operator_decisions", "latest_operator_decisions.json"),
     "live_readiness": os.path.join("analysis", "live_readiness", "latest_live_readiness_gate.json"),
     "risk_advice_history": os.path.join("analysis", "risk", "latest_risk_advice_history_report.json"),
+    "exit_management": os.path.join("analysis", "exits", "latest_exit_management_report.json"),
     "recommendation_aggregator": os.path.join("analysis", "recommendations", "latest_recommendation_aggregator.json"),
 }
 
@@ -102,6 +103,7 @@ class OperatorAppSnapshot:
         decisions = loaded.get("operator_decisions") or {}
         live_readiness = loaded.get("live_readiness") or {}
         risk_advice_history = loaded.get("risk_advice_history") or {}
+        exit_management = loaded.get("exit_management") or {}
         recommendations = loaded.get("recommendation_aggregator") or {}
 
         source_health = {
@@ -115,13 +117,13 @@ class OperatorAppSnapshot:
         ]
 
         app_status = self._app_status(cockpit, safety, missing_or_error)
-        summary = self._summary(cockpit, control, safety, approvals, decisions, live_readiness, risk_advice_history, recommendations)
+        summary = self._summary(cockpit, control, safety, approvals, decisions, live_readiness, risk_advice_history, exit_management, recommendations)
 
         return {
             "created_utc": _utc_now(),
             "status": app_status,
             "summary": summary,
-            "cards": self._cards(cockpit, safety, approvals, decisions, live_readiness, risk_advice_history, recommendations),
+            "cards": self._cards(cockpit, safety, approvals, decisions, live_readiness, risk_advice_history, exit_management, recommendations),
             "actions": {
                 "allowed_v1": APP_ALLOWED_ACTIONS,
                 "forbidden_v1": APP_FORBIDDEN_ACTIONS,
@@ -138,6 +140,7 @@ class OperatorAppSnapshot:
                 "operator_decisions": decisions,
                 "live_readiness": live_readiness,
                 "risk_advice_history": risk_advice_history,
+                "exit_management": exit_management,
                 "recommendation_aggregator": recommendations,
             },
         }
@@ -153,11 +156,12 @@ class OperatorAppSnapshot:
             return "DEGRADED"
         return str(cockpit.get("status") or "WATCH")
 
-    def _summary(self, cockpit: dict, control: dict, safety: dict, approvals: dict, decisions: dict, live_readiness: dict, risk_advice_history: dict, recommendations: dict) -> dict:
+    def _summary(self, cockpit: dict, control: dict, safety: dict, approvals: dict, decisions: dict, live_readiness: dict, risk_advice_history: dict, exit_management: dict, recommendations: dict) -> dict:
         approval_summary = approvals.get("summary") or {}
         decision_summary = decisions.get("summary") or {}
         readiness_summary = live_readiness.get("summary") or {}
         risk_summary = risk_advice_history.get("summary") or {}
+        exit_summary = exit_management.get("summary") or {}
         recommendation_summary = recommendations.get("summary") or {}
         return {
             "daily_decision": (cockpit.get("daily_decision") or {}).get("label"),
@@ -175,6 +179,9 @@ class OperatorAppSnapshot:
             "live_review": _safe_int(readiness_summary.get("ready_for_operator_review")),
             "risk_advice_verdict": risk_summary.get("verdict"),
             "stable_data_down_symbols": _safe_int(risk_summary.get("stable_data_down_symbols")),
+            "exit_positions": _safe_int(exit_summary.get("positions_loaded")),
+            "exit_closed": _safe_int(exit_summary.get("closed_positions")),
+            "exit_verdict": exit_summary.get("verdict"),
             "recommendation_review": _safe_int(recommendation_summary.get("needs_operator_review")),
             "recommendation_auto_context": _safe_int(recommendation_summary.get("auto_accept_as_context")),
             "recommendation_wait": _safe_int(recommendation_summary.get("wait_more_evidence")),
@@ -182,7 +189,7 @@ class OperatorAppSnapshot:
             "live_effect": False,
         }
 
-    def _cards(self, cockpit: dict, safety: dict, approvals: dict, decisions: dict, live_readiness: dict, risk_advice_history: dict, recommendations: dict) -> list[dict]:
+    def _cards(self, cockpit: dict, safety: dict, approvals: dict, decisions: dict, live_readiness: dict, risk_advice_history: dict, exit_management: dict, recommendations: dict) -> list[dict]:
         return [
             {
                 "id": "cockpit",
@@ -222,6 +229,13 @@ class OperatorAppSnapshot:
                 "status": risk_advice_history.get("status", "OK"),
                 "headline": (risk_advice_history.get("summary") or {}).get("verdict") or "No verdict.",
                 "data": risk_advice_history.get("summary", {}),
+            },
+            {
+                "id": "exit_management",
+                "title": "Exit Management",
+                "status": exit_management.get("status", "UNKNOWN"),
+                "headline": (exit_management.get("summary") or {}).get("verdict") or "Exit report not available.",
+                "data": exit_management.get("summary", {}),
             },
             {
                 "id": "recommendations",

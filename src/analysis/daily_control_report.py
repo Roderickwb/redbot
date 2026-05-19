@@ -796,6 +796,8 @@ class DailyControlReport:
             actions.append("Risk guards are seeing pressure in shadow mode; keep them read-only while sample grows.")
         if exit_management_status.get("verdict") == "exit_logging_needs_reason_field":
             actions.append("Exit report needs explicit close-reason logging before exit-rule tuning.")
+        elif exit_management_status.get("verdict") == "exit_logging_collecting_reasons":
+            actions.append("Exit report now logs close reasons; collect fresh exits before tuning exit rules.")
         elif exit_management_status.get("verdict") == "exit_data_ready_for_review":
             actions.append("Exit management has enough data for review; keep exit changes manual/read-only.")
         elif exit_management_status.get("positions_loaded"):

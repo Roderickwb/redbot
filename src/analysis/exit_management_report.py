@@ -115,10 +115,11 @@ class ExitManagementReport:
                     "close_reason_missing": 0,
                 }
 
-            master_sql = """
+            reason_select = ", exit_reason, exit_event_type" if {"exit_reason", "exit_event_type"} <= set(cols) else ""
+            master_sql = f"""
                 SELECT id, timestamp, datetime_utc, symbol, side, price, amount,
                        position_id, position_type, status, pnl_eur, fees,
-                       trade_cost, exchange, strategy_name, is_master
+                       trade_cost, exchange, strategy_name, is_master{reason_select}
                   FROM trades
                  WHERE strategy_name=?
                    AND is_master=1
@@ -130,10 +131,10 @@ class ExitManagementReport:
                 params.append(int(limit))
             masters = [dict(row) for row in con.execute(master_sql, params).fetchall()]
 
-            child_sql = """
+            child_sql = f"""
                 SELECT id, timestamp, datetime_utc, symbol, side, price, amount,
                        position_id, position_type, status, pnl_eur, fees,
-                       trade_cost, exchange, strategy_name, is_master
+                       trade_cost, exchange, strategy_name, is_master{reason_select}
                   FROM trades
                  WHERE strategy_name=?
                    AND is_master=0
@@ -141,12 +142,23 @@ class ExitManagementReport:
             """
             children = [dict(row) for row in con.execute(child_sql, (self.strategy_name,)).fetchall()]
 
+            child_exit_rows = [
+                row for row in children
+                if str(row.get("status") or "").lower() in {"partial", "closed"}
+            ]
+            reason_labeled_child_exit_rows = [
+                row for row in child_exit_rows
+                if row.get("exit_reason")
+            ]
             data_quality = {
-                "reason_available": "exit_reason" in cols or "reason" in cols,
+                "reason_available": "exit_reason" in cols and "exit_event_type" in cols,
                 "missing_columns": [],
                 "child_rows_without_position_id": sum(1 for row in children if not row.get("position_id")),
                 "masters_without_position_id": sum(1 for row in masters if not row.get("position_id")),
-                "close_reason_missing": sum(1 for row in children if str(row.get("status") or "").lower() in {"partial", "closed"}),
+                "child_exit_rows": len(child_exit_rows),
+                "reason_labeled_child_exit_rows": len(reason_labeled_child_exit_rows),
+                "reason_coverage_pct": _round((len(reason_labeled_child_exit_rows) / len(child_exit_rows)) * 100.0, 2) if child_exit_rows else 0.0,
+                "close_reason_missing": len(child_exit_rows) - len(reason_labeled_child_exit_rows),
             }
             return masters, children, data_quality
         finally:
@@ -159,6 +171,8 @@ class ExitManagementReport:
 
     def _position_summary(self, master: dict, children: list[dict]) -> dict:
         child_statuses = [str(row.get("status") or "").lower() for row in children]
+        child_reasons = [str(row.get("exit_reason") or "").strip() for row in children if row.get("exit_reason")]
+        explicit_reason_rows = len(child_reasons)
         partials = [row for row in children if str(row.get("status") or "").lower() == "partial"]
         closes = [row for row in children if str(row.get("status") or "").lower() == "closed"]
         total_child_amount = sum(_safe_float(row.get("amount")) for row in children)
@@ -171,6 +185,16 @@ class ExitManagementReport:
         last_child = children[-1] if children else None
         closed = bool(closes) or str(master.get("status") or "").lower() == "closed"
         path = self._exit_path(child_statuses, closed)
+        final_exit_reason = (
+            str((last_child or {}).get("exit_reason") or "").strip()
+            or str(master.get("exit_reason") or "").strip()
+            or None
+        )
+        final_exit_event_type = (
+            str((last_child or {}).get("exit_event_type") or "").strip()
+            or str(master.get("exit_event_type") or "").strip()
+            or None
+        )
         hold_hours = _ts_to_hours(master.get("timestamp"), (last_child or {}).get("timestamp")) if last_child else None
         return {
             "position_id": master.get("position_id"),
@@ -185,6 +209,10 @@ class ExitManagementReport:
             "status": master.get("status"),
             "closed": closed,
             "exit_path": path,
+            "final_exit_reason": final_exit_reason,
+            "final_exit_event_type": final_exit_event_type,
+            "explicit_exit_reason_rows": explicit_reason_rows,
+            "exit_reasons": child_reasons,
             "exit_steps": len(children),
             "partial_exits": len(partials),
             "close_events": len(closes),
@@ -219,6 +247,8 @@ class ExitManagementReport:
         losses = [pos for pos in closed if _safe_float(pos.get("realized_pnl_eur")) < 0]
         hold_values = [_safe_float(pos.get("hold_hours")) for pos in closed if pos.get("hold_hours") is not None]
         by_path = Counter(str(pos.get("exit_path") or "unknown") for pos in positions)
+        by_reason = Counter(str(pos.get("final_exit_reason") or "missing") for pos in closed)
+        reason_labeled_exits = _safe_int(data_quality.get("reason_labeled_child_exit_rows"))
 
         by_symbol = {}
         symbol_groups: dict[str, list[dict]] = defaultdict(list)
@@ -237,7 +267,9 @@ class ExitManagementReport:
         verdict = "collect_more_exit_data"
         if closed and not data_quality.get("reason_available"):
             verdict = "exit_logging_needs_reason_field"
-        if len(closed) >= 20 and data_quality.get("reason_available"):
+        elif data_quality.get("reason_available") and reason_labeled_exits < 20:
+            verdict = "exit_logging_collecting_reasons"
+        if len(closed) >= 20 and data_quality.get("reason_available") and reason_labeled_exits >= 20:
             verdict = "exit_data_ready_for_review"
 
         ranked = sorted(positions, key=lambda row: _safe_float(row.get("realized_pnl_eur")), reverse=True)
@@ -254,6 +286,9 @@ class ExitManagementReport:
             "win_rate_pct": _round((len(wins) / len(closed)) * 100.0, 2) if closed else 0.0,
             "avg_hold_hours_closed": _round(sum(hold_values) / len(hold_values), 3) if hold_values else 0.0,
             "by_exit_path": dict(by_path),
+            "by_exit_reason": dict(by_reason),
+            "reason_labeled_exit_rows": reason_labeled_exits,
+            "reason_coverage_pct": _safe_float(data_quality.get("reason_coverage_pct")),
             "by_symbol": by_symbol,
             "top_winners": ranked[:5],
             "top_losers": list(reversed(ranked[-5:])) if ranked else [],

@@ -1006,7 +1006,9 @@ class DatabaseManager:
                 'pnl_eur': 'REAL',
                 'fees': 'REAL',
                 'trade_cost': 'REAL',
-                'strategy_name': 'TEXT'
+                'strategy_name': 'TEXT',
+                'exit_reason': 'TEXT',
+                'exit_event_type': 'TEXT'
             }
 
             # Missing columns toevoegen
@@ -1804,10 +1806,13 @@ class DatabaseManager:
             query = """
                 INSERT INTO trades
                 (timestamp, datetime_utc, symbol, side, price, amount,
-                 position_id, position_type, status, pnl_eur, fees, trade_cost, exchange, strategy_name, is_master)
+                 position_id, position_type, status, pnl_eur, fees, trade_cost, exchange,
+                 strategy_name, is_master, exit_reason, exit_event_type)
                 VALUES (
                   ?,
                   datetime(?/1000, 'unixepoch'),
+                  ?,
+                  ?,
                   ?,
                   ?,
                   ?,
@@ -1830,6 +1835,8 @@ class DatabaseManager:
             # strategy_name (optioneel)
             strategy_val = trade_data.get('strategy_name', None)
             is_master_val = trade_data.get('is_master', 0)  # default=0
+            exit_reason_val = trade_data.get('exit_reason', None)
+            exit_event_type_val = trade_data.get('exit_event_type', None)
 
             params = (
                 tstamp,
@@ -1846,7 +1853,9 @@ class DatabaseManager:
                 trade_data.get('trade_cost', 0.0),
                 exchange_val,
                 strategy_val,
-                is_master_val
+                is_master_val,
+                exit_reason_val,
+                exit_event_type_val
             )
             self.execute_query(query, params)
             logger.info(f"[save_trade] Trade data opgeslagen: {trade_data}")

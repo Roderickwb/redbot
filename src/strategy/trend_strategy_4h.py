@@ -2318,8 +2318,31 @@ class TrendStrategy4H:
         # leftover check (klein restant sluiten)
         if pos["amount"] <= 0 or pos["amount"] < self._min_lot(symbol):
             if master_id:
-                self.db_manager.update_trade(master_id, {"status": "closed"})
+                self.db_manager.update_trade(master_id, {
+                    "status": "closed",
+                    "exit_reason": "dust_or_min_lot_close",
+                    "exit_event_type": "state_close",
+                })
             del self.open_positions[symbol]
+
+    @staticmethod
+    def _normalize_exit_reason(reason: str, portion: Decimal) -> tuple[str, str]:
+        raw = str(reason or "unknown").strip()
+        key = raw.lower().replace(" ", "_").replace("-", "_")
+        mapping = {
+            "tp1": "tp1",
+            "stoploss": "stop_loss",
+            "stop_loss": "stop_loss",
+            "trailingstop": "trailing_stop",
+            "trailing_stop": "trailing_stop",
+            "breakeven": "breakeven_stop",
+            "breakeven_stop": "breakeven_stop",
+            "timestop": "time_stop",
+            "time_stop": "time_stop",
+        }
+        normalized = mapping.get(key, key or "unknown")
+        event_type = "partial_exit" if portion < 1 else "full_exit"
+        return normalized, event_type
 
     def _partial_close(self, symbol: str, portion: Decimal, reason: str, exec_price: Optional[Decimal] = None):
         if symbol not in self.open_positions:
@@ -2351,6 +2374,7 @@ class TrendStrategy4H:
 
         # DB child in dryrun/auto
         if self.trading_mode in ("dryrun", "auto"):
+            exit_reason, exit_event_type = self._normalize_exit_reason(reason, portion)
             pnl_raw = (px - pos["entry_price"]) * amt_to_close if side == "buy" else (pos["entry_price"] - px) * amt_to_close
             trade_cost = px * amt_to_close
             fees = float(trade_cost * self.fee_rate)
@@ -2373,7 +2397,9 @@ class TrendStrategy4H:
                 "fees": fees,
                 "trade_cost": float(trade_cost),
                 "strategy_name": self.STRATEGY_NAME,
-                "is_master": 0
+                "is_master": 0,
+                "exit_reason": exit_reason,
+                "exit_event_type": exit_event_type
             }
             self.db_manager.save_trade(child)
 
@@ -2396,7 +2422,9 @@ class TrendStrategy4H:
                             "status": "partial" if pos["amount"] > 0 else "closed",
                             "fees": old_fees + float(fees),
                             "pnl_eur": old_pnl + float(realized_pnl),
-                            "amount": float(pos["amount"])
+                            "amount": float(pos["amount"]),
+                            "exit_reason": exit_reason if pos["amount"] <= 0 else None,
+                            "exit_event_type": exit_event_type if pos["amount"] <= 0 else None
                         })
                 except Exception:
                     pass
@@ -2435,7 +2463,12 @@ class TrendStrategy4H:
             mid = pos.get("master_id")
             if mid:
                 try:
-                    self.db_manager.update_trade(mid, {"status": "closed"})
+                    exit_reason, exit_event_type = self._normalize_exit_reason(reason, Decimal("1.0"))
+                    self.db_manager.update_trade(mid, {
+                        "status": "closed",
+                        "exit_reason": exit_reason,
+                        "exit_event_type": exit_event_type,
+                    })
                 except Exception:
                     pass
 

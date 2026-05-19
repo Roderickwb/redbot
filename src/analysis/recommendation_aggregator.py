@@ -301,6 +301,17 @@ class RecommendationAggregator:
                 default_action="wait",
                 evidence={"positions": positions, "closed": closed, "summary": summary},
             )]
+        if verdict == "exit_logging_collecting_reasons":
+            return [self._item(
+                area="exits",
+                candidate_type="exit_reason_collection",
+                status=STATUS_WAIT,
+                title="Exit reason logging is collecting fresh data",
+                headline=f"Exit report has {closed} closed positions, but older rows still miss explicit close reasons.",
+                why="New exits can now be judged by reason; wait for fresh reason-labeled exits before tuning TP/SL/trailing rules.",
+                default_action="wait",
+                evidence={"positions": positions, "closed": closed, "summary": summary},
+            )]
         if verdict == "exit_data_ready_for_review":
             return [self._item(
                 area="exits",

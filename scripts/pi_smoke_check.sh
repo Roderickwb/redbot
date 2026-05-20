@@ -27,6 +27,7 @@ echo "== Compile critical modules =="
   src/analysis/exit_management_report.py \
   src/analysis/position_lifecycle_report.py \
   src/analysis/recommendation_aggregator.py \
+  src/analysis/recommendation_quality_tracker.py \
   src/analysis/daily_analysis_job.py \
   src/analysis/daily_control_report.py \
   src/analysis/operator_cockpit.py \
@@ -77,6 +78,7 @@ for name in (
     "risk_advice_history",
     "live_readiness_gate",
     "recommendation_aggregator",
+    "recommendation_quality_tracker",
     "pre_gpt_gate_report",
     "daily_control_report",
     "operator_cockpit",
@@ -157,6 +159,13 @@ for name in (
             f" status={result.get('status')} review={summary.get('needs_operator_review')} "
             f"auto_context={summary.get('auto_accept_as_context')} "
             f"wait={summary.get('wait_more_evidence')} blocked={summary.get('blocked')}"
+        )
+    elif name == "recommendation_quality_tracker":
+        summary = result.get("summary") or {}
+        print(
+            f" status={result.get('status')} tracked={summary.get('tracked_items')} "
+            f"days={summary.get('days_observed')} attention={summary.get('needs_attention')} "
+            f"unstable={summary.get('unstable')}"
         )
     elif name == "pre_gpt_gate_report":
         summary = result.get("summary") or {}

@@ -44,6 +44,7 @@ DEFAULT_INDICATOR_EDGE_REPORT = os.path.join("analysis", "indicator_edge", "late
 DEFAULT_EXIT_MANAGEMENT_REPORT = os.path.join("analysis", "exits", "latest_exit_management_report.json")
 DEFAULT_POSITION_LIFECYCLE_REPORT = os.path.join("analysis", "positions", "latest_position_lifecycle_report.json")
 DEFAULT_RECOMMENDATION_AGGREGATOR = os.path.join("analysis", "recommendations", "latest_recommendation_aggregator.json")
+DEFAULT_RECOMMENDATION_QUALITY = os.path.join("analysis", "recommendations", "latest_recommendation_quality_report.json")
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
 DEFAULT_GPT_DECISION_REPORT = os.path.join("analysis", "gpt_decisions", "latest_gpt_decision_report.json")
@@ -104,6 +105,7 @@ class DailyControlReport:
         exit_management_path: str = DEFAULT_EXIT_MANAGEMENT_REPORT,
         position_lifecycle_path: str = DEFAULT_POSITION_LIFECYCLE_REPORT,
         recommendation_aggregator_path: str = DEFAULT_RECOMMENDATION_AGGREGATOR,
+        recommendation_quality_path: str = DEFAULT_RECOMMENDATION_QUALITY,
         alerts_path: str = DEFAULT_ALERT_REPORT,
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
         gpt_decision_path: str = DEFAULT_GPT_DECISION_REPORT,
@@ -130,6 +132,7 @@ class DailyControlReport:
         self.exit_management_path = exit_management_path
         self.position_lifecycle_path = position_lifecycle_path
         self.recommendation_aggregator_path = recommendation_aggregator_path
+        self.recommendation_quality_path = recommendation_quality_path
         self.alerts_path = alerts_path
         self.market_regime_path = market_regime_path
         self.gpt_decision_path = gpt_decision_path
@@ -158,6 +161,7 @@ class DailyControlReport:
             "exit_management": load_json(self.exit_management_path),
             "position_lifecycle": load_json(self.position_lifecycle_path),
             "recommendation_aggregator": load_json(self.recommendation_aggregator_path),
+            "recommendation_quality": load_json(self.recommendation_quality_path),
             "alerts": load_json(self.alerts_path),
             "market_regime": load_json(self.market_regime_path),
             "gpt_decisions": load_json(self.gpt_decision_path),
@@ -186,8 +190,9 @@ class DailyControlReport:
         live_readiness_status = self._live_readiness_status(reports)
         learning_status = self._learning_status(reports)
         recommendation_status = self._recommendation_status(reports)
+        recommendation_quality_status = self._recommendation_quality_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
-        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_advice_history_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, exit_management_status, position_lifecycle_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, live_readiness_status, learning_status)
+        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_advice_history_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, exit_management_status, position_lifecycle_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, live_readiness_status, learning_status, recommendation_quality_status)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -197,6 +202,7 @@ class DailyControlReport:
             "approval_queue": approval_queue,
             "learning_status": learning_status,
             "recommendation_status": recommendation_status,
+            "recommendation_quality_status": recommendation_quality_status,
             "experiment_status": experiment_status,
             "promotion_status": promotion_status,
             "approval_status": approval_status,
@@ -234,6 +240,7 @@ class DailyControlReport:
                 "exit_management": self.exit_management_path,
                 "position_lifecycle": self.position_lifecycle_path,
                 "recommendation_aggregator": self.recommendation_aggregator_path,
+                "recommendation_quality": self.recommendation_quality_path,
                 "alerts": self.alerts_path,
                 "market_regime": self.market_regime_path,
                 "gpt_decisions": self.gpt_decision_path,
@@ -246,7 +253,7 @@ class DailyControlReport:
     def _blockers(self, reports: dict) -> list[dict]:
         blockers = []
         for name, report in reports.items():
-            if name in {"live_readiness", "risk_advice_history", "indicator_edge", "exit_management", "position_lifecycle", "recommendation_aggregator"} and report.get("_missing"):
+            if name in {"live_readiness", "risk_advice_history", "indicator_edge", "exit_management", "position_lifecycle", "recommendation_aggregator", "recommendation_quality"} and report.get("_missing"):
                 continue
             if report.get("_missing"):
                 blockers.append({
@@ -393,6 +400,27 @@ class DailyControlReport:
             "top_review": summary.get("top_review", [])[:3],
             "live_effect": bool(summary.get("live_effect")),
         }
+
+    def _recommendation_quality_status(self, reports: dict) -> dict:
+        quality = reports.get("recommendation_quality", {}) or {}
+        summary = quality.get("summary", {}) or {}
+        return {
+            "status": summary.get("status") or quality.get("status"),
+            "tracked_items": _safe_int(summary.get("tracked_items")),
+            "observed_today": _safe_int(summary.get("observed_today")),
+            "days_observed": _safe_int(summary.get("days_observed")),
+            "needs_attention": _safe_int(summary.get("needs_attention")),
+            "needs_review": _safe_int(summary.get("needs_review")),
+            "unstable": _safe_int(summary.get("unstable")),
+            "stale_unresolved": _safe_int(summary.get("stale_unresolved")),
+            "stable_unresolved": _safe_int(summary.get("stable_unresolved")),
+            "stable_context": _safe_int(summary.get("stable_context")),
+            "operator_handled": _safe_int(summary.get("operator_handled")),
+            "by_quality": summary.get("by_quality", {}),
+            "top_attention": summary.get("top_attention", [])[:5],
+            "live_effect": bool(summary.get("live_effect")),
+        }
+
     def _experiment_status(self, reports: dict) -> dict:
         plan = reports.get("experiments", {}) or {}
         shadow = reports.get("shadow_results", {}) or {}
@@ -692,6 +720,7 @@ class DailyControlReport:
         pre_gpt_gate = reports.get("pre_gpt_gate", {}) or {}
         safety = reports.get("safety_control", {}) or {}
         live_readiness = reports.get("live_readiness", {}) or {}
+        recommendation_quality = reports.get("recommendation_quality", {}) or {}
 
         if blockers:
             status = "ACTION_NEEDED"
@@ -729,6 +758,7 @@ class DailyControlReport:
             "gpt_decisions": gpt_decisions.get("totals", {}),
             "pre_gpt_gate": pre_gpt_gate.get("summary", {}),
             "live_readiness": live_readiness.get("summary", {}),
+            "recommendation_quality": recommendation_quality.get("summary", {}),
             "safety_control": {
                 "status": safety.get("status"),
                 "kill_switch_active": safety.get("kill_switch_active"),
@@ -759,6 +789,7 @@ class DailyControlReport:
         safety_status: dict,
         live_readiness_status: dict,
         learning_status: dict,
+        recommendation_quality_status: dict,
     ) -> list[str]:
         if blockers:
             return [
@@ -865,6 +896,12 @@ class DailyControlReport:
             actions.append("ML has enough data, but training dependencies are missing; verify sklearn/joblib on the Pi.")
         elif ml.get("status") == "ready":
             actions.append("ML has enough data but no trained model output yet; inspect the ML edge model report.")
+        if recommendation_quality_status.get("unstable"):
+            actions.append("Recommendation quality tracker found unstable advice; use history before approving.")
+        elif recommendation_quality_status.get("needs_attention"):
+            actions.append("Recommendation quality tracker has items needing review in the app.")
+        elif recommendation_quality_status.get("tracked_items"):
+            actions.append("Recommendation quality tracker is building multi-day memory for app decisions.")
         if approval_queue:
             actions.append("Review human-approval recommendations; no automatic live changes are made.")
         if not actions:
@@ -888,6 +925,7 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
     risk_guard = report.get("risk_guard_status", {}) or {}
     exits = report.get("exit_management_status", {}) or {}
     lifecycle = report.get("position_lifecycle_status", {}) or {}
+    rec_quality = report.get("recommendation_quality_status", {}) or {}
     live_readiness = report.get("live_readiness_status", {}) or {}
 
     lines = [
@@ -973,6 +1011,12 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
             f"issues={lifecycle.get('issue_count', 0)} "
             f"high={lifecycle.get('high_issues', 0)} "
             f"verdict={lifecycle.get('verdict')}"
+        ),
+        (
+            f"Recommendation quality tracked={rec_quality.get('tracked_items', 0)} "
+            f"days={rec_quality.get('days_observed', 0)} "
+            f"attention={rec_quality.get('needs_attention', 0)} "
+            f"unstable={rec_quality.get('unstable', 0)}"
         ),
         (
             f"Live readiness eligible={live_readiness.get('eligible_for_live_wiring', 0)} "

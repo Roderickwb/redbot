@@ -86,6 +86,7 @@ class OperatorCockpit:
         shadow_live = control.get("shadow_live_status", {}) or {}
         live_readiness = control.get("live_readiness_status", {}) or {}
         recommendation_status = control.get("recommendation_status", {}) or {}
+        recommendation_quality = control.get("recommendation_quality_status", {}) or {}
 
         live_changes = self._live_changes(control, shadow_live, risk_policy, risk_advice_history, risk_strategy, risk_outcome, risk_history, safety)
         health = self._health(blockers)
@@ -94,7 +95,7 @@ class OperatorCockpit:
         learning_summary = self._learning_summary(learning, experiments, promotion, approval_status, gpt_efficiency, pre_gpt_gate)
         risk_summary = self._risk_summary(risk_policy, risk_advice_history, risk_strategy, risk_outcome, risk_history, risk_guard, exit_management, position_lifecycle)
         live_readiness_summary = self._live_readiness_summary(live_readiness)
-        recommendation_summary = self._recommendation_summary(recommendation_status)
+        recommendation_summary = self._recommendation_summary(recommendation_status, recommendation_quality)
         daily_decision = self._daily_decision(live_changes, health, action_needed, learning_summary, risk_summary, live_readiness_summary)
 
         return {
@@ -374,7 +375,7 @@ class OperatorCockpit:
             "live_enforcement": bool(live_readiness.get("live_enforcement")),
         }
 
-    def _recommendation_summary(self, recommendation_status: dict) -> dict:
+    def _recommendation_summary(self, recommendation_status: dict, recommendation_quality: dict) -> dict:
         return {
             "status": recommendation_status.get("status"),
             "total": _safe_int(recommendation_status.get("total")),
@@ -382,6 +383,10 @@ class OperatorCockpit:
             "auto_accept_as_context": _safe_int(recommendation_status.get("auto_accept_as_context")),
             "wait_more_evidence": _safe_int(recommendation_status.get("wait_more_evidence")),
             "blocked": _safe_int(recommendation_status.get("blocked")),
+            "quality_tracked": _safe_int(recommendation_quality.get("tracked_items")),
+            "quality_days": _safe_int(recommendation_quality.get("days_observed")),
+            "quality_attention": _safe_int(recommendation_quality.get("needs_attention")),
+            "quality_unstable": _safe_int(recommendation_quality.get("unstable")),
             "live_effect": bool(recommendation_status.get("live_effect")),
         }
     def _daily_decision(self, live_changes: dict, health: dict, action_needed: dict, learning: dict, risk: dict, live_readiness: dict) -> dict:
@@ -464,6 +469,12 @@ def format_cockpit_message(cockpit: dict) -> str:
             f"auto_context={recommendations.get('auto_accept_as_context', 0)} "
             f"wait={recommendations.get('wait_more_evidence', 0)} "
             f"blocked={recommendations.get('blocked', 0)}"
+        ),
+        (
+            f"Recommendation quality: tracked={recommendations.get('quality_tracked', 0)} "
+            f"days={recommendations.get('quality_days', 0)} "
+            f"attention={recommendations.get('quality_attention', 0)} "
+            f"unstable={recommendations.get('quality_unstable', 0)}"
         ),
         "",
         "Learning:",

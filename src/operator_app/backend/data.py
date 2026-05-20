@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from src.config.config import DB_FILE
@@ -33,6 +34,23 @@ def load_json(path: str, default: Any = None) -> Any:
 
 def report(name: str) -> dict:
     return load_json(REPORTS[name], {})
+
+
+def mobile_bundle(trade_limit: int = 40) -> dict:
+    return {
+        "status": "OK",
+        "generated_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "snapshot": report("snapshot"),
+        "cockpit": report("cockpit"),
+        "recommendations": report("recommendations"),
+        "recommendation_quality": report("recommendation_quality"),
+        "operator_decisions": report("operator_decisions"),
+        "safety": report("safety"),
+        "positions": report("positions"),
+        "exits": report("exits"),
+        "trades": recent_trades(limit=trade_limit),
+        "live_effect": False,
+    }
 
 
 def recent_trades(limit: int = 100, symbol: Optional[str] = None) -> dict:

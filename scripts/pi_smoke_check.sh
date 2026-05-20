@@ -25,6 +25,7 @@ echo "== Compile critical modules =="
   src/analysis/ml_edge_model.py \
   src/analysis/indicator_edge_report.py \
   src/analysis/exit_management_report.py \
+  src/analysis/position_lifecycle_report.py \
   src/analysis/recommendation_aggregator.py \
   src/analysis/daily_analysis_job.py \
   src/analysis/daily_control_report.py \
@@ -71,6 +72,7 @@ for name in (
     "ml_edge_model",
     "indicator_edge_report",
     "exit_management_report",
+    "position_lifecycle_report",
     "risk_guard_report",
     "risk_advice_history",
     "live_readiness_gate",
@@ -109,6 +111,14 @@ for name in (
             f" status={result.get('status')} positions={summary.get('positions_loaded')} "
             f"closed={summary.get('closed_positions')} tp1={summary.get('positions_with_tp1_proxy')} "
             f"pnl={summary.get('total_realized_pnl_eur')} verdict={summary.get('verdict')}"
+        )
+    elif name == "position_lifecycle_report":
+        summary = result.get("summary") or {}
+        print(
+            f" status={result.get('status')} masters={summary.get('master_trades')} "
+            f"open={summary.get('open_masters')} partial={summary.get('partial_masters')} "
+            f"closed={summary.get('closed_masters')} issues={summary.get('issue_count')} "
+            f"high={summary.get('high_issues')} verdict={summary.get('verdict')}"
         )
     elif name == "operator_app_snapshot":
         summary = result.get("summary") or {}

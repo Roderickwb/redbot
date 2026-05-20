@@ -42,6 +42,7 @@ DEFAULT_RISK_GUARD_REPORT = os.path.join("analysis", "risk", "latest_risk_guard_
 DEFAULT_ML_EDGE_REPORT = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_INDICATOR_EDGE_REPORT = os.path.join("analysis", "indicator_edge", "latest_indicator_edge_report.json")
 DEFAULT_EXIT_MANAGEMENT_REPORT = os.path.join("analysis", "exits", "latest_exit_management_report.json")
+DEFAULT_POSITION_LIFECYCLE_REPORT = os.path.join("analysis", "positions", "latest_position_lifecycle_report.json")
 DEFAULT_RECOMMENDATION_AGGREGATOR = os.path.join("analysis", "recommendations", "latest_recommendation_aggregator.json")
 DEFAULT_ALERT_REPORT = os.path.join("analysis", "bot_alerts", "latest_bot_alerts_report.json")
 DEFAULT_MARKET_REGIME_REPORT = os.path.join("analysis", "market_regime", "latest_market_regime.json")
@@ -101,6 +102,7 @@ class DailyControlReport:
         ml_edge_path: str = DEFAULT_ML_EDGE_REPORT,
         indicator_edge_path: str = DEFAULT_INDICATOR_EDGE_REPORT,
         exit_management_path: str = DEFAULT_EXIT_MANAGEMENT_REPORT,
+        position_lifecycle_path: str = DEFAULT_POSITION_LIFECYCLE_REPORT,
         recommendation_aggregator_path: str = DEFAULT_RECOMMENDATION_AGGREGATOR,
         alerts_path: str = DEFAULT_ALERT_REPORT,
         market_regime_path: str = DEFAULT_MARKET_REGIME_REPORT,
@@ -126,6 +128,7 @@ class DailyControlReport:
         self.ml_edge_path = ml_edge_path
         self.indicator_edge_path = indicator_edge_path
         self.exit_management_path = exit_management_path
+        self.position_lifecycle_path = position_lifecycle_path
         self.recommendation_aggregator_path = recommendation_aggregator_path
         self.alerts_path = alerts_path
         self.market_regime_path = market_regime_path
@@ -153,6 +156,7 @@ class DailyControlReport:
             "ml_edge": load_json(self.ml_edge_path),
             "indicator_edge": load_json(self.indicator_edge_path),
             "exit_management": load_json(self.exit_management_path),
+            "position_lifecycle": load_json(self.position_lifecycle_path),
             "recommendation_aggregator": load_json(self.recommendation_aggregator_path),
             "alerts": load_json(self.alerts_path),
             "market_regime": load_json(self.market_regime_path),
@@ -175,6 +179,7 @@ class DailyControlReport:
         risk_history_status = self._risk_history_status(reports)
         risk_guard_status = self._risk_guard_status(reports)
         exit_management_status = self._exit_management_status(reports)
+        position_lifecycle_status = self._position_lifecycle_status(reports)
         gpt_efficiency_status = self._gpt_efficiency_status(reports)
         pre_gpt_gate_status = self._pre_gpt_gate_status(reports)
         safety_status = self._safety_status(reports)
@@ -182,7 +187,7 @@ class DailyControlReport:
         learning_status = self._learning_status(reports)
         recommendation_status = self._recommendation_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
-        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_advice_history_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, exit_management_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, live_readiness_status, learning_status)
+        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_advice_history_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, exit_management_status, position_lifecycle_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, live_readiness_status, learning_status)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -203,6 +208,7 @@ class DailyControlReport:
             "risk_history_status": risk_history_status,
             "risk_guard_status": risk_guard_status,
             "exit_management_status": exit_management_status,
+            "position_lifecycle_status": position_lifecycle_status,
             "gpt_efficiency_status": gpt_efficiency_status,
             "pre_gpt_gate_status": pre_gpt_gate_status,
             "safety_status": safety_status,
@@ -226,6 +232,7 @@ class DailyControlReport:
                 "ml_edge_model": self.ml_edge_path,
                 "indicator_edge": self.indicator_edge_path,
                 "exit_management": self.exit_management_path,
+                "position_lifecycle": self.position_lifecycle_path,
                 "recommendation_aggregator": self.recommendation_aggregator_path,
                 "alerts": self.alerts_path,
                 "market_regime": self.market_regime_path,
@@ -239,7 +246,7 @@ class DailyControlReport:
     def _blockers(self, reports: dict) -> list[dict]:
         blockers = []
         for name, report in reports.items():
-            if name in {"live_readiness", "risk_advice_history", "indicator_edge", "exit_management", "recommendation_aggregator"} and report.get("_missing"):
+            if name in {"live_readiness", "risk_advice_history", "indicator_edge", "exit_management", "position_lifecycle", "recommendation_aggregator"} and report.get("_missing"):
                 continue
             if report.get("_missing"):
                 blockers.append({
@@ -569,6 +576,26 @@ class DailyControlReport:
             "live_effect": bool((exits.get("meta") or {}).get("live_effect")),
         }
 
+    def _position_lifecycle_status(self, reports: dict) -> dict:
+        lifecycle = reports.get("position_lifecycle", {}) or {}
+        summary = lifecycle.get("summary", {}) or {}
+        return {
+            "status": summary.get("status") or lifecycle.get("status"),
+            "verdict": summary.get("verdict"),
+            "master_trades": _safe_int(summary.get("master_trades")),
+            "child_trades": _safe_int(summary.get("child_trades")),
+            "open_masters": _safe_int(summary.get("open_masters")),
+            "partial_masters": _safe_int(summary.get("partial_masters")),
+            "closed_masters": _safe_int(summary.get("closed_masters")),
+            "issue_count": _safe_int(summary.get("issue_count")),
+            "high_issues": _safe_int(summary.get("high_issues")),
+            "medium_issues": _safe_int(summary.get("medium_issues")),
+            "low_issues": _safe_int(summary.get("low_issues")),
+            "by_issue_code": summary.get("by_issue_code", {}),
+            "top_issues": summary.get("top_issues", [])[:5],
+            "live_effect": bool((lifecycle.get("meta") or {}).get("live_effect")),
+        }
+
     def _gpt_efficiency_status(self, reports: dict) -> dict:
         gpt = reports.get("gpt_decisions", {}) or {}
         totals = gpt.get("totals", {}) or {}
@@ -660,6 +687,7 @@ class DailyControlReport:
         risk_history = reports.get("risk_bridge_history", {}) or {}
         risk_guard = reports.get("risk_guard", {}) or {}
         exit_management = reports.get("exit_management", {}) or {}
+        position_lifecycle = reports.get("position_lifecycle", {}) or {}
         gpt_decisions = reports.get("gpt_decisions", {}) or {}
         pre_gpt_gate = reports.get("pre_gpt_gate", {}) or {}
         safety = reports.get("safety_control", {}) or {}
@@ -697,6 +725,7 @@ class DailyControlReport:
             "risk_bridge_history": risk_history.get("summary", {}),
             "risk_guard": risk_guard.get("summary", {}),
             "exit_management": exit_management.get("summary", {}),
+            "position_lifecycle": position_lifecycle.get("summary", {}),
             "gpt_decisions": gpt_decisions.get("totals", {}),
             "pre_gpt_gate": pre_gpt_gate.get("summary", {}),
             "live_readiness": live_readiness.get("summary", {}),
@@ -724,6 +753,7 @@ class DailyControlReport:
         risk_history_status: dict,
         risk_guard_status: dict,
         exit_management_status: dict,
+        position_lifecycle_status: dict,
         gpt_efficiency_status: dict,
         pre_gpt_gate_status: dict,
         safety_status: dict,
@@ -802,6 +832,12 @@ class DailyControlReport:
             actions.append("Exit management has enough data for review; keep exit changes manual/read-only.")
         elif exit_management_status.get("positions_loaded"):
             actions.append("Exit management is collecting position lifecycle evidence before tuning exits.")
+        if position_lifecycle_status.get("high_issues"):
+            actions.append("Position lifecycle has high-integrity issues; fix bookkeeping before app/autonomy decisions.")
+        elif position_lifecycle_status.get("medium_issues"):
+            actions.append("Position lifecycle has review items; keep app actions read-only until checked.")
+        elif position_lifecycle_status.get("master_trades"):
+            actions.append("Position lifecycle is being tracked for app readiness.")
         if gpt_efficiency_status.get("verdict") == "mostly_hold_review_cost":
             actions.append("GPT decisions are mostly HOLD; evaluate a shadow pre-GPT gate before reducing live calls.")
         if pre_gpt_gate_status.get("verdict") == "promising_for_shadow":
@@ -851,6 +887,7 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
     risk_history = report.get("risk_history_status", {}) or {}
     risk_guard = report.get("risk_guard_status", {}) or {}
     exits = report.get("exit_management_status", {}) or {}
+    lifecycle = report.get("position_lifecycle_status", {}) or {}
     live_readiness = report.get("live_readiness_status", {}) or {}
 
     lines = [
@@ -927,6 +964,15 @@ def format_control_message(report: dict, max_actions: int = 5, max_approvals: in
             f"win={exits.get('win_rate_pct', 0.0)}% "
             f"pnl={exits.get('total_realized_pnl_eur', 0.0)} "
             f"verdict={exits.get('verdict')}"
+        ),
+        (
+            f"Lifecycle masters={lifecycle.get('master_trades', 0)} "
+            f"open={lifecycle.get('open_masters', 0)} "
+            f"partial={lifecycle.get('partial_masters', 0)} "
+            f"closed={lifecycle.get('closed_masters', 0)} "
+            f"issues={lifecycle.get('issue_count', 0)} "
+            f"high={lifecycle.get('high_issues', 0)} "
+            f"verdict={lifecycle.get('verdict')}"
         ),
         (
             f"Live readiness eligible={live_readiness.get('eligible_for_live_wiring', 0)} "

@@ -80,6 +80,7 @@ class OperatorCockpit:
         risk_history = control.get("risk_history_status", {}) or {}
         risk_guard = control.get("risk_guard_status", {}) or {}
         exit_management = control.get("exit_management_status", {}) or {}
+        position_lifecycle = control.get("position_lifecycle_status", {}) or {}
         gpt_efficiency = control.get("gpt_efficiency_status", {}) or {}
         pre_gpt_gate = control.get("pre_gpt_gate_status", {}) or {}
         shadow_live = control.get("shadow_live_status", {}) or {}
@@ -91,7 +92,7 @@ class OperatorCockpit:
         action_needed = self._action_needed(blockers, approvals, approval_status, promotion, risk_advice_history, risk_history, live_readiness)
         status = self._status(health, action_needed, control.get("status"))
         learning_summary = self._learning_summary(learning, experiments, promotion, approval_status, gpt_efficiency, pre_gpt_gate)
-        risk_summary = self._risk_summary(risk_policy, risk_advice_history, risk_strategy, risk_outcome, risk_history, risk_guard, exit_management)
+        risk_summary = self._risk_summary(risk_policy, risk_advice_history, risk_strategy, risk_outcome, risk_history, risk_guard, exit_management, position_lifecycle)
         live_readiness_summary = self._live_readiness_summary(live_readiness)
         recommendation_summary = self._recommendation_summary(recommendation_status)
         daily_decision = self._daily_decision(live_changes, health, action_needed, learning_summary, risk_summary, live_readiness_summary)
@@ -300,7 +301,7 @@ class OperatorCockpit:
             "pre_gpt_verdict": pre_gpt_gate.get("verdict"),
         }
 
-    def _risk_summary(self, risk_policy: dict, risk_advice_history: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, risk_guard: dict, exit_management: dict) -> dict:
+    def _risk_summary(self, risk_policy: dict, risk_advice_history: dict, risk_strategy: dict, risk_outcome: dict, risk_history: dict, risk_guard: dict, exit_management: dict, position_lifecycle: dict) -> dict:
         return {
             "policy_symbols": _safe_int(risk_policy.get("total_symbols")),
             "risk_down": _safe_int(risk_policy.get("risk_down")),
@@ -338,6 +339,13 @@ class OperatorCockpit:
             "exit_avg_hold_hours": _safe_float(exit_management.get("avg_hold_hours_closed")),
             "exit_reason_available": bool(exit_management.get("reason_available")),
             "exit_verdict": exit_management.get("verdict"),
+            "lifecycle_masters": _safe_int(position_lifecycle.get("master_trades")),
+            "lifecycle_open": _safe_int(position_lifecycle.get("open_masters")),
+            "lifecycle_partial": _safe_int(position_lifecycle.get("partial_masters")),
+            "lifecycle_closed": _safe_int(position_lifecycle.get("closed_masters")),
+            "lifecycle_issues": _safe_int(position_lifecycle.get("issue_count")),
+            "lifecycle_high_issues": _safe_int(position_lifecycle.get("high_issues")),
+            "lifecycle_verdict": position_lifecycle.get("verdict"),
             "live_enforcement": bool(risk_history.get("live_enforcement")),
         }
 
@@ -542,6 +550,15 @@ def format_cockpit_message(cockpit: dict) -> str:
             f"win={risk.get('exit_win_rate_pct', 0.0)}% "
             f"pnl={risk.get('exit_total_pnl_eur', 0.0)} "
             f"verdict={risk.get('exit_verdict')}"
+        ),
+        (
+            f"- Lifecycle: masters={risk.get('lifecycle_masters', 0)} "
+            f"open={risk.get('lifecycle_open', 0)} "
+            f"partial={risk.get('lifecycle_partial', 0)} "
+            f"closed={risk.get('lifecycle_closed', 0)} "
+            f"issues={risk.get('lifecycle_issues', 0)} "
+            f"high={risk.get('lifecycle_high_issues', 0)} "
+            f"verdict={risk.get('lifecycle_verdict')}"
         ),
     ]
 

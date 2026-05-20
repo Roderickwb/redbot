@@ -26,6 +26,7 @@ DEFAULT_RISK_GUARD = os.path.join("analysis", "risk", "latest_risk_guard_report.
 DEFAULT_PRE_GPT_GATE = os.path.join("analysis", "gpt_decisions", "latest_pre_gpt_gate_report.json")
 DEFAULT_ML_EDGE = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_EXIT_MANAGEMENT = os.path.join("analysis", "exits", "latest_exit_management_report.json")
+DEFAULT_POSITION_LIFECYCLE = os.path.join("analysis", "positions", "latest_position_lifecycle_report.json")
 
 STATUS_AUTO_CONTEXT = "auto_accept_as_context"
 STATUS_WAIT = "wait_more_evidence"
@@ -77,6 +78,7 @@ class RecommendationAggregator:
         pre_gpt_gate_path: str = DEFAULT_PRE_GPT_GATE,
         ml_edge_path: str = DEFAULT_ML_EDGE,
         exit_management_path: str = DEFAULT_EXIT_MANAGEMENT,
+        position_lifecycle_path: str = DEFAULT_POSITION_LIFECYCLE,
     ):
         self.paths = {
             "indicator_edge": indicator_edge_path,
@@ -87,6 +89,7 @@ class RecommendationAggregator:
             "pre_gpt_gate": pre_gpt_gate_path,
             "ml_edge": ml_edge_path,
             "exit_management": exit_management_path,
+            "position_lifecycle": position_lifecycle_path,
         }
 
     def build_report(self) -> dict:
@@ -100,6 +103,7 @@ class RecommendationAggregator:
         items.extend(self._from_ml_edge(reports.get("ml_edge") or {}))
         items.extend(self._from_indicator_edge(reports.get("indicator_edge") or {}))
         items.extend(self._from_exit_management(reports.get("exit_management") or {}))
+        items.extend(self._from_position_lifecycle(reports.get("position_lifecycle") or {}))
 
         items = self._dedupe(items)
         items.sort(key=self._sort_key)
@@ -332,6 +336,46 @@ class RecommendationAggregator:
                 headline=f"Exit report is tracking {positions} positions and {closed} closed positions.",
                 why="Sample is still building before exit rules should be tuned.",
                 default_action="wait",
+                evidence=summary,
+            )]
+        return []
+
+    def _from_position_lifecycle(self, report: dict) -> list[dict]:
+        summary = report.get("summary", {}) or {}
+        high = _safe_int(summary.get("high_issues"))
+        medium = _safe_int(summary.get("medium_issues"))
+        issues = _safe_int(summary.get("issue_count"))
+        if high:
+            return [self._item(
+                area="positions",
+                candidate_type="position_lifecycle_integrity",
+                status=STATUS_REVIEW,
+                title="Position lifecycle has integrity issues",
+                headline=f"Lifecycle report found {high} high issues across {summary.get('master_trades')} master trades.",
+                why="The app and future autonomy should not rely on position state until high-integrity bookkeeping issues are understood.",
+                default_action="freeze",
+                evidence=summary,
+            )]
+        if medium:
+            return [self._item(
+                area="positions",
+                candidate_type="position_lifecycle_review",
+                status=STATUS_WAIT,
+                title="Position lifecycle has review items",
+                headline=f"Lifecycle report found {medium} medium review items.",
+                why="These are not live blockers, but they should stay visible before app decisions become operational.",
+                default_action="wait",
+                evidence=summary,
+            )]
+        if summary.get("master_trades"):
+            return [self._item(
+                area="positions",
+                candidate_type="position_lifecycle_ok",
+                status=STATUS_AUTO_CONTEXT,
+                title="Position lifecycle is tracked",
+                headline=f"Lifecycle report is tracking {summary.get('master_trades')} master trades with {issues} issues.",
+                why="This is accepted as app-readiness context with no live effect.",
+                default_action="auto_accept_context",
                 evidence=summary,
             )]
         return []

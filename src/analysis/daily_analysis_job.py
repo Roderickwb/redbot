@@ -79,6 +79,7 @@ from src.analysis.operator_app_snapshot import run_operator_app_snapshot
 from src.analysis.operator_cockpit import run_operator_cockpit
 from src.analysis.operator_decisions import run_operator_decisions
 from src.analysis.promotion_gate import run_promotion_gate
+from src.analysis.position_lifecycle_report import run_position_lifecycle_report
 from src.analysis.pre_gpt_gate_report import run_pre_gpt_gate_report
 from src.analysis.recommendation_aggregator import run_recommendation_aggregator
 from src.analysis.recommendation_registry import RecommendationRegistry
@@ -299,6 +300,15 @@ def _build_exit_management_report(limit: int) -> dict:
         "status": report.get("status"),
         "summary": summary,
         "data_quality": report.get("data_quality", {}),
+        "output_path": report.get("output_path"),
+    }
+
+
+def _build_position_lifecycle_report(limit: int) -> dict:
+    report = run_position_lifecycle_report(limit=limit)
+    return {
+        "status": report.get("status"),
+        "summary": report.get("summary", {}),
         "output_path": report.get("output_path"),
     }
 
@@ -647,6 +657,9 @@ def run_daily_analysis_job(
     )
     steps["exit_management_report"] = _run_step(
         lambda: _build_exit_management_report(limit=report_limit),
+    )
+    steps["position_lifecycle_report"] = _run_step(
+        lambda: _build_position_lifecycle_report(limit=report_limit),
     )
     steps["opportunity_report"] = _run_step(
         lambda: _build_opportunity_report(limit=report_limit),

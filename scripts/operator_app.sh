@@ -13,4 +13,18 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
+EXISTING_PIDS="$(pgrep -f "uvicorn src.operator_app.backend.app:app" || true)"
+if [[ -n "$EXISTING_PIDS" ]]; then
+  echo "existing operator app found; stopping: $EXISTING_PIDS"
+  kill -INT $EXISTING_PIDS 2>/dev/null || true
+  sleep 2
+  EXISTING_PIDS="$(pgrep -f "uvicorn src.operator_app.backend.app:app" || true)"
+  if [[ -n "$EXISTING_PIDS" ]]; then
+    echo "operator app still running after SIGINT; sending SIGTERM"
+    kill -TERM $EXISTING_PIDS 2>/dev/null || true
+    sleep 2
+  fi
+fi
+
+echo "operator app starting on http://$HOST:$PORT"
 exec "$PYTHON_BIN" -m uvicorn src.operator_app.backend.app:app --host "$HOST" --port "$PORT"

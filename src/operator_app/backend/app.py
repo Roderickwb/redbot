@@ -255,8 +255,8 @@ FALLBACK_HTML = """
 """
 
 
-@app.get("/{path:path}")
-def frontend(path: str) -> FileResponse | HTMLResponse:
+@app.get("/{path:path}", response_model=None)
+def frontend(path: str):
     index = FRONTEND_DIST / "index.html"
     if index.exists():
         return FileResponse(index)

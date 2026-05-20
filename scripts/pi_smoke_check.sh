@@ -33,6 +33,10 @@ echo "== Compile critical modules =="
   src/analysis/operator_cockpit.py \
   src/analysis/operator_app_snapshot.py \
   src/analysis/operator_decisions.py \
+  src/operator_app/backend/app.py \
+  src/operator_app/backend/auth.py \
+  src/operator_app/backend/data.py \
+  src/operator_app/backend/schemas.py \
   src/analysis/risk_advice_history.py \
   src/analysis/live_readiness_gate.py \
   src/analysis/pre_gpt_gate_report.py \

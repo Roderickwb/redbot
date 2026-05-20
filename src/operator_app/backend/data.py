@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from typing import Any, Optional
+
+from src.config.config import DB_FILE
+
+
+REPORTS = {
+    "snapshot": os.path.join("analysis", "operator_app", "latest_operator_app_snapshot.json"),
+    "cockpit": os.path.join("analysis", "operator_cockpit", "latest_operator_cockpit.json"),
+    "daily_control": os.path.join("analysis", "daily_control", "latest_daily_control_report.json"),
+    "recommendations": os.path.join("analysis", "recommendations", "latest_recommendation_aggregator.json"),
+    "recommendation_quality": os.path.join("analysis", "recommendations", "latest_recommendation_quality_report.json"),
+    "operator_decisions": os.path.join("analysis", "operator_decisions", "latest_operator_decisions.json"),
+    "safety": os.path.join("analysis", "safety", "latest_safety_control_report.json"),
+    "positions": os.path.join("analysis", "positions", "latest_position_lifecycle_report.json"),
+    "exits": os.path.join("analysis", "exits", "latest_exit_management_report.json"),
+}
+
+
+def load_json(path: str, default: Any = None) -> Any:
+    if not os.path.exists(path):
+        return default if default is not None else {"_missing": True, "_path": path}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        return {"_error": str(e), "_path": path}
+
+
+def report(name: str) -> dict:
+    return load_json(REPORTS[name], {})
+
+
+def recent_trades(limit: int = 100, symbol: Optional[str] = None) -> dict:
+    limit = max(1, min(int(limit or 100), 500))
+    where = ["strategy_name=?"]
+    params: list[Any] = ["trend_4h"]
+    if symbol:
+        where.append("symbol=?")
+        params.append(symbol)
+    params.append(limit)
+    sql = f"""
+        SELECT id, timestamp, datetime_utc, symbol, side, price, amount,
+               position_id, position_type, status, pnl_eur, fees, trade_cost,
+               exchange, strategy_name, is_master, exit_reason, exit_event_type
+          FROM trades
+         WHERE {" AND ".join(where)}
+         ORDER BY timestamp DESC, id DESC
+         LIMIT ?
+    """
+    con = sqlite3.connect(DB_FILE)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = [dict(row) for row in con.execute(sql, params).fetchall()]
+    except sqlite3.OperationalError:
+        rows = []
+    finally:
+        con.close()
+    return {
+        "status": "OK",
+        "limit": limit,
+        "symbol": symbol,
+        "rows": rows,
+        "live_effect": False,
+    }

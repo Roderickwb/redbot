@@ -17,6 +17,25 @@ Dit script doet automatisch:
 Gebruik dit als standaard na een nieuwe push.
 Je hoeft geen chmod, pkill of losse smoke-check meer te draaien.
 
+# operator app v1 starten op de Pi
+cd ~/redbot
+source venv/bin/activate
+
+# eenmalig na de eerste app-pull, als FastAPI/uvicorn nog ontbreken:
+pip install -r requirements.txt
+
+# optioneel schrijf-token voor app-acties; zonder token werkt schrijven ook op LAN
+export OPERATOR_APP_TOKEN="kies-een-lang-token"
+
+# app starten op poort 8080
+./scripts/operator_app.sh
+
+# op telefoon in hetzelfde netwerk:
+# http://redbot.local:8080
+#
+# v1 acties zijn append-only operator decisions:
+# approve/reject/wait/freeze/note hebben geen direct live trading effect.
+
 # Alleen readm logs
 cd ~/redbot/logs
 tail -f naammodule.log

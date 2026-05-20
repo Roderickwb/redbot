@@ -21,8 +21,9 @@ Je hoeft geen chmod, pkill of losse smoke-check meer te draaien.
 cd ~/redbot
 source venv/bin/activate
 
-# eenmalig na de eerste app-pull, als FastAPI/uvicorn nog ontbreken:
-pip install -r requirements.txt
+# eenmalig na de eerste app-pull:
+# installeert alleen de app-dependencies, niet de volledige trading requirements
+bash scripts/operator_app_install.sh
 
 # optioneel schrijf-token voor app-acties; zonder token werkt schrijven ook op LAN
 export OPERATOR_APP_TOKEN="kies-een-lang-token"
@@ -32,9 +33,17 @@ export OPERATOR_APP_TOKEN="kies-een-lang-token"
 
 # op telefoon in hetzelfde netwerk:
 # http://redbot.local:8080
+# als redbot.local niet werkt:
+# hostname -I
+# open daarna http://<pi-ip>:8080
 #
 # v1 acties zijn append-only operator decisions:
 # approve/reject/wait/freeze/note hebben geen direct live trading effect.
+# De app heeft een ingebouwde fallback UI, dus npm is niet nodig om v1 te gebruiken.
+# De React frontend kan later optioneel gebouwd worden als node/npm op de Pi staat:
+# cd ~/redbot/src/operator_app/frontend
+# npm install
+# npm run build
 
 # Alleen readm logs
 cd ~/redbot/logs

@@ -161,6 +161,8 @@ FALLBACK_HTML = """
     .bottom-nav button.active { background: #e9f1ff; color: #10161c; border-color: #e9f1ff; }
     .trade-card { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 0; border-bottom: 1px solid #25303a; }
     .trade-card:last-child { border-bottom: 0; }
+    #toast { position: fixed; left: 12px; right: 12px; bottom: 66px; z-index: 4; display: none; padding: 12px; border-radius: 8px; background: #e9f1ff; color: #10161c; font-weight: 750; box-shadow: 0 18px 45px rgba(0,0,0,.35); }
+    #toast.bad { background: #ffb4b4; }
   </style>
 </head>
 <body>
@@ -216,7 +218,9 @@ FALLBACK_HTML = """
     <button id="nav-positions" onclick="showTab('positions')">Trades</button>
     <button id="nav-safety" onclick="showTab('safety')">Safety</button>
   </nav>
+  <div id="toast"></div>
   <script>
+    let recommendationItems = [];
     const fmt = (v) => v === undefined || v === null ? "-" : String(v);
     const cls = (v) => /OK|WATCH|NO ACTION/i.test(String(v)) ? "ok" : /STOP|ACTION|ERROR/i.test(String(v)) ? "bad" : "review";
     async function getJson(path) {
@@ -237,6 +241,21 @@ FALLBACK_HTML = """
       if (!items || !items.length) return '<div class="muted">Geen data.</div>';
       return items.map((item) => `<div class="trade-card"><strong>${item[0]}</strong><span>${item[1]}</span><span class="muted">${item[2] || ""}</span><span class="muted">${item[3] || ""}</span></div>`).join("");
     }
+    function toast(message, bad = false) {
+      const el = document.getElementById("toast");
+      el.textContent = message;
+      el.className = bad ? "bad" : "";
+      el.style.display = "block";
+      window.setTimeout(() => { el.style.display = "none"; }, 2600);
+    }
+    async function decideByIndex(index, action) {
+      const item = recommendationItems[index];
+      if (!item) {
+        toast("Recommendation not found", true);
+        return;
+      }
+      await decide(item, action);
+    }
     async function decide(item, action) {
       const token = document.getElementById("token").value.trim();
       const payload = {
@@ -254,20 +273,25 @@ FALLBACK_HTML = """
         headers: { "content-type": "application/json", ...(token ? { "x-operator-token": token } : {}) },
         body: JSON.stringify(payload)
       });
-      if (!res.ok) alert("Decision failed: " + res.status + " " + await res.text());
+      if (!res.ok) {
+        toast("Action failed: " + res.status, true);
+        return;
+      }
+      toast(action.toUpperCase() + " opgeslagen. Geen live effect.");
       await loadAll();
     }
     function recommendationRows(data) {
       const items = data.items || data.recommendations || data.review_items || data.actions || [];
+      recommendationItems = items;
       if (!items.length) return '<div class="muted">Geen aanbevelingen gevonden.</div>';
-      return items.slice(0, 30).map((item) => `
+      return items.slice(0, 30).map((item, index) => `
         <div class="metric" style="margin-bottom:8px">
           <div class="row"><strong>${fmt(item.title || item.name || item.source_id || item.id || item.type)}</strong><span class="pill">${fmt(item.status || item.action || item.priority)}</span></div>
           <div class="muted" style="margin:7px 0">${fmt(item.reason || item.finding || item.summary || item.verdict)}</div>
-          <button onclick='decide(${JSON.stringify(item).replaceAll("'", "&#39;")}, "approve")'>Approve</button>
-          <button onclick='decide(${JSON.stringify(item).replaceAll("'", "&#39;")}, "reject")'>Reject</button>
-          <button onclick='decide(${JSON.stringify(item).replaceAll("'", "&#39;")}, "wait")'>Wait</button>
-          <button onclick='decide(${JSON.stringify(item).replaceAll("'", "&#39;")}, "freeze")'>Freeze</button>
+          <button onclick="decideByIndex(${index}, 'approve')">Approve</button>
+          <button onclick="decideByIndex(${index}, 'reject')">Reject</button>
+          <button onclick="decideByIndex(${index}, 'wait')">Wait</button>
+          <button onclick="decideByIndex(${index}, 'freeze')">Freeze</button>
         </div>`).join('');
     }
     async function loadAll() {
@@ -298,7 +322,10 @@ FALLBACK_HTML = """
         document.getElementById("recommendations").innerHTML = recommendationRows(recs);
         const lifecycles = positions.lifecycles || positions.positions || positions.items || [];
         document.getElementById("positions").innerHTML = list(lifecycles.filter((p) => p.status !== "closed").slice(0, 10).map((p) => [p.symbol || p.position_id, p.status, `amount ${fmt(p.master_amount || p.amount)}`, `pnl ${fmt(p.realized_pnl_eur || p.pnl)}`]));
-        document.getElementById("trades").innerHTML = list((trades.rows || trades.trades || trades.items || []).slice(0, 40).map((t) => [t.symbol, `${t.side || ""} ${t.status || ""}`, t.datetime_utc || t.timestamp, `pnl ${fmt(t.pnl_eur)} ${t.exit_reason || ""}`]));
+        const tradeRows = trades.rows || trades.trades || trades.items || [];
+        document.getElementById("trades").innerHTML = tradeRows.length
+          ? list(tradeRows.slice(0, 40).map((t) => [t.symbol || `trade ${t.id}`, `${t.side || ""} ${t.status || ""}`, t.datetime_utc || t.timestamp, `pnl ${fmt(t.pnl_eur)} ${t.exit_reason || ""}`]))
+          : `<div class="metric bad">Geen trades zichtbaar. row_count=${fmt(trades.row_count)} warning=${fmt(trades.warning)}</div>`;
         document.getElementById("safety").innerHTML = [
           metric("Status", s.status),
           metric("Kill switch", String(!!s.kill_switch_active)),

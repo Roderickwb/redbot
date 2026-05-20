@@ -37,6 +37,7 @@ def report(name: str) -> dict:
 
 
 def mobile_bundle(trade_limit: int = 40) -> dict:
+    trades = recent_trades(limit=trade_limit)
     return {
         "status": "OK",
         "generated_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -48,40 +49,65 @@ def mobile_bundle(trade_limit: int = 40) -> dict:
         "safety": report("safety"),
         "positions": report("positions"),
         "exits": report("exits"),
-        "trades": recent_trades(limit=trade_limit),
+        "trades": trades,
         "live_effect": False,
     }
 
 
-def recent_trades(limit: int = 100, symbol: Optional[str] = None) -> dict:
+def recent_trades(limit: int = 100, symbol: Optional[str] = None, strategy_name: Optional[str] = None) -> dict:
     limit = max(1, min(int(limit or 100), 500))
-    where = ["strategy_name=?"]
-    params: list[Any] = ["trend_4h"]
+    where: list[str] = []
+    params: list[Any] = []
+    if strategy_name:
+        where.append("strategy_name=?")
+        params.append(strategy_name)
     if symbol:
         where.append("symbol=?")
         params.append(symbol)
     params.append(limit)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     sql = f"""
         SELECT id, timestamp, datetime_utc, symbol, side, price, amount,
                position_id, position_type, status, pnl_eur, fees, trade_cost,
                exchange, strategy_name, is_master, exit_reason, exit_event_type
           FROM trades
-         WHERE {" AND ".join(where)}
+         {where_sql}
+         ORDER BY timestamp DESC, id DESC
+         LIMIT ?
+    """
+    fallback_sql = f"""
+        SELECT id, timestamp, datetime_utc, symbol, side, price, amount,
+               position_id, position_type, status, pnl_eur, fees, trade_cost,
+               exchange, strategy_name, is_master
+          FROM trades
+         {where_sql}
          ORDER BY timestamp DESC, id DESC
          LIMIT ?
     """
     con = sqlite3.connect(DB_FILE)
     con.row_factory = sqlite3.Row
+    error = ""
     try:
         rows = [dict(row) for row in con.execute(sql, params).fetchall()]
-    except sqlite3.OperationalError:
-        rows = []
+    except sqlite3.OperationalError as e:
+        error = str(e)
+        try:
+            rows = [dict(row) for row in con.execute(fallback_sql, params).fetchall()]
+            for row in rows:
+                row.setdefault("exit_reason", "")
+                row.setdefault("exit_event_type", "")
+        except sqlite3.OperationalError as e2:
+            error = f"{error}; fallback: {e2}"
+            rows = []
     finally:
         con.close()
     return {
         "status": "OK",
         "limit": limit,
         "symbol": symbol,
+        "strategy_name": strategy_name,
+        "row_count": len(rows),
         "rows": rows,
+        "warning": error,
         "live_effect": False,
     }

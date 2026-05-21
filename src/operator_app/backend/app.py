@@ -368,7 +368,12 @@ FALLBACK_HTML = """
       return "btn-note";
     }
     function decisionQuestion(item) {
+      const title = String(item.title || "");
       const level = item.effect_level || "";
+      if (title.includes("Risk guard threshold")) return "Mag de bot dit doorzetten naar validatie voor een mogelijke ruimere daglimiet?";
+      if (title.includes("Live-readiness")) return "Mag dit voorstel door naar de live-gate, zonder nu al live gedrag te wijzigen?";
+      if (title.includes("Risk-down advice")) return "Wil je wachten tot bridge-resultaten bevestigen dat dit live verstandig is?";
+      if (title.includes("Exit reason logging")) return "Wil je wachten tot nieuwe exits genoeg reden-labels hebben voor TP/SL/trailing tuning?";
       if (level === "context_live") return "Mag deze context automatisch mee blijven wegen in GPT/profielen?";
       if (level === "shadow_only") return "Blijft dit als shadow-test doorlopen tot er sterker bewijs is?";
       if (level === "risk_down_live") return "Mag dit door naar de live-gate voor risico omlaag?";
@@ -403,6 +408,63 @@ FALLBACK_HTML = """
       if (e.closed !== undefined) parts.push(`closed ${e.closed}`);
       if (e.verdict !== undefined) parts.push(`verdict ${e.verdict}`);
       return parts.length ? parts.join(" | ") : "Evidence details available in report.";
+    }
+    function humanVerdict(verdict) {
+      const v = String(verdict || "");
+      if (v === "guards_too_strict") return "guard lijkt te streng";
+      if (v === "risk_down_too_strict") return "risico omlaag lijkt te streng";
+      if (v === "stable_data_down_candidates") return "stabiel risico-omlaag signaal";
+      if (v === "promising_for_shadow") return "veelbelovend in shadow-test";
+      if (v === "lifecycle_ok") return "positielogica klopt";
+      if (v === "exit_logging_collecting_reasons") return "exit-redenen worden verzameld";
+      return v.replaceAll("_", " ");
+    }
+    function evidenceHumanText(item) {
+      const e = item.evidence || {};
+      const parts = [];
+      if (e.stable_symbols !== undefined) parts.push(`${e.stable_symbols} coins geven hetzelfde signaal`);
+      if (e.days !== undefined) parts.push(`${e.days} dagen gemeten`);
+      if (e.usable_rows !== undefined) parts.push(`${e.usable_rows} bruikbare datapunten`);
+      if (e.ranked_features !== undefined) parts.push(`${e.ranked_features} indicator-signalen vergeleken`);
+      if (e.positions !== undefined) parts.push(`${e.positions} posities bekeken`);
+      if (e.closed !== undefined) parts.push(`${e.closed} gesloten trades`);
+      if (e.verdict !== undefined) parts.push(`bot-oordeel: ${humanVerdict(e.verdict)}`);
+      return parts.length ? parts.join(" | ") : "De details staan in het onderliggende rapport.";
+    }
+    function displayTitle(item) {
+      const title = String(item.title || item.id || "");
+      const verdict = String((item.evidence || {}).verdict || "");
+      if (title.includes("Risk guard threshold") || verdict === "guards_too_strict") return "Daglimiet voor trades lijkt te streng";
+      if (title.includes("Live-readiness")) return "Voorstel is klaar voor jouw beoordeling";
+      if (title.includes("Risk-down advice")) return "Risico-omlaag advies is stabiel, maar nog niet live-klaar";
+      if (title.includes("Risk-down looks too strict")) return "Risicoverlaging lijkt nu te streng";
+      if (title.includes("Exit reason logging")) return "Exit-data wordt beter bruikbaar";
+      if (title.includes("Pre-GPT gate")) return "GPT-besparing blijft in shadow-test";
+      if (title.includes("Indicator edge")) return "Indicator-analyse vond bruikbare context";
+      if (title.includes("ML edge model")) return "ML-model draait als context/shadow-bewijs";
+      if (title.includes("Position lifecycle")) return "Positie-administratie is gezond";
+      return title;
+    }
+    function whyNowText(item) {
+      const title = String(item.title || "");
+      if (title.includes("Risk guard threshold")) return "De replay ziet dat de daglimiet vaak ingrijpt. Dat kan bescherming zijn, maar ook kansen blokkeren.";
+      if (title.includes("Live-readiness")) return "De bot ziet volwassen shadow-kandidaten, maar live wiring staat nog uit.";
+      if (title.includes("Risk-down advice")) return "Meerdere coins geven al meerdere dagen een risico-omlaag signaal.";
+      if (title.includes("Risk-down looks too strict")) return "De bridge-resultaten botsen met het risico-omlaag advies. Daarom blijft dit geblokkeerd.";
+      if (title.includes("Exit reason logging")) return "Nieuwe trades krijgen nu betere exit-redenen, maar oude data is nog incompleet.";
+      if (title.includes("Pre-GPT gate")) return "De bot ziet mogelijke GPT-call besparing, maar wil eerst bewijzen dat goede trades niet worden gemist.";
+      return fmt(item.headline || "") || "De bot heeft nieuw bewijs in de dagelijkse analyse gevonden.";
+    }
+    function consequenceText(item) {
+      const level = item.effect_level || "";
+      const status = item.status || "";
+      if (status === "blocked") return "Er verandert niets live. Afwijzen of parkeren voorkomt dat dit als actief besluit blijft terugkomen.";
+      if (status === "wait_more_evidence") return "Er verandert niets live. De bot verzamelt meer bewijs en komt terug als het sterker wordt.";
+      if (level === "context_live") return "Dit mag als context blijven meewegen in GPT/profielen. Het plaatst zelf geen orders.";
+      if (level === "shadow_only") return "Dit blijft alleen meten en vergelijken. Geen live invloed.";
+      if (level === "risk_down_live") return "Akkoord betekent: door naar live-gate. Pas na die gate kan risico omlaag live effect krijgen.";
+      if (level === "strategy_live") return "Akkoord betekent: door naar strikte validatie. TP/SL/entry/exit wijzigen nu nog niet live.";
+      return "Deze klik wordt opgeslagen als operatorbesluit; v1 past trading niet direct aan.";
     }
     function nextStepText(item) {
       const steps = item.allowed_next_steps || [];
@@ -454,12 +516,12 @@ FALLBACK_HTML = """
     function decisionCard(item, index) {
       return `
         <article class="metric decision-card" style="margin-bottom:10px">
-          <div class="section-title"><h3>${fmt(item.title || item.id)}</h3><span class="pill hot">${statusLabel(item.status)}</span></div>
+          <div class="section-title"><h3>${displayTitle(item)}</h3><span class="pill hot">${statusLabel(item.status)}</span></div>
           <div class="decision-meta"><span class="pill">${levelLabel(item.effect_level)}</span><span class="pill">${fmt(item.area || "")}</span></div>
           <div class="decision-question">${decisionQuestion(item)}</div>
-          <div class="card-copy"><strong>Waarom nu:</strong> ${fmt(item.headline || "")}</div>
-          <div class="card-copy"><strong>Onderbouwing:</strong> ${fmt(item.why || "")}</div>
-          <div class="evidence">${evidenceText(item)}<br>${nextStepText(item)}</div>
+          <div class="card-copy"><strong>Waarom nu:</strong> ${whyNowText(item)}</div>
+          <div class="card-copy"><strong>Effect van je keuze:</strong> ${consequenceText(item)}</div>
+          <div class="evidence"><strong>Bewijs:</strong> ${evidenceHumanText(item)}</div>
           <div class="card-actions">${primaryActions(item).map((action) => `<button class="${actionClass(action)}" onclick="decideByIndex(${index}, '${action}')">${actionText(item, action)}</button>`).join("")}</div>
         </article>`;
     }
@@ -469,7 +531,7 @@ FALLBACK_HTML = """
         <section>
           <div class="section-title"><h2>${title}</h2><span class="pill">${items.length}</span></div>
           <div class="mini-list">
-            ${items.slice(0, 8).map((item) => `<div class="mini-item"><strong>${fmt(item.title || item.id)}</strong><br><span class="muted">${levelLabel(item.effect_level)} | ${statusLabel(item.status)}</span></div>`).join("")}
+            ${items.slice(0, 8).map((item) => `<div class="mini-item"><strong>${displayTitle(item)}</strong><br><span class="muted">${levelLabel(item.effect_level)} | ${statusLabel(item.status)}</span></div>`).join("")}
           </div>
         </section>`;
     }

@@ -164,6 +164,15 @@ FALLBACK_HTML = """
     .card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .card-actions button { margin-left: 0; }
     .evidence { margin-top: 8px; padding: 8px; background: #0d1319; border: 1px solid #26313b; border-radius: 6px; color: #b8c7d6; font-size: 12px; }
+    .decision-card { border-color: #526477; background: #141c24; }
+    .decision-card h3 { margin: 0 0 8px; font-size: 17px; }
+    .decision-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+    .decision-meta .pill { background: #0d1319; }
+    .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 8px; }
+    .mini-list { display: grid; gap: 8px; }
+    .mini-item { padding: 9px; background: #10161c; border: 1px solid #26313b; border-radius: 6px; }
+    .summary-strip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+    .summary-strip .metric strong { font-size: 20px; }
     #toast { position: fixed; left: 12px; right: 12px; bottom: 66px; z-index: 4; display: none; padding: 12px; border-radius: 8px; background: #e9f1ff; color: #10161c; font-weight: 750; box-shadow: 0 18px 45px rgba(0,0,0,.35); }
     #toast.bad { background: #ffb4b4; }
   </style>
@@ -285,16 +294,32 @@ FALLBACK_HTML = """
     }
     function actionText(item, action) {
       const level = item.effect_level || "shadow_only";
-      if (action === "approve" && level === "context_live") return "Approve context";
-      if (action === "approve" && level === "risk_down_live") return "Approve live-gate";
-      if (action === "approve" && level === "strategy_live") return "Approve strict gate";
-      if (action === "approve") return "Approve";
-      if (action === "wait") return "Wait";
-      if (action === "reject") return "Reject";
-      if (action === "freeze") return "Freeze";
-      if (action === "snooze") return "Snooze";
-      if (action === "note") return "Note";
+      if (action === "approve" && level === "context_live") return "Akkoord context";
+      if (action === "approve" && level === "risk_down_live") return "Akkoord live-gate";
+      if (action === "approve" && level === "strategy_live") return "Akkoord strict gate";
+      if (action === "approve") return "Akkoord";
+      if (action === "wait") return "Wacht op bewijs";
+      if (action === "reject") return "Afwijzen";
+      if (action === "freeze") return "Parkeren";
+      if (action === "snooze") return "Later";
+      if (action === "note") return "Notitie";
       return action;
+    }
+    function levelLabel(level) {
+      if (level === "context_live") return "Context automatisch";
+      if (level === "shadow_only") return "Shadow test";
+      if (level === "risk_down_live") return "Risico omlaag live-gate";
+      if (level === "strategy_live") return "Strategie live-gate";
+      if (level === "risk_up_live") return "Risk-up geblokkeerd";
+      return level || "Onbekend";
+    }
+    function statusLabel(status) {
+      if (status === "needs_operator_review") return "Besluit nodig";
+      if (status === "approved_pending_live_gate") return "Wacht op live-gate";
+      if (status === "auto_accept_as_context") return "Autonoom verwerkt";
+      if (status === "wait_more_evidence") return "Wacht op bewijs";
+      if (status === "blocked") return "Geblokkeerd";
+      return status || "Open";
     }
     function evidenceText(item) {
       const e = item.evidence || {};
@@ -313,20 +338,70 @@ FALLBACK_HTML = """
       if (!steps.length) return "";
       return `Next: ${steps.join(", ")}`;
     }
+    function primaryActions(item) {
+      const status = item.status || "";
+      const level = item.effect_level || "";
+      if (status === "blocked") return ["reject", "freeze", "note"];
+      if (status === "auto_accept_as_context") return ["freeze", "note"];
+      if (level === "context_live") return ["approve", "wait", "freeze"];
+      if (level === "shadow_only") return ["wait", "freeze"];
+      if (level === "risk_down_live" || level === "strategy_live") return ["approve", "reject", "wait", "freeze"];
+      return (item.allowed_actions_v1 || ["wait", "freeze"]).filter((x) => x !== "snooze" && x !== "note");
+    }
+    function isDecisionItem(item) {
+      const status = item.status || "";
+      const level = item.effect_level || "";
+      return status === "needs_operator_review" || status === "approved_pending_live_gate" || level === "risk_down_live" || level === "strategy_live";
+    }
+    function groupItems(items) {
+      return {
+        decisions: items.filter(isDecisionItem),
+        autonomous: items.filter((x) => !isDecisionItem(x) && (x.status === "auto_accept_as_context" || x.effect_level === "context_live" || x.effect_level === "shadow_only")),
+        waiting: items.filter((x) => !isDecisionItem(x) && x.status === "wait_more_evidence"),
+        blocked: items.filter((x) => !isDecisionItem(x) && x.status === "blocked")
+      };
+    }
+    function decisionCard(item, index) {
+      return `
+        <article class="metric decision-card" style="margin-bottom:10px">
+          <div class="section-title"><h3>${fmt(item.title || item.id)}</h3><span class="pill">${statusLabel(item.status)}</span></div>
+          <div class="decision-meta"><span class="pill">${levelLabel(item.effect_level)}</span><span class="pill">${fmt(item.area || "")}</span></div>
+          <div class="muted" style="margin:7px 0">${fmt(item.headline || "")}</div>
+          <div>${fmt(item.why || "")}</div>
+          <div class="evidence">${evidenceText(item)}<br>${nextStepText(item)}</div>
+          <div class="card-actions">${primaryActions(item).map((action) => `<button onclick="decideByIndex(${index}, '${action}')">${actionText(item, action)}</button>`).join("")}</div>
+        </article>`;
+    }
+    function compactSection(title, items, emptyText) {
+      if (!items.length) return `<section><div class="section-title"><h2>${title}</h2><span class="pill">0</span></div><div class="muted">${emptyText}</div></section>`;
+      return `
+        <section>
+          <div class="section-title"><h2>${title}</h2><span class="pill">${items.length}</span></div>
+          <div class="mini-list">
+            ${items.slice(0, 8).map((item) => `<div class="mini-item"><strong>${fmt(item.title || item.id)}</strong><br><span class="muted">${levelLabel(item.effect_level)} | ${statusLabel(item.status)}</span></div>`).join("")}
+          </div>
+        </section>`;
+    }
     function recommendationRows(data) {
       const items = data.items || data.recommendations || data.review_items || data.actions || [];
       recommendationItems = items;
       if (!items.length) return '<div class="muted">Geen aanbevelingen gevonden.</div>';
-      return items.slice(0, 30).map((item, index) => `
-        <div class="metric" style="margin-bottom:8px">
-          <div class="row"><strong>${fmt(item.title || item.name || item.source_id || item.id || item.type)}</strong><span class="pill">${fmt(item.effect_level || "unknown")}</span></div>
-          <div class="muted" style="margin:7px 0">${fmt(item.headline || item.reason || item.finding || item.summary || item.verdict)}</div>
-          <div>${fmt(item.why || "")}</div>
-          <div class="evidence">${evidenceText(item)}<br>${nextStepText(item)}</div>
-          <div class="card-actions">
-            ${(item.allowed_actions_v1 || ["approve", "reject", "wait", "freeze"]).map((action) => `<button onclick="decideByIndex(${index}, '${action}')">${actionText(item, action)}</button>`).join("")}
-          </div>
-        </div>`).join('');
+      const grouped = groupItems(items);
+      const indexOf = (item) => items.indexOf(item);
+      const strip = `
+        <div class="summary-strip">
+          ${metric("Beslissen", grouped.decisions.length)}
+          ${metric("Autonoom", grouped.autonomous.length)}
+          ${metric("Wacht", grouped.waiting.length)}
+          ${metric("Geblokkeerd", grouped.blocked.length)}
+        </div>`;
+      const decisions = grouped.decisions.length
+        ? `<section><div class="section-title"><h2>Nu beslissen</h2><span class="pill">${grouped.decisions.length}</span></div>${grouped.decisions.map((item) => decisionCard(item, indexOf(item))).join("")}</section>`
+        : `<section><div class="section-title"><h2>Nu beslissen</h2><span class="pill">0</span></div><div class="muted">Geen directe operatorbeslissing nodig.</div></section>`;
+      return strip + decisions
+        + compactSection("Autonoom verwerkt", grouped.autonomous, "Context en shadow learning lopen autonoom.")
+        + compactSection("Wacht op bewijs", grouped.waiting, "Geen wachtende items.")
+        + compactSection("Geblokkeerd / parkeren", grouped.blocked, "Geen geblokkeerde items.");
     }
     async function loadAll() {
       try {

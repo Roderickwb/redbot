@@ -466,7 +466,7 @@ FALLBACK_HTML = """
       const title = String(item.title || item.id || "");
       const verdict = String((item.evidence || {}).verdict || "");
       if (title.includes("Risk guard threshold") || verdict === "guards_too_strict") return "Daglimiet voor trades lijkt te streng";
-      if (title.includes("Live-readiness")) return "Risico-omlaag kandidaten klaar voor live-gate review";
+      if (title.includes("Live-readiness")) return "Risico-omlaag klaar voor review";
       if (title.includes("Risk-down advice")) return "Risico-omlaag advies is stabiel, maar nog niet live-klaar";
       if (title.includes("Risk-down looks too strict")) return "Risicoverlaging lijkt nu te streng";
       if (title.includes("Exit reason logging")) return "Exit-data wordt beter bruikbaar";

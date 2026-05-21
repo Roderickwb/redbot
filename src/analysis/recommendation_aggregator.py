@@ -480,7 +480,7 @@ class RecommendationAggregator:
         if ctype == "live_readiness_batch":
             summary = evidence.get("summary") or {}
             return self._operator_fields(
-                title="Risico-omlaag kandidaten klaar voor live-gate review",
+                title="Risico-omlaag klaar voor review",
                 question="Mag de bot deze risico-omlaag kandidaten klaarzetten voor de live-gate, zonder nu al live gedrag te wijzigen?",
                 summary="De bot ziet volwassen shadow-kandidaten voor conservatiever risicobeheer, maar live wiring staat nog uit.",
                 consequence="Akkoord betekent: klaarzetten voor live-gate review. Pas na die gate kan risico-omlaag live effect krijgen.",
@@ -670,7 +670,7 @@ class RecommendationAggregator:
         clean_evidence = [
             {"label": str(label), "value": self._fmt_value(value)}
             for label, value in evidence
-            if value not in (None, "")
+            if value not in (None, "", "-")
         ]
         return {
             "operator_title": title,

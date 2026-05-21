@@ -342,6 +342,7 @@ FALLBACK_HTML = """
       const status = item.status || "";
       const level = item.effect_level || "";
       if (status === "blocked") return ["reject", "freeze", "note"];
+      if (status === "wait_more_evidence") return ["wait", "freeze"];
       if (status === "auto_accept_as_context") return ["freeze", "note"];
       if (level === "context_live") return ["approve", "wait", "freeze"];
       if (level === "shadow_only") return ["wait", "freeze"];
@@ -350,15 +351,33 @@ FALLBACK_HTML = """
     }
     function isDecisionItem(item) {
       const status = item.status || "";
-      const level = item.effect_level || "";
-      return status === "needs_operator_review" || status === "approved_pending_live_gate" || level === "risk_down_live" || level === "strategy_live";
+      return status === "needs_operator_review" || status === "approved_pending_live_gate";
     }
     function groupItems(items) {
+      const decisions = [];
+      const autonomous = [];
+      const waiting = [];
+      const blocked = [];
+      for (const item of items) {
+        const status = item.status || "";
+        const level = item.effect_level || "";
+        if (status === "blocked") {
+          blocked.push(item);
+        } else if (status === "wait_more_evidence") {
+          waiting.push(item);
+        } else if (isDecisionItem(item)) {
+          decisions.push(item);
+        } else if (status === "auto_accept_as_context" || level === "context_live" || level === "shadow_only") {
+          autonomous.push(item);
+        } else {
+          waiting.push(item);
+        }
+      }
       return {
-        decisions: items.filter(isDecisionItem),
-        autonomous: items.filter((x) => !isDecisionItem(x) && (x.status === "auto_accept_as_context" || x.effect_level === "context_live" || x.effect_level === "shadow_only")),
-        waiting: items.filter((x) => !isDecisionItem(x) && x.status === "wait_more_evidence"),
-        blocked: items.filter((x) => !isDecisionItem(x) && x.status === "blocked")
+        decisions,
+        autonomous,
+        waiting,
+        blocked
       };
     }
     function decisionCard(item, index) {

@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.analysis.operator_decisions import record_operator_decision
+from src.analysis.recommendation_aggregator import run_recommendation_aggregator
 from src.operator_app.backend.auth import require_operator_token
 from src.operator_app.backend.data import REPORTS, mobile_bundle, recent_trades, report
 from src.operator_app.backend.schemas import DecisionRequest
@@ -110,9 +111,14 @@ def post_decision(payload: DecisionRequest) -> dict:
         source_path=payload.source_path,
         expires_utc=payload.expires_utc,
     )
+    recommendations = run_recommendation_aggregator()
     return {
         "status": "OK",
         "decision": item,
+        "recommendations": {
+            "status": recommendations.get("status"),
+            "summary": recommendations.get("summary", {}),
+        },
         "live_effect": False,
     }
 
@@ -524,10 +530,11 @@ FALLBACK_HTML = """
     }
     function isDecisionItem(item) {
       const status = item.status || "";
-      return status === "needs_operator_review" || status === "approved_pending_live_gate";
+      return status === "needs_operator_review";
     }
     function groupItems(items) {
       const decisions = [];
+      const pendingGate = [];
       const autonomous = [];
       const waiting = [];
       const blocked = [];
@@ -536,6 +543,8 @@ FALLBACK_HTML = """
         const level = item.effect_level || "";
         if (status === "blocked") {
           blocked.push(item);
+        } else if (status === "approved_pending_live_gate") {
+          pendingGate.push(item);
         } else if (status === "wait_more_evidence") {
           waiting.push(item);
         } else if (isDecisionItem(item)) {
@@ -548,6 +557,7 @@ FALLBACK_HTML = """
       }
       return {
         decisions,
+        pendingGate,
         autonomous,
         waiting,
         blocked
@@ -584,6 +594,7 @@ FALLBACK_HTML = """
       const strip = `
         <div class="summary-strip">
           ${metric("Beslissen", grouped.decisions.length)}
+          ${metric("Live-gate", grouped.pendingGate.length)}
           ${metric("Autonoom", grouped.autonomous.length)}
           ${metric("Wacht", grouped.waiting.length)}
           ${metric("Geblokkeerd", grouped.blocked.length)}
@@ -592,6 +603,7 @@ FALLBACK_HTML = """
         ? `<section><div class="section-title"><h2>Nu beslissen</h2><span class="pill">${grouped.decisions.length}</span></div>${grouped.decisions.map((item) => decisionCard(item, indexOf(item))).join("")}</section>`
         : `<section><div class="section-title"><h2>Nu beslissen</h2><span class="pill">0</span></div><div class="muted">Geen directe operatorbeslissing nodig.</div></section>`;
       return strip + decisions
+        + compactSection("Klaargezet voor live-gate", grouped.pendingGate, "Nog niets klaargezet voor live-gate.")
         + compactSection("Autonoom verwerkt", grouped.autonomous, "Context en shadow learning lopen autonoom.")
         + compactSection("Wacht op bewijs", grouped.waiting, "Geen wachtende items.")
         + compactSection("Geblokkeerd / parkeren", grouped.blocked, "Geen geblokkeerde items.");

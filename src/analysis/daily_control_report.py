@@ -192,7 +192,7 @@ class DailyControlReport:
         recommendation_status = self._recommendation_status(reports)
         recommendation_quality_status = self._recommendation_quality_status(reports)
         operating_state = self._operating_state(reports, blockers, approval_queue)
-        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_advice_history_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, exit_management_status, position_lifecycle_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, live_readiness_status, learning_status, recommendation_quality_status)
+        next_actions = self._next_actions(blockers, approval_queue, experiment_status, promotion_status, approval_status, shadow_live_status, risk_policy_status, risk_advice_history_status, risk_strategy_status, risk_outcome_status, risk_history_status, risk_guard_status, exit_management_status, position_lifecycle_status, gpt_efficiency_status, pre_gpt_gate_status, safety_status, live_readiness_status, learning_status, recommendation_status, recommendation_quality_status)
 
         return {
             "created_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -389,6 +389,7 @@ class DailyControlReport:
     def _recommendation_status(self, reports: dict) -> dict:
         rec = reports.get("recommendation_aggregator", {}) or {}
         summary = rec.get("summary", {}) or {}
+        resolver = summary.get("operator_resolution", {}) or {}
         return {
             "status": rec.get("status"),
             "total": _safe_int(summary.get("total")),
@@ -396,6 +397,13 @@ class DailyControlReport:
             "auto_accept_as_context": _safe_int(summary.get("auto_accept_as_context")),
             "wait_more_evidence": _safe_int(summary.get("wait_more_evidence")),
             "blocked": _safe_int(summary.get("blocked")),
+            "resolved_active": _safe_int(resolver.get("active")),
+            "suppressed": _safe_int(resolver.get("suppressed")),
+            "pending_live_gate": _safe_int(resolver.get("pending_live_gate")),
+            "approved_context_live": _safe_int(resolver.get("approved_context_live")),
+            "approved_shadow": _safe_int(resolver.get("approved_shadow")),
+            "by_resolution": resolver.get("by_resolution", {}),
+            "by_effect_level": resolver.get("by_effect_level", {}),
             "by_status": summary.get("by_status", {}),
             "top_review": summary.get("top_review", [])[:3],
             "live_effect": bool(summary.get("live_effect")),
@@ -720,11 +728,18 @@ class DailyControlReport:
         pre_gpt_gate = reports.get("pre_gpt_gate", {}) or {}
         safety = reports.get("safety_control", {}) or {}
         live_readiness = reports.get("live_readiness", {}) or {}
+        recommendations = reports.get("recommendation_aggregator", {}) or {}
         recommendation_quality = reports.get("recommendation_quality", {}) or {}
 
         if blockers:
             status = "ACTION_NEEDED"
             headline = "Runtime or pipeline blockers need attention before approvals."
+        elif (recommendations.get("summary") or {}).get("needs_operator_review"):
+            status = "REVIEW"
+            headline = "Learning flow has actionable review cards."
+        elif (recommendations.get("summary") or {}).get("operator_resolution", {}).get("pending_live_gate"):
+            status = "REVIEW"
+            headline = "Operator-approved learning is waiting on a live gate."
         elif approval_queue:
             status = "REVIEW"
             headline = "There are strategy recommendations waiting for human review."
@@ -758,6 +773,7 @@ class DailyControlReport:
             "gpt_decisions": gpt_decisions.get("totals", {}),
             "pre_gpt_gate": pre_gpt_gate.get("summary", {}),
             "live_readiness": live_readiness.get("summary", {}),
+            "recommendations": recommendations.get("summary", {}),
             "recommendation_quality": recommendation_quality.get("summary", {}),
             "safety_control": {
                 "status": safety.get("status"),
@@ -789,6 +805,7 @@ class DailyControlReport:
         safety_status: dict,
         live_readiness_status: dict,
         learning_status: dict,
+        recommendation_status: dict,
         recommendation_quality_status: dict,
     ) -> list[str]:
         if blockers:
@@ -805,11 +822,21 @@ class DailyControlReport:
         elif not safety_status.get("live_entry_orders_allowed", True):
             actions.append("Live entry orders are disabled by safety state; inspect safety control before auto mode.")
         if not safety_status.get("live_enforcement_allowed"):
-            actions.append("Live enforcement wiring is disabled by safety state; keep autonomous changes read-only.")
+            actions.append("Live control gates are disabled; context-live and shadow learning may continue, but risk/strategy live changes stay gated.")
+        if recommendation_status.get("approved_context_live"):
+            actions.append("Approved context-live learning is processed; it may enrich GPT/coin-profile context without hard rule changes.")
+        if recommendation_status.get("approved_shadow"):
+            actions.append("Approved shadow learning is processed; keep testing autonomously without live execution.")
+        if recommendation_status.get("pending_live_gate"):
+            actions.append("Operator-approved learning is pending a live gate; verify safety/readiness before any live control wiring.")
+        if recommendation_status.get("needs_operator_review"):
+            actions.append("Review actionable learning cards in the app; each card shows effect level, evidence and next step.")
+        if recommendation_status.get("suppressed"):
+            actions.append("Some recommendations are suppressed by prior operator decisions; they will not keep resurfacing unless evidence changes materially.")
         if live_readiness_status.get("eligible_for_live_wiring"):
-            actions.append("Live readiness has eligible candidates; require explicit operator approval before wiring.")
+            actions.append("Live readiness has eligible candidates; route them through approve-live plus safety gate before wiring.")
         if live_readiness_status.get("ready_for_operator_review"):
-            actions.append("Live readiness has candidates for operator review; keep them read-only until approved.")
+            actions.append("Live readiness has operator-review candidates; decide whether to wait, reject, freeze, or approve toward a gated live phase.")
         if live_readiness_status.get("approved_but_safety_locked"):
             actions.append("Live readiness has safety-locked candidates; do not wire while safety blocks enforcement.")
         if approval_status.get("review_for_approval"):
@@ -821,15 +848,15 @@ class DailyControlReport:
         if shadow_live_status.get("active_shadow_policies"):
             actions.append("Review shadow-live matches before considering any live behavior change.")
         if risk_policy_status.get("cap_new_longs"):
-            actions.append("Risk policy is recommending long-risk caps; keep it read-only until live wiring is approved.")
+            actions.append("Risk policy recommends long-risk caps; this is risk-down live territory and needs approve-live plus gate before enforcement.")
         if risk_policy_status.get("data_driven_risk_down"):
-            actions.append("Risk policy has data-driven risk-down advice; keep it read-only until enough history confirms it.")
+            actions.append("Risk policy has data-driven risk-down advice; keep testing until bridge history supports a live-gated risk-down proposal.")
         elif risk_policy_status.get("risk_down"):
             actions.append("Risk policy is mostly market-context risk-down; treat it as caution, not coin-specific proof.")
         if risk_policy_status.get("risk_up"):
             actions.append("Risk-up advice requires explicit human approval and must stay disabled.")
         if risk_advice_history_status.get("verdict") == "stable_data_down_candidates":
-            actions.append("Risk advice history has stable data-down candidates; keep read-only until bridge outcomes confirm them.")
+            actions.append("Risk advice history has stable data-down candidates; convert to live proposal only if bridge outcomes confirm benefit.")
         elif risk_advice_history_status.get("tracked_symbols"):
             actions.append("Risk advice history is collecting multi-day stability; repeated same-day runs are not counted as new evidence.")
         if risk_strategy_status.get("would_adjust_open_trades"):

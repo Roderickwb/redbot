@@ -161,6 +161,9 @@ FALLBACK_HTML = """
     .bottom-nav button.active { background: #e9f1ff; color: #10161c; border-color: #e9f1ff; }
     .trade-card { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 0; border-bottom: 1px solid #25303a; }
     .trade-card:last-child { border-bottom: 0; }
+    .card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .card-actions button { margin-left: 0; }
+    .evidence { margin-top: 8px; padding: 8px; background: #0d1319; border: 1px solid #26313b; border-radius: 6px; color: #b8c7d6; font-size: 12px; }
     #toast { position: fixed; left: 12px; right: 12px; bottom: 66px; z-index: 4; display: none; padding: 12px; border-radius: 8px; background: #e9f1ff; color: #10161c; font-weight: 750; box-shadow: 0 18px 45px rgba(0,0,0,.35); }
     #toast.bad { background: #ffb4b4; }
   </style>
@@ -277,8 +280,38 @@ FALLBACK_HTML = """
         toast("Action failed: " + res.status, true);
         return;
       }
-      toast(action.toUpperCase() + " opgeslagen. Geen live effect.");
+      toast(action.toUpperCase() + " opgeslagen. Pipeline verwerkt dit bij de volgende run.");
       await loadAll();
+    }
+    function actionText(item, action) {
+      const level = item.effect_level || "shadow_only";
+      if (action === "approve" && level === "context_live") return "Approve context";
+      if (action === "approve" && level === "risk_down_live") return "Approve live-gate";
+      if (action === "approve" && level === "strategy_live") return "Approve strict gate";
+      if (action === "approve") return "Approve";
+      if (action === "wait") return "Wait";
+      if (action === "reject") return "Reject";
+      if (action === "freeze") return "Freeze";
+      if (action === "snooze") return "Snooze";
+      if (action === "note") return "Note";
+      return action;
+    }
+    function evidenceText(item) {
+      const e = item.evidence || {};
+      const parts = [];
+      if (e.stable_symbols !== undefined) parts.push(`stable symbols ${e.stable_symbols}`);
+      if (e.days !== undefined) parts.push(`days ${e.days}`);
+      if (e.usable_rows !== undefined) parts.push(`rows ${e.usable_rows}`);
+      if (e.ranked_features !== undefined) parts.push(`ranked ${e.ranked_features}`);
+      if (e.positions !== undefined) parts.push(`positions ${e.positions}`);
+      if (e.closed !== undefined) parts.push(`closed ${e.closed}`);
+      if (e.verdict !== undefined) parts.push(`verdict ${e.verdict}`);
+      return parts.length ? parts.join(" | ") : "Evidence details available in report.";
+    }
+    function nextStepText(item) {
+      const steps = item.allowed_next_steps || [];
+      if (!steps.length) return "";
+      return `Next: ${steps.join(", ")}`;
     }
     function recommendationRows(data) {
       const items = data.items || data.recommendations || data.review_items || data.actions || [];
@@ -286,12 +319,13 @@ FALLBACK_HTML = """
       if (!items.length) return '<div class="muted">Geen aanbevelingen gevonden.</div>';
       return items.slice(0, 30).map((item, index) => `
         <div class="metric" style="margin-bottom:8px">
-          <div class="row"><strong>${fmt(item.title || item.name || item.source_id || item.id || item.type)}</strong><span class="pill">${fmt(item.status || item.action || item.priority)}</span></div>
-          <div class="muted" style="margin:7px 0">${fmt(item.reason || item.finding || item.summary || item.verdict)}</div>
-          <button onclick="decideByIndex(${index}, 'approve')">Approve</button>
-          <button onclick="decideByIndex(${index}, 'reject')">Reject</button>
-          <button onclick="decideByIndex(${index}, 'wait')">Wait</button>
-          <button onclick="decideByIndex(${index}, 'freeze')">Freeze</button>
+          <div class="row"><strong>${fmt(item.title || item.name || item.source_id || item.id || item.type)}</strong><span class="pill">${fmt(item.effect_level || "unknown")}</span></div>
+          <div class="muted" style="margin:7px 0">${fmt(item.headline || item.reason || item.finding || item.summary || item.verdict)}</div>
+          <div>${fmt(item.why || "")}</div>
+          <div class="evidence">${evidenceText(item)}<br>${nextStepText(item)}</div>
+          <div class="card-actions">
+            ${(item.allowed_actions_v1 || ["approve", "reject", "wait", "freeze"]).map((action) => `<button onclick="decideByIndex(${index}, '${action}')">${actionText(item, action)}</button>`).join("")}
+          </div>
         </div>`).join('');
     }
     async function loadAll() {
@@ -314,6 +348,7 @@ FALLBACK_HTML = """
           metric("Daily", c.daily_decision?.label || snapshot.summary?.daily_decision || c.status),
           metric("Safety", `${s.status || "-"} kill=${!!s.kill_switch_active} meltdown=${!!s.meltdown_active}`),
           metric("Live readiness", `review=${live.ready_for_operator_review ?? "-"} eligible=${live.eligible_for_live_wiring ?? "-"}`),
+          metric("Learning flow", `pending=${(c.recommendations || {}).pending_live_gate ?? "-"} suppressed=${(c.recommendations || {}).suppressed ?? "-"}`),
           metric("ML", `${learning.ml_status || "-"} rows=${learning.ml_rows || "-"}`),
           metric("GPT hold", `${learning.gpt_hold_rate_pct || "-"}%`),
           metric("Risk", `down=${risk.risk_down ?? "-"} guard=${risk.guard_verdict || "-"}`)

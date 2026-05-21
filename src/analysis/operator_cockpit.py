@@ -1,13 +1,7 @@
 # ============================================================
 # src/analysis/operator_cockpit.py
 # ============================================================
-"""
-Operator cockpit.
-
-One compact human-facing view on top of the analysis stack. This module is the
-daily surface for the operator: health, live-change status, urgent actions, and
-the few learning/risk signals that matter. It is read-only.
-"""
+"""Compact operator cockpit for the autonomous learning flow."""
 
 from __future__ import annotations
 
@@ -226,7 +220,7 @@ class OperatorCockpit:
             return {
                 "status": "OPTIONAL_REVIEW",
                 "urgent": False,
-                "headline": "Risk advice has stable data-down candidates, still read-only.",
+                "headline": "Risk advice has stable data-down candidates; live use remains gated.",
             }
         if risk_history.get("verdict") in {"stable_risk_down_helpful", "risk_down_too_strict"}:
             return {
@@ -383,6 +377,13 @@ class OperatorCockpit:
             "auto_accept_as_context": _safe_int(recommendation_status.get("auto_accept_as_context")),
             "wait_more_evidence": _safe_int(recommendation_status.get("wait_more_evidence")),
             "blocked": _safe_int(recommendation_status.get("blocked")),
+            "resolved_active": _safe_int(recommendation_status.get("resolved_active")),
+            "suppressed": _safe_int(recommendation_status.get("suppressed")),
+            "pending_live_gate": _safe_int(recommendation_status.get("pending_live_gate")),
+            "approved_context_live": _safe_int(recommendation_status.get("approved_context_live")),
+            "approved_shadow": _safe_int(recommendation_status.get("approved_shadow")),
+            "by_effect_level": recommendation_status.get("by_effect_level", {}),
+            "by_resolution": recommendation_status.get("by_resolution", {}),
             "quality_tracked": _safe_int(recommendation_quality.get("tracked_items")),
             "quality_days": _safe_int(recommendation_quality.get("days_observed")),
             "quality_attention": _safe_int(recommendation_quality.get("needs_attention")),
@@ -412,7 +413,7 @@ class OperatorCockpit:
             return {
                 "label": "TODAY: REVIEW REQUIRED",
                 "severity": "review",
-                "reason": "Live readiness has candidates for operator review.",
+                "reason": "Live readiness has candidates for operator review and gated next steps.",
             }
         if risk.get("history_verdict") in {"stable_risk_down_helpful", "risk_down_too_strict"}:
             return {
@@ -423,7 +424,7 @@ class OperatorCockpit:
         return {
             "label": "TODAY: NO ACTION REQUIRED",
             "severity": "watch",
-            "reason": "No blockers, no live changes, and no approval-ready item.",
+            "reason": "No blockers, no direct live-control change, and no urgent operator item.",
         }
 
     def _next_actions(self, control: dict, daily_decision: dict) -> list[str]:
@@ -468,7 +469,14 @@ def format_cockpit_message(cockpit: dict) -> str:
             f"Recommendations: review={recommendations.get('needs_operator_review', 0)} "
             f"auto_context={recommendations.get('auto_accept_as_context', 0)} "
             f"wait={recommendations.get('wait_more_evidence', 0)} "
-            f"blocked={recommendations.get('blocked', 0)}"
+            f"blocked={recommendations.get('blocked', 0)} "
+            f"pending_live={recommendations.get('pending_live_gate', 0)} "
+            f"suppressed={recommendations.get('suppressed', 0)}"
+        ),
+        (
+            f"Learning flow: context_live={recommendations.get('approved_context_live', 0)} "
+            f"shadow={recommendations.get('approved_shadow', 0)} "
+            f"active={recommendations.get('resolved_active', 0)}"
         ),
         (
             f"Recommendation quality: tracked={recommendations.get('quality_tracked', 0)} "

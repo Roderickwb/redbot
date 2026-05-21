@@ -44,6 +44,7 @@ from src.analysis.chart_vision_reporter import (
 from src.analysis.daily_control_report import run_daily_control_report
 from src.analysis.exit_management_report import run_exit_management_report
 from src.analysis.indicator_edge_report import run_indicator_edge_report
+from src.analysis.learning_context_integrator import run_learning_context_integrator
 from src.analysis.gpt_decision_reporter import (
     GptDecisionReporter,
     DEFAULT_LATEST_FILE as GPT_LATEST_FILE,
@@ -292,6 +293,11 @@ def _build_indicator_edge_report(limit: int) -> dict:
         "weak_feature": weak,
         "output_path": report.get("output_path"),
     }
+
+
+def _build_learning_context_integrator() -> dict:
+    report = run_learning_context_integrator(apply=True)
+    return report.get("summary", {})
 
 
 def _build_exit_management_report(limit: int) -> dict:
@@ -666,6 +672,9 @@ def run_daily_analysis_job(
     )
     steps["indicator_edge_report"] = _run_step(
         lambda: _build_indicator_edge_report(limit=report_limit),
+    )
+    steps["learning_context_integrator"] = _run_step(
+        lambda: _build_learning_context_integrator(),
     )
     steps["exit_management_report"] = _run_step(
         lambda: _build_exit_management_report(limit=report_limit),

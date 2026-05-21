@@ -24,6 +24,7 @@ echo "== Compile critical modules =="
   src/ai/gpt_trend_decider.py \
   src/analysis/ml_edge_model.py \
   src/analysis/indicator_edge_report.py \
+  src/analysis/learning_context_integrator.py \
   src/analysis/exit_management_report.py \
   src/analysis/position_lifecycle_report.py \
   src/analysis/recommendation_aggregator.py \
@@ -77,6 +78,7 @@ for name in (
     "safety_control",
     "ml_edge_model",
     "indicator_edge_report",
+    "learning_context_integrator",
     "exit_management_report",
     "position_lifecycle_report",
     "risk_guard_report",
@@ -111,6 +113,12 @@ for name in (
         print(
             f" status={result.get('status')} ranked={summary.get('ranked_features')} "
             f"top={top.get('feature')} edge_R={top.get('edge_r')}"
+        )
+    elif name == "learning_context_integrator":
+        print(
+            f" status={result.get('status')} profiles={result.get('profiles_updated')} "
+            f"indicator={result.get('indicator_top_feature')} ml={result.get('ml_model_status')} "
+            f"live_effect={result.get('live_effect')}"
         )
     elif name == "exit_management_report":
         summary = result.get("summary") or {}

@@ -420,7 +420,7 @@ class RecommendationAggregator:
         subject: str = "",
         effect_level: str = "shadow_only",
     ) -> dict:
-        return {
+        item = {
             "id": _stable_id(area, candidate_type, subject),
             "area": area,
             "candidate_type": candidate_type,
@@ -436,6 +436,283 @@ class RecommendationAggregator:
             "live_effect": False,
             "evidence": evidence,
         }
+        item.update(self._operator_card_fields(item))
+        return item
+
+    def _operator_card_fields(self, item: dict) -> dict:
+        """Render-ready operator copy for app cards.
+
+        The app should display these fields first and only fall back to raw
+        report language when a new recommendation type has no template yet.
+        """
+        ctype = item.get("candidate_type")
+        evidence = item.get("evidence") or {}
+        status = item.get("status")
+        effect_level = item.get("effect_level")
+
+        if ctype == "guard_threshold_calibration":
+            issue = evidence.get("primary_issue") or {}
+            summary = evidence.get("summary") or {}
+            guard = issue.get("guard") or "daglimiet"
+            return self._operator_fields(
+                title="Daglimiet voor trades lijkt te streng",
+                question="Mag de bot dit doorzetten naar validatie voor een mogelijke ruimere daglimiet?",
+                summary=f"De replay ziet dat {guard} vaak ingrijpt. Dat kan bescherming zijn, maar ook kansen blokkeren.",
+                consequence="Akkoord betekent: validatiefase voor deze daglimiet. Er verandert nu niets live.",
+                evidence=[
+                    ("Guard", guard),
+                    ("Triggers", self._fmt_value(summary.get("guard_triggers") or summary.get("triggers"))),
+                    ("Shadow-resultaat", self._fmt_r(summary.get("guard_net_saved_r") or summary.get("net_saved_r"))),
+                    ("Issue-effect", self._fmt_r(issue.get("net_r") or issue.get("net_saved_r"))),
+                    ("Bot-oordeel", "guard lijkt te streng"),
+                    ("Live effect nu", "geen"),
+                    ("Volgende stap", "validatiefase, geen live wijziging"),
+                ],
+                actions=[
+                    ("approve", "Door naar validatie"),
+                    ("wait", "Meer bewijs"),
+                    ("reject", "Afwijzen"),
+                    ("freeze", "Parkeren"),
+                ],
+                recommended_action="approve",
+            )
+
+        if ctype == "live_readiness_batch":
+            summary = evidence.get("summary") or {}
+            return self._operator_fields(
+                title="Voorstel is klaar voor jouw beoordeling",
+                question="Mag dit voorstel door naar de live-gate, zonder nu al live gedrag te wijzigen?",
+                summary="De bot ziet volwassen shadow-kandidaten, maar live wiring staat nog uit.",
+                consequence="Akkoord betekent: door naar live-gate. Pas na die gate kan dit live effect krijgen.",
+                evidence=[
+                    ("Review-kandidaten", self._fmt_value(evidence.get("review") or summary.get("ready_for_operator_review"))),
+                    ("Geblokkeerd", self._fmt_value(evidence.get("blocked") or summary.get("blocked"))),
+                    ("Live wiring", "uit"),
+                    ("Live effect nu", "geen"),
+                    ("Volgende stap", "live-gate controleren"),
+                ],
+                actions=[
+                    ("approve", "Door naar live-gate"),
+                    ("wait", "Meer bewijs"),
+                    ("reject", "Afwijzen"),
+                    ("freeze", "Parkeren"),
+                ],
+                recommended_action="wait",
+            )
+
+        if ctype == "risk_down_advice_batch":
+            return self._operator_fields(
+                title="Risico-omlaag advies is stabiel, maar nog niet live-klaar",
+                question="Wil je wachten tot bridge-resultaten bevestigen dat dit live verstandig is?",
+                summary="Meerdere coins geven al meerdere dagen een risico-omlaag signaal.",
+                consequence="Er verandert niets live. De bot wacht op bevestiging dat risico-omlaag niet te streng uitpakt.",
+                evidence=[
+                    ("Coins met signaal", self._fmt_value(evidence.get("stable_symbols"))),
+                    ("Dagen gemeten", self._fmt_value(evidence.get("days"))),
+                    ("Bot-oordeel", "stabiel, maar nog niet live-klaar"),
+                    ("Live effect nu", "geen"),
+                    ("Volgende stap", "bridge-resultaten afwachten"),
+                ],
+                actions=[
+                    ("wait", "Meer bewijs"),
+                    ("freeze", "Parkeren"),
+                ],
+                recommended_action="wait",
+            )
+
+        if ctype == "risk_down_too_strict":
+            return self._operator_fields(
+                title="Risicoverlaging lijkt nu te streng",
+                question="Wil je dit blokkeren tot de sizing-logica opnieuw is gekalibreerd?",
+                summary="De bridge-resultaten botsen met het risico-omlaag advies.",
+                consequence="Er verandert niets live. Afwijzen of parkeren voorkomt dat dit als actief live-kandidaat terugkomt.",
+                evidence=[
+                    ("Bot-oordeel", "risico omlaag lijkt te streng"),
+                    ("Netto shadow-effect", self._fmt_r(evidence.get("net_saved_r") or evidence.get("history_net_saved_r"))),
+                    ("Live effect nu", "geen"),
+                    ("Volgende stap", "niet doorzetten tot conflict is opgelost"),
+                ],
+                actions=[
+                    ("reject", "Afwijzen"),
+                    ("freeze", "Parkeren"),
+                    ("note", "Notitie"),
+                ],
+                recommended_action="freeze",
+            )
+
+        if ctype in {"exit_reason_instrumentation", "exit_reason_collection", "exit_management_collecting"}:
+            summary = evidence.get("summary") or evidence
+            return self._operator_fields(
+                title="Exit-data wordt beter bruikbaar",
+                question="Wil je wachten tot nieuwe exits genoeg reden-labels hebben voor TP/SL/trailing tuning?",
+                summary="Nieuwe trades krijgen betere exit-redenen, maar oude data is nog incompleet.",
+                consequence="Geen TP/SL-wijziging nu. De bot verzamelt eerst betere exit-data.",
+                evidence=[
+                    ("Posities bekeken", self._fmt_value(evidence.get("positions") or summary.get("positions_loaded"))),
+                    ("Gesloten trades", self._fmt_value(evidence.get("closed") or summary.get("closed_positions"))),
+                    ("Bot-oordeel", "exit-redenen worden verzameld"),
+                    ("Live effect nu", "geen"),
+                    ("Volgende stap", "wachten op nieuwe reden-labels"),
+                ],
+                actions=[
+                    ("wait", "Meer bewijs"),
+                    ("freeze", "Parkeren"),
+                ],
+                recommended_action="wait",
+            )
+
+        if ctype == "pre_gpt_gate_shadow":
+            return self._operator_fields(
+                title="GPT-besparing blijft in shadow-test",
+                question="Blijft dit als shadow-test doorlopen tot bewezen is dat goede trades niet worden gemist?",
+                summary="De bot ziet mogelijke GPT-call besparing, maar dit mag live GPT-calls nog niet beperken.",
+                consequence="Geen live effect. De gate blijft alleen meten en vergelijken.",
+                evidence=[
+                    ("Mogelijke call-reductie", self._fmt_pct(evidence.get("call_reduction_pct"))),
+                    ("Shadow-effect", self._fmt_r(evidence.get("estimated_net_saved_r"))),
+                    ("Skipped opens", self._fmt_value(evidence.get("skipped_opens"))),
+                    ("Live effect nu", "geen"),
+                    ("Volgende stap", "meer false-skip bewijs"),
+                ],
+                actions=[
+                    ("wait", "Meer bewijs"),
+                    ("freeze", "Parkeren"),
+                ],
+                recommended_action="wait",
+            )
+
+        if ctype == "indicator_edge_context":
+            top = evidence.get("top_feature") or {}
+            return self._operator_fields(
+                title="Indicator-analyse vond bruikbare context",
+                question="Mag deze indicator-context automatisch mee blijven wegen in GPT/profielen?",
+                summary="De analyse vond een indicator-signaal met duidelijke edge in de historische labels.",
+                consequence="Dit is context voor GPT/profielen. Het wijzigt live scoring of orders niet direct.",
+                evidence=[
+                    ("Top indicator", top.get("feature") or "-"),
+                    ("Edge", self._fmt_r(top.get("edge_r"))),
+                    ("Datapunten", self._fmt_value(evidence.get("usable_rows"))),
+                    ("Features vergeleken", self._fmt_value(evidence.get("ranked_features"))),
+                    ("Live effect nu", "alleen context"),
+                ],
+                actions=[
+                    ("note", "Notitie"),
+                    ("freeze", "Parkeren"),
+                ],
+                recommended_action="auto_accept_context",
+            )
+
+        if ctype == "ml_edge_shadow_model":
+            metrics = evidence.get("metrics") or {}
+            return self._operator_fields(
+                title="ML-model draait als context/shadow-bewijs",
+                question="Mag dit model als bewijs/context blijven meelopen, zonder live beslisrecht?",
+                summary="Het ML-model is trainbaar en geeft extra context, maar blijft shadow-only.",
+                consequence="Geen live effect. ML krijgt pas later invloed na aparte validatie en approval.",
+                evidence=[
+                    ("AUC", self._fmt_value(metrics.get("classification_auc"))),
+                    ("MAE R", self._fmt_value(metrics.get("regression_mae_r"))),
+                    ("Live effect nu", "geen"),
+                    ("Volgende stap", "shadow-context blijven verzamelen"),
+                ],
+                actions=[
+                    ("note", "Notitie"),
+                    ("freeze", "Parkeren"),
+                ],
+                recommended_action="auto_accept_context",
+            )
+
+        if ctype == "position_lifecycle_ok":
+            return self._operator_fields(
+                title="Positie-administratie is gezond",
+                question="Mag deze status als app-readiness context blijven meelopen?",
+                summary="De lifecycle-check ziet geen hoge issues in de positie-administratie.",
+                consequence="Geen live effect. Dit ondersteunt vertrouwen in app/trade-overzichten.",
+                evidence=[
+                    ("Master trades", self._fmt_value(evidence.get("master_trades"))),
+                    ("Open", self._fmt_value(evidence.get("open_positions"))),
+                    ("Issues", self._fmt_value(evidence.get("issue_count"))),
+                    ("Bot-oordeel", "positielogica klopt"),
+                    ("Live effect nu", "geen"),
+                ],
+                actions=[
+                    ("note", "Notitie"),
+                    ("freeze", "Parkeren"),
+                ],
+                recommended_action="auto_accept_context",
+            )
+
+        return self._operator_fields(
+            title=item.get("title") or item.get("candidate_type") or "Aanbeveling",
+            question="Welke vervolgstap wil je voor deze aanbeveling?",
+            summary=item.get("headline") or "",
+            consequence=item.get("why") or "Deze klik wordt opgeslagen als operatorbesluit.",
+            evidence=[
+                ("Status", status),
+                ("Effectniveau", effect_level),
+                ("Live effect nu", "geen"),
+            ],
+            actions=[(action, self._default_action_label(action)) for action in item.get("allowed_actions_v1", [])],
+            recommended_action=item.get("default_action") or "wait",
+        )
+
+    def _operator_fields(
+        self,
+        title: str,
+        question: str,
+        summary: str,
+        consequence: str,
+        evidence: list[tuple[str, Any]],
+        actions: list[tuple[str, str]],
+        recommended_action: str,
+    ) -> dict:
+        clean_evidence = [
+            {"label": str(label), "value": self._fmt_value(value)}
+            for label, value in evidence
+            if value not in (None, "")
+        ]
+        return {
+            "operator_title": title,
+            "operator_question": question,
+            "operator_summary": summary,
+            "operator_consequence": consequence,
+            "operator_evidence": clean_evidence,
+            "operator_actions": [{"id": action_id, "label": label} for action_id, label in actions],
+            "recommended_action": recommended_action,
+        }
+
+    def _default_action_label(self, action: str) -> str:
+        return {
+            "approve": "Akkoord",
+            "wait": "Meer bewijs",
+            "reject": "Afwijzen",
+            "freeze": "Parkeren",
+            "snooze": "Later",
+            "note": "Notitie",
+        }.get(action, action)
+
+    def _fmt_pct(self, value: Any) -> str:
+        if value in (None, ""):
+            return "-"
+        try:
+            return f"{float(value):.2f}%"
+        except Exception:
+            return str(value)
+
+    def _fmt_r(self, value: Any) -> str:
+        if value in (None, ""):
+            return "-"
+        try:
+            return f"{float(value):.4f} R"
+        except Exception:
+            return str(value)
+
+    def _fmt_value(self, value: Any) -> str:
+        if value in (None, ""):
+            return "-"
+        if isinstance(value, float):
+            return f"{value:.4f}".rstrip("0").rstrip(".")
+        return str(value)
 
     def _allowed_actions(self, effect_level: str, status: str) -> list[str]:
         if status == STATUS_BLOCKED:

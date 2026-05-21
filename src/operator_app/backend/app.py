@@ -348,12 +348,18 @@ FALLBACK_HTML = """
       await loadAll();
     }
     function actionText(item, action) {
+      const configured = (item.operator_actions || []).find((candidate) => candidate.id === action);
+      if (configured && configured.label) return configured.label;
+      const title = String(item.title || "");
       const level = item.effect_level || "shadow_only";
+      if (action === "approve" && title.includes("Risk guard threshold")) return "Door naar validatie";
+      if (action === "approve" && title.includes("Live-readiness")) return "Door naar live-gate";
+      if (action === "approve" && title.includes("Exit reason logging")) return "Door naar exit-validatie";
       if (action === "approve" && level === "context_live") return "Akkoord context";
-      if (action === "approve" && level === "risk_down_live") return "Akkoord live-gate";
-      if (action === "approve" && level === "strategy_live") return "Akkoord strict gate";
+      if (action === "approve" && level === "risk_down_live") return "Door naar live-gate";
+      if (action === "approve" && level === "strategy_live") return "Door naar validatie";
       if (action === "approve") return "Akkoord";
-      if (action === "wait") return "Wacht op bewijs";
+      if (action === "wait") return "Meer bewijs";
       if (action === "reject") return "Afwijzen";
       if (action === "freeze") return "Parkeren";
       if (action === "snooze") return "Later";
@@ -368,6 +374,7 @@ FALLBACK_HTML = """
       return "btn-note";
     }
     function decisionQuestion(item) {
+      if (item.operator_question) return item.operator_question;
       const title = String(item.title || "");
       const level = item.effect_level || "";
       if (title.includes("Risk guard threshold")) return "Mag de bot dit doorzetten naar validatie voor een mogelijke ruimere daglimiet?";
@@ -420,8 +427,16 @@ FALLBACK_HTML = """
       return v.replaceAll("_", " ");
     }
     function evidenceHumanText(item) {
+      if (Array.isArray(item.operator_evidence) && item.operator_evidence.length) {
+        return item.operator_evidence.map((entry) => `${entry.label}: ${entry.value}`).join("<br>");
+      }
       const e = item.evidence || {};
       const parts = [];
+      if (e.guard_triggers !== undefined) parts.push(`guard-trigger: ${e.guard_triggers} keer`);
+      if (e.triggers !== undefined) parts.push(`triggerde ${e.triggers} keer`);
+      if (e.guard_net_saved_r !== undefined) parts.push(`shadow-resultaat: ${e.guard_net_saved_r} R`);
+      if (e.issue_net_r !== undefined) parts.push(`effect van dit issue: ${e.issue_net_r} R`);
+      if (e.net_saved_r !== undefined) parts.push(`shadow-effect: ${e.net_saved_r} R`);
       if (e.stable_symbols !== undefined) parts.push(`${e.stable_symbols} coins geven hetzelfde signaal`);
       if (e.days !== undefined) parts.push(`${e.days} dagen gemeten`);
       if (e.usable_rows !== undefined) parts.push(`${e.usable_rows} bruikbare datapunten`);
@@ -429,9 +444,25 @@ FALLBACK_HTML = """
       if (e.positions !== undefined) parts.push(`${e.positions} posities bekeken`);
       if (e.closed !== undefined) parts.push(`${e.closed} gesloten trades`);
       if (e.verdict !== undefined) parts.push(`bot-oordeel: ${humanVerdict(e.verdict)}`);
-      return parts.length ? parts.join(" | ") : "De details staan in het onderliggende rapport.";
+      parts.push("live effect nu: geen");
+      parts.push(`volgende stap: ${nextPhaseText(item)}`);
+      return parts.length ? parts.join("<br>") : "De details staan in het onderliggende rapport.";
+    }
+    function nextPhaseText(item) {
+      const title = String(item.title || "");
+      const status = item.status || "";
+      const level = item.effect_level || "";
+      if (title.includes("Risk guard threshold")) return "validatiefase voor daglimiet, zonder live wijziging";
+      if (title.includes("Live-readiness")) return "live-gate controleren voordat live wiring mogelijk wordt";
+      if (title.includes("Exit reason logging")) return "wachten op genoeg nieuwe exit-redenen voor exit-tuning";
+      if (status === "wait_more_evidence") return "meer bewijs verzamelen";
+      if (status === "blocked") return "niet doorzetten totdat conflict is opgelost";
+      if (level === "context_live") return "als context blijven gebruiken";
+      if (level === "shadow_only") return "shadow-test door laten lopen";
+      return "operatorbesluit opslaan en opnieuw laten beoordelen";
     }
     function displayTitle(item) {
+      if (item.operator_title) return item.operator_title;
       const title = String(item.title || item.id || "");
       const verdict = String((item.evidence || {}).verdict || "");
       if (title.includes("Risk guard threshold") || verdict === "guards_too_strict") return "Daglimiet voor trades lijkt te streng";
@@ -446,6 +477,7 @@ FALLBACK_HTML = """
       return title;
     }
     function whyNowText(item) {
+      if (item.operator_summary) return item.operator_summary;
       const title = String(item.title || "");
       if (title.includes("Risk guard threshold")) return "De replay ziet dat de daglimiet vaak ingrijpt. Dat kan bescherming zijn, maar ook kansen blokkeren.";
       if (title.includes("Live-readiness")) return "De bot ziet volwassen shadow-kandidaten, maar live wiring staat nog uit.";
@@ -456,8 +488,13 @@ FALLBACK_HTML = """
       return fmt(item.headline || "") || "De bot heeft nieuw bewijs in de dagelijkse analyse gevonden.";
     }
     function consequenceText(item) {
+      if (item.operator_consequence) return item.operator_consequence;
+      const title = String(item.title || "");
       const level = item.effect_level || "";
       const status = item.status || "";
+      if (title.includes("Risk guard threshold")) return "Akkoord betekent: de bot mag deze daglimiet strenger valideren. Er verandert nu niets live.";
+      if (title.includes("Live-readiness")) return "Akkoord betekent: door naar live-gate. Pas na die gate kan dit live effect krijgen.";
+      if (title.includes("Exit reason logging")) return "Akkoord betekent: exit-data verder beoordelen zodra er genoeg nieuwe reden-labels zijn. Geen TP/SL-wijziging nu.";
       if (status === "blocked") return "Er verandert niets live. Afwijzen of parkeren voorkomt dat dit als actief besluit blijft terugkomen.";
       if (status === "wait_more_evidence") return "Er verandert niets live. De bot verzamelt meer bewijs en komt terug als het sterker wordt.";
       if (level === "context_live") return "Dit mag als context blijven meewegen in GPT/profielen. Het plaatst zelf geen orders.";
@@ -472,6 +509,9 @@ FALLBACK_HTML = """
       return `Next: ${steps.join(", ")}`;
     }
     function primaryActions(item) {
+      if (Array.isArray(item.operator_actions) && item.operator_actions.length) {
+        return item.operator_actions.map((action) => action.id).filter(Boolean);
+      }
       const status = item.status || "";
       const level = item.effect_level || "";
       if (status === "blocked") return ["reject", "freeze", "note"];

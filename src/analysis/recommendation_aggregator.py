@@ -15,6 +15,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
+from src.analysis.operator_decision_resolver import run_operator_decision_resolver
+
 DEFAULT_OUTPUT_DIR = os.path.join("analysis", "recommendations")
 DEFAULT_LATEST_FILE = "latest_recommendation_aggregator.json"
 
@@ -106,19 +108,26 @@ class RecommendationAggregator:
         items.extend(self._from_position_lifecycle(reports.get("position_lifecycle") or {}))
 
         items = self._dedupe(items)
+        resolver_report = run_operator_decision_resolver(items=items)
+        suppressed_items = resolver_report.get("suppressed_items", []) or []
+        resolved_items = resolver_report.get("resolved_items", []) or []
+        items = resolver_report.get("active_items", []) or items
         items.sort(key=self._sort_key)
         summary = self._summary(items)
+        summary["operator_resolution"] = resolver_report.get("summary", {})
         return {
             "created_utc": _utc_now(),
             "status": "REVIEW" if summary.get("needs_operator_review") else "WATCH",
             "meta": {
                 "read_only": True,
                 "live_effect": False,
-                "max_operator_review_items": 5,
+                "operator_review_policy": "show_all_actionable_items",
             },
             "summary": summary,
             "items": items,
-            "operator_review_items": [item for item in items if item.get("status") == STATUS_REVIEW][:5],
+            "operator_review_items": [item for item in items if item.get("status") == STATUS_REVIEW],
+            "resolved_items": resolved_items,
+            "suppressed_items": suppressed_items,
             "sources": self.paths,
         }
 
@@ -135,6 +144,7 @@ class RecommendationAggregator:
                 headline=f"{review} candidates are ready for operator review, with live wiring still disabled.",
                 why="The live-readiness gate found mature shadow candidates, but app v1 and safety state keep them read-only.",
                 default_action="wait",
+                effect_level="risk_down_live",
                 evidence={"review": review, "blocked": blocked, "summary": summary},
             )]
         if blocked:
@@ -146,6 +156,7 @@ class RecommendationAggregator:
                 headline=f"{blocked} candidates are blocked by evidence or safety gates.",
                 why="Blocked candidates should not become live behavior.",
                 default_action="reject_or_freeze",
+                effect_level="risk_down_live",
                 evidence={"blocked": blocked, "summary": summary},
             )]
         return []
@@ -164,6 +175,7 @@ class RecommendationAggregator:
                 headline=f"{stable} symbols have stable data-down advice across {days} days.",
                 why="Advice is stable, but bridge outcomes currently say risk-down may be too strict, so this stays read-only.",
                 default_action="wait",
+                effect_level="risk_down_live",
                 evidence={"stable_symbols": stable, "days": days, "top": summary.get("top_stable_data_down", [])[:5]},
             )]
         return []
@@ -180,6 +192,7 @@ class RecommendationAggregator:
                 headline="Risk bridge history says current risk-down shadow policy may cut too much.",
                 why="This conflicts with data-down candidates, so risk-down must remain shadow-only until sizing logic is recalibrated.",
                 default_action="freeze",
+                effect_level="risk_down_live",
                 evidence=summary,
             )]
         if verdict == "stable_risk_down_helpful":
@@ -191,6 +204,7 @@ class RecommendationAggregator:
                 headline="Risk bridge history is stable-positive and can be reviewed as a future conservative live candidate.",
                 why="This still requires explicit operator review and safety wiring; no live effect in app v1.",
                 default_action="wait",
+                effect_level="risk_down_live",
                 evidence=summary,
             )]
         return []
@@ -210,6 +224,7 @@ class RecommendationAggregator:
                 headline=f"Guard {guard} looks too strict in shadow replay.",
                 why="This is a threshold/design review item, not a live enforcement candidate.",
                 default_action="wait",
+                effect_level="strategy_live",
                 evidence={"verdict": verdict, "primary_issue": issue, "summary": summary},
             )]
         return []
@@ -226,6 +241,7 @@ class RecommendationAggregator:
                 headline=f"Potential call reduction {summary.get('call_reduction_pct')}%, net_R={summary.get('estimated_net_saved_r')}.",
                 why="The cost-saving gate needs more false-skip validation before it can affect live GPT calls.",
                 default_action="wait",
+                effect_level="shadow_only",
                 evidence=summary,
             )]
         if verdict == "too_risky":
@@ -237,6 +253,7 @@ class RecommendationAggregator:
                 headline="Shadow pre-GPT gate would skip too many useful decisions.",
                 why="Do not reduce GPT calls live while useful opens are still skipped.",
                 default_action="reject_or_freeze",
+                effect_level="shadow_only",
                 evidence=summary,
             )]
         return []
@@ -254,6 +271,7 @@ class RecommendationAggregator:
                 headline=f"ML shadow model trained with auc={metrics.get('classification_auc')} and mae_R={metrics.get('regression_mae_r')}.",
                 why="This is accepted as read-only evidence/context, not as live decision authority.",
                 default_action="auto_accept_context",
+                effect_level="context_live",
                 evidence={"readiness": readiness, "metrics": metrics, "prediction_summary": model.get("prediction_summary", {})},
             )]
         return []
@@ -274,6 +292,7 @@ class RecommendationAggregator:
                 headline=f"Top feature {top.get('feature')} has edge_R={top.get('edge_r')} across {usable} rows.",
                 why="This can enrich coin/profile/GPT context, but it should not directly alter live scoring yet.",
                 default_action="auto_accept_context",
+                effect_level="context_live",
                 evidence={"top_feature": top, "weak_feature": summary.get("weak_feature"), "usable_rows": usable, "ranked_features": ranked},
             )]
         if usable:
@@ -285,6 +304,7 @@ class RecommendationAggregator:
                 headline=f"Indicator edge ranked {ranked} features across {usable} rows.",
                 why="Evidence is not strong enough for a bundled context recommendation yet.",
                 default_action="wait",
+                effect_level="context_live",
                 evidence={"top_feature": top, "usable_rows": usable, "ranked_features": ranked},
             )]
         return []
@@ -303,6 +323,7 @@ class RecommendationAggregator:
                 headline=f"Exit report found {closed} closed positions, but close reasons are inferred from child trades.",
                 why="Before tuning TP/SL/trailing rules, the bot should persist explicit exit reasons so the app can judge exits with context.",
                 default_action="wait",
+                effect_level="strategy_live",
                 evidence={"positions": positions, "closed": closed, "summary": summary},
             )]
         if verdict == "exit_logging_collecting_reasons":
@@ -314,6 +335,7 @@ class RecommendationAggregator:
                 headline=f"Exit report has {closed} closed positions, but older rows still miss explicit close reasons.",
                 why="New exits can now be judged by reason; wait for fresh reason-labeled exits before tuning TP/SL/trailing rules.",
                 default_action="wait",
+                effect_level="strategy_live",
                 evidence={"positions": positions, "closed": closed, "summary": summary},
             )]
         if verdict == "exit_data_ready_for_review":
@@ -325,6 +347,7 @@ class RecommendationAggregator:
                 headline=f"Exit report has {closed} closed positions with win={summary.get('win_rate_pct')}% and pnl={summary.get('total_realized_pnl_eur')}.",
                 why="This is a human review item for later exit-rule tuning; no live behavior changes in app v1.",
                 default_action="wait",
+                effect_level="strategy_live",
                 evidence=summary,
             )]
         if positions:
@@ -336,6 +359,7 @@ class RecommendationAggregator:
                 headline=f"Exit report is tracking {positions} positions and {closed} closed positions.",
                 why="Sample is still building before exit rules should be tuned.",
                 default_action="wait",
+                effect_level="strategy_live",
                 evidence=summary,
             )]
         return []
@@ -354,6 +378,7 @@ class RecommendationAggregator:
                 headline=f"Lifecycle report found {high} high issues across {summary.get('master_trades')} master trades.",
                 why="The app and future autonomy should not rely on position state until high-integrity bookkeeping issues are understood.",
                 default_action="freeze",
+                effect_level="shadow_only",
                 evidence=summary,
             )]
         if medium:
@@ -365,6 +390,7 @@ class RecommendationAggregator:
                 headline=f"Lifecycle report found {medium} medium review items.",
                 why="These are not live blockers, but they should stay visible before app decisions become operational.",
                 default_action="wait",
+                effect_level="shadow_only",
                 evidence=summary,
             )]
         if summary.get("master_trades"):
@@ -376,6 +402,7 @@ class RecommendationAggregator:
                 headline=f"Lifecycle report is tracking {summary.get('master_trades')} master trades with {issues} issues.",
                 why="This is accepted as app-readiness context with no live effect.",
                 default_action="auto_accept_context",
+                effect_level="context_live",
                 evidence=summary,
             )]
         return []
@@ -391,6 +418,7 @@ class RecommendationAggregator:
         default_action: str,
         evidence: dict,
         subject: str = "",
+        effect_level: str = "shadow_only",
     ) -> dict:
         return {
             "id": _stable_id(area, candidate_type, subject),
@@ -402,10 +430,34 @@ class RecommendationAggregator:
             "headline": headline,
             "why": why,
             "default_action": default_action,
-            "allowed_actions_v1": ["approve", "reject", "wait", "freeze", "snooze", "note"] if status == STATUS_REVIEW else ["wait", "snooze", "note"],
+            "effect_level": effect_level,
+            "allowed_next_steps": self._allowed_next_steps(effect_level, status),
+            "allowed_actions_v1": self._allowed_actions(effect_level, status),
             "live_effect": False,
             "evidence": evidence,
         }
+
+    def _allowed_actions(self, effect_level: str, status: str) -> list[str]:
+        if status == STATUS_BLOCKED:
+            return ["reject", "freeze", "note"]
+        if status == STATUS_AUTO_CONTEXT:
+            return ["note", "freeze"]
+        if effect_level in {"risk_down_live", "strategy_live"}:
+            return ["approve", "reject", "wait", "freeze", "snooze", "note"]
+        return ["approve", "reject", "wait", "freeze", "snooze", "note"] if status == STATUS_REVIEW else ["wait", "snooze", "note"]
+
+    def _allowed_next_steps(self, effect_level: str, status: str) -> list[str]:
+        if status == STATUS_BLOCKED:
+            return ["reject_or_freeze"]
+        if effect_level == "context_live":
+            return ["auto_context", "approve_context_live", "wait_more_evidence", "freeze_topic"]
+        if effect_level == "shadow_only":
+            return ["continue_shadow", "wait_more_evidence", "freeze_topic"]
+        if effect_level == "risk_down_live":
+            return ["approve_pending_live_gate", "wait_more_evidence", "reject", "freeze_topic"]
+        if effect_level == "strategy_live":
+            return ["approve_pending_strict_live_gate", "wait_more_evidence", "reject", "freeze_topic"]
+        return ["wait_more_evidence", "note"]
 
     def _dedupe(self, items: list[dict]) -> list[dict]:
         seen = set()
@@ -424,6 +476,9 @@ class RecommendationAggregator:
             STATUS_BLOCKED: 1,
             STATUS_WAIT: 2,
             STATUS_AUTO_CONTEXT: 3,
+            "approved_context_live": 4,
+            "approved_shadow": 4,
+            "approved_pending_live_gate": 4,
         }.get(str(item.get("status")), 9)
         return (priority, str(item.get("area")), str(item.get("candidate_type")))
 

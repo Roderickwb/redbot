@@ -516,7 +516,8 @@ def _build_recommendation_aggregator() -> dict:
     return {
         "status": report.get("status"),
         "summary": report.get("summary", {}),
-        "operator_review_items": report.get("operator_review_items", [])[:5],
+        "operator_review_items": report.get("operator_review_items", []),
+        "suppressed_items": len(report.get("suppressed_items", []) or []),
         "output_path": report.get("output_path"),
     }
 

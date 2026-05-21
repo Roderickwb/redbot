@@ -480,19 +480,20 @@ class RecommendationAggregator:
         if ctype == "live_readiness_batch":
             summary = evidence.get("summary") or {}
             return self._operator_fields(
-                title="Voorstel is klaar voor jouw beoordeling",
-                question="Mag dit voorstel door naar de live-gate, zonder nu al live gedrag te wijzigen?",
-                summary="De bot ziet volwassen shadow-kandidaten, maar live wiring staat nog uit.",
-                consequence="Akkoord betekent: door naar live-gate. Pas na die gate kan dit live effect krijgen.",
+                title="Risico-omlaag kandidaten klaar voor live-gate review",
+                question="Mag de bot deze risico-omlaag kandidaten klaarzetten voor de live-gate, zonder nu al live gedrag te wijzigen?",
+                summary="De bot ziet volwassen shadow-kandidaten voor conservatiever risicobeheer, maar live wiring staat nog uit.",
+                consequence="Akkoord betekent: klaarzetten voor live-gate review. Pas na die gate kan risico-omlaag live effect krijgen.",
                 evidence=[
                     ("Review-kandidaten", self._fmt_value(evidence.get("review") or summary.get("ready_for_operator_review"))),
                     ("Geblokkeerd", self._fmt_value(evidence.get("blocked") or summary.get("blocked"))),
+                    ("Type wijziging", "risico omlaag, geen risk-up"),
                     ("Live wiring", "uit"),
                     ("Live effect nu", "geen"),
-                    ("Volgende stap", "live-gate controleren"),
+                    ("Volgende stap", "live-gate review voorbereiden"),
                 ],
                 actions=[
-                    ("approve", "Door naar live-gate"),
+                    ("approve", "Klaarzetten live-gate"),
                     ("wait", "Meer bewijs"),
                     ("reject", "Afwijzen"),
                     ("freeze", "Parkeren"),

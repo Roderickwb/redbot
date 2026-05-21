@@ -353,7 +353,7 @@ FALLBACK_HTML = """
       const title = String(item.title || "");
       const level = item.effect_level || "shadow_only";
       if (action === "approve" && title.includes("Risk guard threshold")) return "Door naar validatie";
-      if (action === "approve" && title.includes("Live-readiness")) return "Door naar live-gate";
+      if (action === "approve" && title.includes("Live-readiness")) return "Klaarzetten live-gate";
       if (action === "approve" && title.includes("Exit reason logging")) return "Door naar exit-validatie";
       if (action === "approve" && level === "context_live") return "Akkoord context";
       if (action === "approve" && level === "risk_down_live") return "Door naar live-gate";
@@ -378,7 +378,7 @@ FALLBACK_HTML = """
       const title = String(item.title || "");
       const level = item.effect_level || "";
       if (title.includes("Risk guard threshold")) return "Mag de bot dit doorzetten naar validatie voor een mogelijke ruimere daglimiet?";
-      if (title.includes("Live-readiness")) return "Mag dit voorstel door naar de live-gate, zonder nu al live gedrag te wijzigen?";
+      if (title.includes("Live-readiness")) return "Mag de bot deze risico-omlaag kandidaten klaarzetten voor de live-gate, zonder nu al live gedrag te wijzigen?";
       if (title.includes("Risk-down advice")) return "Wil je wachten tot bridge-resultaten bevestigen dat dit live verstandig is?";
       if (title.includes("Exit reason logging")) return "Wil je wachten tot nieuwe exits genoeg reden-labels hebben voor TP/SL/trailing tuning?";
       if (level === "context_live") return "Mag deze context automatisch mee blijven wegen in GPT/profielen?";
@@ -466,7 +466,7 @@ FALLBACK_HTML = """
       const title = String(item.title || item.id || "");
       const verdict = String((item.evidence || {}).verdict || "");
       if (title.includes("Risk guard threshold") || verdict === "guards_too_strict") return "Daglimiet voor trades lijkt te streng";
-      if (title.includes("Live-readiness")) return "Voorstel is klaar voor jouw beoordeling";
+      if (title.includes("Live-readiness")) return "Risico-omlaag kandidaten klaar voor live-gate review";
       if (title.includes("Risk-down advice")) return "Risico-omlaag advies is stabiel, maar nog niet live-klaar";
       if (title.includes("Risk-down looks too strict")) return "Risicoverlaging lijkt nu te streng";
       if (title.includes("Exit reason logging")) return "Exit-data wordt beter bruikbaar";
@@ -480,7 +480,7 @@ FALLBACK_HTML = """
       if (item.operator_summary) return item.operator_summary;
       const title = String(item.title || "");
       if (title.includes("Risk guard threshold")) return "De replay ziet dat de daglimiet vaak ingrijpt. Dat kan bescherming zijn, maar ook kansen blokkeren.";
-      if (title.includes("Live-readiness")) return "De bot ziet volwassen shadow-kandidaten, maar live wiring staat nog uit.";
+      if (title.includes("Live-readiness")) return "De bot ziet volwassen shadow-kandidaten voor conservatiever risicobeheer, maar live wiring staat nog uit.";
       if (title.includes("Risk-down advice")) return "Meerdere coins geven al meerdere dagen een risico-omlaag signaal.";
       if (title.includes("Risk-down looks too strict")) return "De bridge-resultaten botsen met het risico-omlaag advies. Daarom blijft dit geblokkeerd.";
       if (title.includes("Exit reason logging")) return "Nieuwe trades krijgen nu betere exit-redenen, maar oude data is nog incompleet.";
@@ -493,7 +493,7 @@ FALLBACK_HTML = """
       const level = item.effect_level || "";
       const status = item.status || "";
       if (title.includes("Risk guard threshold")) return "Akkoord betekent: de bot mag deze daglimiet strenger valideren. Er verandert nu niets live.";
-      if (title.includes("Live-readiness")) return "Akkoord betekent: door naar live-gate. Pas na die gate kan dit live effect krijgen.";
+      if (title.includes("Live-readiness")) return "Akkoord betekent: klaarzetten voor live-gate review. Pas na die gate kan risico-omlaag live effect krijgen.";
       if (title.includes("Exit reason logging")) return "Akkoord betekent: exit-data verder beoordelen zodra er genoeg nieuwe reden-labels zijn. Geen TP/SL-wijziging nu.";
       if (status === "blocked") return "Er verandert niets live. Afwijzen of parkeren voorkomt dat dit als actief besluit blijft terugkomen.";
       if (status === "wait_more_evidence") return "Er verandert niets live. De bot verzamelt meer bewijs en komt terug als het sterker wordt.";

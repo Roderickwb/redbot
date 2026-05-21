@@ -404,7 +404,7 @@ FALLBACK_HTML = """
     }
     function statusLabel(status) {
       if (status === "needs_operator_review") return "Besluit nodig";
-      if (status === "approved_pending_live_gate") return "Wacht op live-gate";
+      if (status === "approved_pending_live_gate") return "Goedgekeurd voor volgende fase";
       if (status === "auto_accept_as_context") return "Autonoom verwerkt";
       if (status === "wait_more_evidence") return "Wacht op bewijs";
       if (status === "blocked") return "Geblokkeerd";
@@ -434,7 +434,9 @@ FALLBACK_HTML = """
     }
     function evidenceHumanText(item) {
       if (Array.isArray(item.operator_evidence) && item.operator_evidence.length) {
-        return item.operator_evidence.map((entry) => `${entry.label}: ${entry.value}`).join("<br>");
+        const rows = item.operator_evidence.map((entry) => `${entry.label}: ${entry.value}`);
+        if (item.returns_as) rows.push(`Kan later terugkomen als: ${item.returns_as}`);
+        return rows.join("<br>");
       }
       const e = item.evidence || {};
       const parts = [];
@@ -564,10 +566,11 @@ FALLBACK_HTML = """
       };
     }
     function decisionCard(item, index) {
+      const phase = item.phase_transition_label || `${levelLabel(item.effect_level)} → volgende fase`;
       return `
         <article class="metric decision-card" style="margin-bottom:10px">
           <div class="section-title"><h3>${displayTitle(item)}</h3><span class="pill hot">${statusLabel(item.status)}</span></div>
-          <div class="decision-meta"><span class="pill">${levelLabel(item.effect_level)}</span><span class="pill">${fmt(item.area || "")}</span></div>
+          <div class="decision-meta"><span class="pill">${phase}</span><span class="pill">${fmt(item.area || "")}</span></div>
           <div class="decision-question">${decisionQuestion(item)}</div>
           <div class="card-copy"><strong>Waarom nu:</strong> ${whyNowText(item)}</div>
           <div class="card-copy"><strong>Effect van je keuze:</strong> ${consequenceText(item)}</div>
@@ -581,7 +584,7 @@ FALLBACK_HTML = """
         <section>
           <div class="section-title"><h2>${title}</h2><span class="pill">${items.length}</span></div>
           <div class="mini-list">
-            ${items.slice(0, 8).map((item) => `<div class="mini-item"><strong>${displayTitle(item)}</strong><br><span class="muted">${levelLabel(item.effect_level)} | ${statusLabel(item.status)}</span></div>`).join("")}
+            ${items.slice(0, 8).map((item) => `<div class="mini-item"><strong>${displayTitle(item)}</strong><br><span class="muted">${item.phase_transition_label || levelLabel(item.effect_level)} | ${statusLabel(item.status)}</span></div>`).join("")}
           </div>
         </section>`;
     }
@@ -603,7 +606,7 @@ FALLBACK_HTML = """
         ? `<section><div class="section-title"><h2>Nu beslissen</h2><span class="pill">${grouped.decisions.length}</span></div>${grouped.decisions.map((item) => decisionCard(item, indexOf(item))).join("")}</section>`
         : `<section><div class="section-title"><h2>Nu beslissen</h2><span class="pill">0</span></div><div class="muted">Geen directe operatorbeslissing nodig.</div></section>`;
       return strip + decisions
-        + compactSection("Klaargezet voor live-gate", grouped.pendingGate, "Nog niets klaargezet voor live-gate.")
+        + compactSection("Goedgekeurd voor volgende fase", grouped.pendingGate, "Nog niets goedgekeurd voor een volgende fase.")
         + compactSection("Autonoom verwerkt", grouped.autonomous, "Context en shadow learning lopen autonoom.")
         + compactSection("Wacht op bewijs", grouped.waiting, "Geen wachtende items.")
         + compactSection("Geblokkeerd / parkeren", grouped.blocked, "Geen geblokkeerde items.");

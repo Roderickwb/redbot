@@ -459,6 +459,9 @@ class RecommendationAggregator:
                 question="Mag de bot dit doorzetten naar validatie voor een mogelijke ruimere daglimiet?",
                 summary=f"De replay ziet dat {guard} vaak ingrijpt. Dat kan bescherming zijn, maar ook kansen blokkeren.",
                 consequence="Akkoord betekent: validatiefase voor deze daglimiet. Er verandert nu niets live.",
+                current_phase="shadow",
+                target_phase="validation",
+                returns_as="live-gate voorstel voor daglimiet aanpassen",
                 evidence=[
                     ("Guard", guard),
                     ("Triggers", self._fmt_value(summary.get("guard_triggers") or summary.get("triggers"))),
@@ -484,6 +487,9 @@ class RecommendationAggregator:
                 question="Mag de bot deze risico-omlaag kandidaten klaarzetten voor de live-gate, zonder nu al live gedrag te wijzigen?",
                 summary="De bot ziet volwassen shadow-kandidaten voor conservatiever risicobeheer, maar live wiring staat nog uit.",
                 consequence="Akkoord betekent: klaarzetten voor live-gate review. Pas na die gate kan risico-omlaag live effect krijgen.",
+                current_phase="validation",
+                target_phase="live_gate",
+                returns_as="risk-down live voorstel",
                 evidence=[
                     ("Review-kandidaten", self._fmt_value(evidence.get("review") or summary.get("ready_for_operator_review"))),
                     ("Geblokkeerd", self._fmt_value(evidence.get("blocked") or summary.get("blocked"))),
@@ -507,6 +513,9 @@ class RecommendationAggregator:
                 question="Wil je wachten tot bridge-resultaten bevestigen dat dit live verstandig is?",
                 summary="Meerdere coins geven al meerdere dagen een risico-omlaag signaal.",
                 consequence="Er verandert niets live. De bot wacht op bevestiging dat risico-omlaag niet te streng uitpakt.",
+                current_phase="shadow",
+                target_phase="validation",
+                returns_as="risk-down validatievoorstel",
                 evidence=[
                     ("Coins met signaal", self._fmt_value(evidence.get("stable_symbols"))),
                     ("Dagen gemeten", self._fmt_value(evidence.get("days"))),
@@ -527,6 +536,9 @@ class RecommendationAggregator:
                 question="Wil je dit blokkeren tot de sizing-logica opnieuw is gekalibreerd?",
                 summary="De bridge-resultaten botsen met het risico-omlaag advies.",
                 consequence="Er verandert niets live. Afwijzen of parkeren voorkomt dat dit als actief live-kandidaat terugkomt.",
+                current_phase="blocked",
+                target_phase="blocked",
+                returns_as="nieuw voorstel alleen bij sterker bewijs",
                 evidence=[
                     ("Bot-oordeel", "risico omlaag lijkt te streng"),
                     ("Netto shadow-effect", self._fmt_r(evidence.get("net_saved_r") or evidence.get("history_net_saved_r"))),
@@ -548,6 +560,9 @@ class RecommendationAggregator:
                 question="Wil je wachten tot nieuwe exits genoeg reden-labels hebben voor TP/SL/trailing tuning?",
                 summary="Nieuwe trades krijgen betere exit-redenen, maar oude data is nog incompleet.",
                 consequence="Geen TP/SL-wijziging nu. De bot verzamelt eerst betere exit-data.",
+                current_phase="shadow",
+                target_phase="validation",
+                returns_as="exit-rule validatievoorstel",
                 evidence=[
                     ("Posities bekeken", self._fmt_value(evidence.get("positions") or summary.get("positions_loaded"))),
                     ("Gesloten trades", self._fmt_value(evidence.get("closed") or summary.get("closed_positions"))),
@@ -568,6 +583,9 @@ class RecommendationAggregator:
                 question="Blijft dit als shadow-test doorlopen tot bewezen is dat goede trades niet worden gemist?",
                 summary="De bot ziet mogelijke GPT-call besparing, maar dit mag live GPT-calls nog niet beperken.",
                 consequence="Geen live effect. De gate blijft alleen meten en vergelijken.",
+                current_phase="shadow",
+                target_phase="validation",
+                returns_as="pre-GPT gate validatievoorstel",
                 evidence=[
                     ("Mogelijke call-reductie", self._fmt_pct(evidence.get("call_reduction_pct"))),
                     ("Shadow-effect", self._fmt_r(evidence.get("estimated_net_saved_r"))),
@@ -589,6 +607,9 @@ class RecommendationAggregator:
                 question="Mag deze indicator-context automatisch mee blijven wegen in GPT/profielen?",
                 summary="De analyse vond een indicator-signaal met duidelijke edge in de historische labels.",
                 consequence="Dit is context voor GPT/profielen. Het wijzigt live scoring of orders niet direct.",
+                current_phase="context",
+                target_phase="context",
+                returns_as="context update",
                 evidence=[
                     ("Top indicator", top.get("feature") or "-"),
                     ("Edge", self._fmt_r(top.get("edge_r"))),
@@ -610,6 +631,9 @@ class RecommendationAggregator:
                 question="Mag dit model als bewijs/context blijven meelopen, zonder live beslisrecht?",
                 summary="Het ML-model is trainbaar en geeft extra context, maar blijft shadow-only.",
                 consequence="Geen live effect. ML krijgt pas later invloed na aparte validatie en approval.",
+                current_phase="shadow",
+                target_phase="shadow",
+                returns_as="ML-validatievoorstel bij sterker bewijs",
                 evidence=[
                     ("AUC", self._fmt_value(metrics.get("classification_auc"))),
                     ("MAE R", self._fmt_value(metrics.get("regression_mae_r"))),
@@ -629,6 +653,9 @@ class RecommendationAggregator:
                 question="Mag deze status als app-readiness context blijven meelopen?",
                 summary="De lifecycle-check ziet geen hoge issues in de positie-administratie.",
                 consequence="Geen live effect. Dit ondersteunt vertrouwen in app/trade-overzichten.",
+                current_phase="context",
+                target_phase="context",
+                returns_as="app-readiness context",
                 evidence=[
                     ("Master trades", self._fmt_value(evidence.get("master_trades"))),
                     ("Open", self._fmt_value(evidence.get("open_positions"))),
@@ -648,6 +675,9 @@ class RecommendationAggregator:
             question="Welke vervolgstap wil je voor deze aanbeveling?",
             summary=item.get("headline") or "",
             consequence=item.get("why") or "Deze klik wordt opgeslagen als operatorbesluit.",
+            current_phase=self._phase_from_effect(effect_level),
+            target_phase=self._target_phase_from_effect(effect_level, status),
+            returns_as="vervolgvoorstel bij nieuw bewijs",
             evidence=[
                 ("Status", status),
                 ("Effectniveau", effect_level),
@@ -663,6 +693,9 @@ class RecommendationAggregator:
         question: str,
         summary: str,
         consequence: str,
+        current_phase: str,
+        target_phase: str,
+        returns_as: str,
         evidence: list[tuple[str, Any]],
         actions: list[tuple[str, str]],
         recommended_action: str,
@@ -677,10 +710,43 @@ class RecommendationAggregator:
             "operator_question": question,
             "operator_summary": summary,
             "operator_consequence": consequence,
+            "current_phase": current_phase,
+            "target_phase": target_phase,
+            "phase_label": self._phase_label(current_phase),
+            "target_phase_label": self._phase_label(target_phase),
+            "phase_transition_label": f"{self._phase_label(current_phase)} → {self._phase_label(target_phase)}",
+            "returns_as": returns_as,
+            "live_effect_now": "none",
             "operator_evidence": clean_evidence,
             "operator_actions": [{"id": action_id, "label": label} for action_id, label in actions],
             "recommended_action": recommended_action,
         }
+
+    def _phase_label(self, phase: str) -> str:
+        return {
+            "context": "Context",
+            "shadow": "Shadow",
+            "validation": "Validatie",
+            "live_gate": "Live-gate",
+            "live": "Live",
+            "blocked": "Geblokkeerd",
+        }.get(str(phase or ""), str(phase or "Onbekend"))
+
+    def _phase_from_effect(self, effect_level: str) -> str:
+        if effect_level == "context_live":
+            return "context"
+        if effect_level in {"risk_down_live", "strategy_live"}:
+            return "validation"
+        return "shadow"
+
+    def _target_phase_from_effect(self, effect_level: str, status: str) -> str:
+        if status == STATUS_BLOCKED:
+            return "blocked"
+        if effect_level in {"risk_down_live", "strategy_live"}:
+            return "live_gate"
+        if effect_level == "context_live":
+            return "context"
+        return "validation"
 
     def _default_action_label(self, action: str) -> str:
         return {

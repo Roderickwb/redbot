@@ -129,51 +129,106 @@ FALLBACK_HTML = """
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Red Bot Operator</title>
   <style>
-    :root { color-scheme: dark; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #0e1216; color: #eef3f8; }
-    header { position: sticky; top: 0; z-index: 2; padding: 14px 16px 10px; background: rgba(18,24,30,.96); border-bottom: 1px solid #2a333c; backdrop-filter: blur(14px); }
-    h1 { margin: 2px 0 0; font-size: 22px; letter-spacing: 0; }
-    main { display: grid; gap: 12px; padding: 12px 12px 78px; max-width: 980px; margin: 0 auto; }
-    section { background: #171e25; border: 1px solid #2a333c; border-radius: 8px; padding: 12px; box-shadow: 0 16px 40px rgba(0,0,0,.18); }
-    h2 { margin: 0 0 10px; font-size: 15px; color: #9fb3c8; }
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --bg: #06080c;
+      --panel: #0d1219;
+      --panel-2: #111821;
+      --panel-3: #151f2a;
+      --line: #253141;
+      --line-hot: #4c1722;
+      --text: #f5f7fb;
+      --muted: #8c99aa;
+      --red: #e22d3f;
+      --red-2: #ff4056;
+      --blue: #3b82f6;
+      --green: #14b8a6;
+      --amber: #f59e0b;
+      --shadow: 0 24px 70px rgba(0,0,0,.42);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 18% -10%, rgba(226,45,63,.22), transparent 32%),
+        linear-gradient(180deg, #090c12 0%, var(--bg) 42%, #030407 100%);
+      color: var(--text);
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      padding: 16px 16px 12px;
+      background: linear-gradient(180deg, rgba(9,12,18,.98), rgba(8,10,15,.92));
+      border-bottom: 1px solid rgba(226,45,63,.24);
+      backdrop-filter: blur(18px);
+    }
+    h1 { margin: 3px 0 0; font-size: 23px; line-height: 1.05; letter-spacing: 0; }
+    main { display: grid; gap: 12px; padding: 12px 10px 84px; max-width: 980px; margin: 0 auto; }
+    section {
+      background: linear-gradient(180deg, rgba(17,24,33,.98), rgba(10,15,22,.98));
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+    }
+    h2 { margin: 0 0 10px; font-size: 13px; color: #b7c4d6; text-transform: uppercase; letter-spacing: .04em; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 8px; }
-    .metric { padding: 10px; background: #10161c; border: 1px solid #26313b; border-radius: 6px; }
-    .label { font-size: 12px; color: #91a4b8; }
+    .metric { padding: 11px; background: rgba(10,15,22,.92); border: 1px solid var(--line); border-radius: 8px; }
+    .label { font-size: 12px; color: var(--muted); }
     .value { margin-top: 4px; font-size: 18px; font-weight: 700; }
-    .ok { color: #73e6a5; } .review { color: #ffd36a; } .bad { color: #ff8f8f; }
+    .ok { color: #63e6b1; } .review { color: #ffc857; } .bad { color: #ff7180; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 8px 6px; border-bottom: 1px solid #25303a; text-align: left; vertical-align: top; }
-    th { color: #91a4b8; font-weight: 600; }
-    button { border: 1px solid #3b4855; background: #202a33; color: #eef3f8; border-radius: 6px; padding: 8px 10px; font-weight: 650; }
+    th { color: var(--muted); font-weight: 600; }
+    button {
+      border: 1px solid #334155;
+      background: linear-gradient(180deg, #202a36, #151d27);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 9px 11px;
+      font-weight: 750;
+      min-height: 36px;
+    }
     button:active { transform: translateY(1px); }
-    .primary { background: #e9f1ff; color: #10161c; border-color: #e9f1ff; }
+    .primary { background: linear-gradient(180deg, #f7f9ff, #dce6f5); color: #0c1118; border-color: #f7f9ff; box-shadow: 0 10px 24px rgba(255,255,255,.08); }
+    .btn-approve { background: linear-gradient(180deg, #19c6a7, #0f8d7f); border-color: #25d3b2; color: #03110f; }
+    .btn-wait { background: linear-gradient(180deg, #3b82f6, #225ec4); border-color: #60a5fa; color: #f8fbff; }
+    .btn-reject { background: linear-gradient(180deg, #ef4054, #ad1f31); border-color: #ff5d70; color: #fff7f8; }
+    .btn-freeze { background: linear-gradient(180deg, #f5a623, #ad6b08); border-color: #ffc55c; color: #1a1002; }
+    .btn-note { background: #1d2733; color: #d7e1ee; }
     button + button { margin-left: 6px; }
-    .muted { color: #91a4b8; }
+    .muted { color: var(--muted); }
     .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
-    .pill { border: 1px solid #344250; border-radius: 999px; padding: 4px 8px; color: #b8c7d6; font-size: 12px; }
-    input { width: min(100%, 420px); box-sizing: border-box; background: #10161c; color: #eef3f8; border: 1px solid #344250; border-radius: 6px; padding: 9px; }
+    .pill { border: 1px solid #344250; border-radius: 999px; padding: 4px 8px; color: #c7d3e2; font-size: 11px; background: rgba(255,255,255,.02); }
+    .pill.hot { border-color: rgba(226,45,63,.55); color: #ffd1d7; background: rgba(226,45,63,.08); }
+    input { width: min(100%, 420px); box-sizing: border-box; background: #090e15; color: var(--text); border: 1px solid #344250; border-radius: 8px; padding: 10px; }
     .topline { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .subline { margin-top: 6px; color: #91a4b8; font-size: 13px; }
     .page { display: none; }
     .page.active { display: grid; gap: 12px; }
-    .bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); background: rgba(18,24,30,.96); border-top: 1px solid #2a333c; backdrop-filter: blur(14px); }
+    .bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); background: rgba(7,9,13,.96); border-top: 1px solid rgba(226,45,63,.24); backdrop-filter: blur(18px); }
     .bottom-nav button { padding: 10px 4px; font-size: 12px; }
-    .bottom-nav button.active { background: #e9f1ff; color: #10161c; border-color: #e9f1ff; }
+    .bottom-nav button.active { background: linear-gradient(180deg, #f7f9ff, #dce6f5); color: #10161c; border-color: #f7f9ff; }
     .trade-card { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 0; border-bottom: 1px solid #25303a; }
     .trade-card:last-child { border-bottom: 0; }
     .card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .card-actions button { margin-left: 0; }
-    .evidence { margin-top: 8px; padding: 8px; background: #0d1319; border: 1px solid #26313b; border-radius: 6px; color: #b8c7d6; font-size: 12px; }
-    .decision-card { border-color: #526477; background: #141c24; }
-    .decision-card h3 { margin: 0 0 8px; font-size: 17px; }
+    .evidence { margin-top: 9px; padding: 9px; background: #080d13; border: 1px solid #26313b; border-radius: 8px; color: #b8c7d6; font-size: 12px; line-height: 1.45; }
+    .decision-card { position: relative; overflow: hidden; border-color: rgba(226,45,63,.5); background: linear-gradient(180deg, #151d27, #0b1118); }
+    .decision-card:before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: linear-gradient(180deg, var(--red-2), var(--red)); }
+    .decision-card h3 { margin: 0 0 8px; font-size: 18px; line-height: 1.12; }
     .decision-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
     .decision-meta .pill { background: #0d1319; }
     .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 8px; }
     .mini-list { display: grid; gap: 8px; }
-    .mini-item { padding: 9px; background: #10161c; border: 1px solid #26313b; border-radius: 6px; }
+    .mini-item { padding: 10px; background: #090e15; border: 1px solid #26313b; border-radius: 8px; }
     .summary-strip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
     .summary-strip .metric strong { font-size: 20px; }
-    #toast { position: fixed; left: 12px; right: 12px; bottom: 66px; z-index: 4; display: none; padding: 12px; border-radius: 8px; background: #e9f1ff; color: #10161c; font-weight: 750; box-shadow: 0 18px 45px rgba(0,0,0,.35); }
+    .decision-question { margin: 8px 0; padding: 9px 10px; border: 1px solid var(--line-hot); border-radius: 8px; background: rgba(226,45,63,.08); color: #ffd5da; font-weight: 800; }
+    .card-copy { margin-top: 8px; line-height: 1.42; color: #e8eef7; }
+    #toast { position: fixed; left: 12px; right: 12px; bottom: 66px; z-index: 4; display: none; padding: 12px; border-radius: 10px; background: #f7f9ff; color: #10161c; font-weight: 750; box-shadow: 0 18px 45px rgba(0,0,0,.35); }
     #toast.bad { background: #ffb4b4; }
   </style>
 </head>
@@ -186,7 +241,7 @@ FALLBACK_HTML = """
       </div>
       <button class="primary" onclick="loadAll()">Refresh</button>
     </div>
-    <div class="subline" id="subline">Mobile control cockpit · append-only actions</div>
+    <div class="subline" id="subline">Mobiele cockpit | beslissen met bewijs</div>
   </header>
   <main>
     <div id="page-cockpit" class="page active">
@@ -305,6 +360,22 @@ FALLBACK_HTML = """
       if (action === "note") return "Notitie";
       return action;
     }
+    function actionClass(action) {
+      if (action === "approve") return "btn-approve";
+      if (action === "wait") return "btn-wait";
+      if (action === "reject") return "btn-reject";
+      if (action === "freeze" || action === "snooze") return "btn-freeze";
+      return "btn-note";
+    }
+    function decisionQuestion(item) {
+      const level = item.effect_level || "";
+      if (level === "context_live") return "Mag deze context automatisch mee blijven wegen in GPT/profielen?";
+      if (level === "shadow_only") return "Blijft dit als shadow-test doorlopen tot er sterker bewijs is?";
+      if (level === "risk_down_live") return "Mag dit door naar de live-gate voor risico omlaag?";
+      if (level === "strategy_live") return "Mag dit door naar de strikte gate voor strategie/exit tuning?";
+      if (level === "risk_up_live") return "Risk-up blijft geblokkeerd tot aparte goedkeuring.";
+      return "Welke vervolgstap wil je voor deze aanbeveling?";
+    }
     function levelLabel(level) {
       if (level === "context_live") return "Context automatisch";
       if (level === "shadow_only") return "Shadow test";
@@ -383,12 +454,13 @@ FALLBACK_HTML = """
     function decisionCard(item, index) {
       return `
         <article class="metric decision-card" style="margin-bottom:10px">
-          <div class="section-title"><h3>${fmt(item.title || item.id)}</h3><span class="pill">${statusLabel(item.status)}</span></div>
+          <div class="section-title"><h3>${fmt(item.title || item.id)}</h3><span class="pill hot">${statusLabel(item.status)}</span></div>
           <div class="decision-meta"><span class="pill">${levelLabel(item.effect_level)}</span><span class="pill">${fmt(item.area || "")}</span></div>
-          <div class="muted" style="margin:7px 0">${fmt(item.headline || "")}</div>
-          <div>${fmt(item.why || "")}</div>
+          <div class="decision-question">${decisionQuestion(item)}</div>
+          <div class="card-copy"><strong>Waarom nu:</strong> ${fmt(item.headline || "")}</div>
+          <div class="card-copy"><strong>Onderbouwing:</strong> ${fmt(item.why || "")}</div>
           <div class="evidence">${evidenceText(item)}<br>${nextStepText(item)}</div>
-          <div class="card-actions">${primaryActions(item).map((action) => `<button onclick="decideByIndex(${index}, '${action}')">${actionText(item, action)}</button>`).join("")}</div>
+          <div class="card-actions">${primaryActions(item).map((action) => `<button class="${actionClass(action)}" onclick="decideByIndex(${index}, '${action}')">${actionText(item, action)}</button>`).join("")}</div>
         </article>`;
     }
     function compactSection(title, items, emptyText) {

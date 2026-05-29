@@ -102,7 +102,7 @@ class EntryRuleCandidateSimulator:
             return self._empty("LOW_SAMPLE", rows, top_loss, min_cluster_rows)
 
         candidates = self._simulate_candidates(cluster_rows)
-        candidates.sort(key=lambda item: item["estimated_net_R"], reverse=True)
+        candidates.sort(key=self._candidate_sort_key, reverse=True)
         best = candidates[0] if candidates else None
         status = "REVIEW" if best and best.get("estimated_net_R", 0.0) > 0 else "WATCH"
         return {
@@ -153,16 +153,37 @@ class EntryRuleCandidateSimulator:
 
     def _simulate_candidates(self, cluster_rows: list[dict]) -> list[dict]:
         return [
-            self._block_rule(cluster_rows),
             self._risk_multiplier_rule(cluster_rows, 0.5),
             self._confidence_rule(cluster_rows, 70),
             self._confidence_rule(cluster_rows, 75),
             self._risk_off_block_rule(cluster_rows),
             self._long_only_block_rule(cluster_rows),
+            self._cooldown_rule(cluster_rows),
         ]
 
-    def _block_rule(self, rows: list[dict]) -> dict:
-        return self._rule_summary("block_cluster", "Blokkeer dit cluster volledig", rows, blocked_rows=rows)
+    @staticmethod
+    def _candidate_sort_key(item: dict) -> tuple[int, float, int]:
+        action_type = str(item.get("action_type") or "")
+        soft_priority = {
+            "reduced_risk": 3,
+            "strict_confirmation": 2,
+            "conditional_cooldown": 1,
+            "cooldown": 0,
+        }.get(action_type, 0)
+        return (
+            soft_priority,
+            _safe_float(item.get("estimated_net_R")),
+            -_safe_int(item.get("affected_trades")),
+        )
+
+    def _cooldown_rule(self, rows: list[dict]) -> dict:
+        return self._rule_summary(
+            "cooldown_cluster",
+            "Zet dit cluster tijdelijk op cooldown met heropencriteria",
+            rows,
+            blocked_rows=rows,
+            action_type="cooldown",
+        )
 
     def _risk_multiplier_rule(self, rows: list[dict], multiplier: float) -> dict:
         return self._rule_summary(
@@ -171,6 +192,7 @@ class EntryRuleCandidateSimulator:
             rows,
             blocked_rows=[],
             adjusted_multiplier=multiplier,
+            action_type="reduced_risk",
         )
 
     def _confidence_rule(self, rows: list[dict], threshold: int) -> dict:
@@ -180,15 +202,28 @@ class EntryRuleCandidateSimulator:
             f"Sta dit cluster alleen toe bij GPT confidence >= {threshold}",
             rows,
             blocked_rows=blocked,
+            action_type="strict_confirmation",
         )
 
     def _risk_off_block_rule(self, rows: list[dict]) -> dict:
         blocked = [row for row in rows if _risk_mode(row) == "risk_off"]
-        return self._rule_summary("block_cluster_in_risk_off", "Blokkeer dit cluster alleen in risk_off", rows, blocked_rows=blocked)
+        return self._rule_summary(
+            "cooldown_cluster_in_risk_off",
+            "Zet dit cluster alleen in risk_off tijdelijk op cooldown",
+            rows,
+            blocked_rows=blocked,
+            action_type="conditional_cooldown",
+        )
 
     def _long_only_block_rule(self, rows: list[dict]) -> dict:
         blocked = [row for row in rows if _direction(row) == "long"]
-        return self._rule_summary("block_cluster_longs", "Blokkeer long entries in dit cluster", rows, blocked_rows=blocked)
+        return self._rule_summary(
+            "cooldown_cluster_longs",
+            "Zet long entries in dit cluster tijdelijk op cooldown",
+            rows,
+            blocked_rows=blocked,
+            action_type="conditional_cooldown",
+        )
 
     def _rule_summary(
         self,
@@ -197,6 +232,7 @@ class EntryRuleCandidateSimulator:
         rows: list[dict],
         blocked_rows: list[dict],
         adjusted_multiplier: Optional[float] = None,
+        action_type: str = "cooldown",
     ) -> dict:
         baseline_r = sum(_target_r(row) for row in rows)
         if adjusted_multiplier is not None:
@@ -218,6 +254,9 @@ class EntryRuleCandidateSimulator:
         return {
             "rule_id": rule_id,
             "title": title,
+            "action_type": action_type,
+            "reopen_criteria": self._reopen_criteria(action_type),
+            "review_after": "na 10 nieuwe paper/shadow signalen of 48 uur, wat eerder komt",
             "baseline_R": round(baseline_r, 6),
             "candidate_R": round(candidate_r, 6),
             "estimated_net_R": round(candidate_r - baseline_r, 6),
@@ -228,6 +267,19 @@ class EntryRuleCandidateSimulator:
             "estimated_missed_win_R": round(missed_win_r, 6),
             "live_effect": False,
         }
+
+    @staticmethod
+    def _reopen_criteria(action_type: str) -> list[str]:
+        base = [
+            "cluster blijft elk uur geanalyseerd",
+            "heropen als nieuwe paper/shadow signalen voor dit cluster positief worden",
+            "heropen als marktregime of 1h/4h structuur duidelijk verbetert",
+        ]
+        if action_type == "reduced_risk":
+            return base + ["normaliseer sizing pas na positieve baseline-vergelijking"]
+        if action_type == "strict_confirmation":
+            return base + ["versoepel bevestiging pas als confidence-filter geen goede entries mist"]
+        return base + ["cooldown is tijdelijk en mag niet als permanente ban worden behandeld"]
 
 
 def write_json(path: str, payload: dict) -> None:

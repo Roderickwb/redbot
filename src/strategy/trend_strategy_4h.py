@@ -26,6 +26,7 @@
 import time
 import logging
 import os
+import json
 import yaml
 from decimal import Decimal
 from typing import Optional, Dict
@@ -219,6 +220,24 @@ class TrendStrategy4H:
         self.last_processed_candle_ts: Dict[str, int] = {}
         self.last_processed_1h_ts: Dict[str, int] = {}
         self.last_gpt_candle_ts: Dict[str, int] = {}
+        hold_cache_cfg = cfg.get("pre_gpt_hold_cache", {}) or {}
+        self.pre_gpt_hold_cache_enabled = bool(hold_cache_cfg.get("enabled", True))
+        self.pre_gpt_hold_cache_max_age_hours = float(hold_cache_cfg.get("max_age_hours", 8.0))
+        self.gpt_hold_cache: Dict[str, dict] = {}
+        adaptive_cfg = cfg.get("adaptive_restrictions", {}) or {}
+        self.adaptive_restrictions_enabled = bool(adaptive_cfg.get("enabled", True))
+        self.adaptive_restrictions_path = os.path.abspath(
+            adaptive_cfg.get(
+                "path",
+                os.path.join("analysis", "adaptive_restrictions", "latest_adaptive_restrictions.json"),
+            )
+        )
+        self.adaptive_restrictions_apply_modes = {
+            str(mode).lower()
+            for mode in adaptive_cfg.get("apply_modes", ["dryrun"])
+        }
+        self.adaptive_restrictions_cache_ttl_sec = float(adaptive_cfg.get("cache_ttl_sec", 300))
+        self._adaptive_restrictions_cache: dict = {"loaded_ts": 0.0, "restrictions": []}
         self.gpt_state_file = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "config", "trend_4h_gpt_state.yaml")
         )
@@ -248,6 +267,8 @@ class TrendStrategy4H:
                 data = yaml.safe_load(f) or {}
             raw = data.get("last_gpt_candle_ts", {})
             self.last_gpt_candle_ts = {str(k): int(v) for k, v in raw.items()}
+            cache = data.get("gpt_hold_cache", {}) or {}
+            self.gpt_hold_cache = {str(k): dict(v or {}) for k, v in cache.items()}
             self.logger.info("[GPT_STATE] loaded %d symbols from %s", len(self.last_gpt_candle_ts), self.gpt_state_file)
         except Exception as e:
             self.logger.warning("[GPT_STATE] load failed: %s", e)
@@ -256,9 +277,258 @@ class TrendStrategy4H:
         try:
             os.makedirs(os.path.dirname(self.gpt_state_file), exist_ok=True)
             with open(self.gpt_state_file, "w") as f:
-                yaml.safe_dump({"last_gpt_candle_ts": self.last_gpt_candle_ts}, f)
+                yaml.safe_dump({
+                    "last_gpt_candle_ts": self.last_gpt_candle_ts,
+                    "gpt_hold_cache": self.gpt_hold_cache,
+                }, f)
         except Exception as e:
             self.logger.warning("[GPT_STATE] save failed: %s", e)
+
+    def _adaptive_restrictions_mode_allowed(self) -> bool:
+        return self.trading_mode in self.adaptive_restrictions_apply_modes
+
+    def _load_adaptive_restrictions(self) -> list[dict]:
+        if not self.adaptive_restrictions_enabled or not self._adaptive_restrictions_mode_allowed():
+            return []
+        now = time.time()
+        cache = self._adaptive_restrictions_cache
+        if now - float(cache.get("loaded_ts") or 0.0) < self.adaptive_restrictions_cache_ttl_sec:
+            return list(cache.get("restrictions") or [])
+        try:
+            with open(self.adaptive_restrictions_path, "r", encoding="utf-8") as f:
+                payload = json.load(f) or {}
+            restrictions = [r for r in payload.get("restrictions", []) or [] if isinstance(r, dict)]
+            cache["loaded_ts"] = now
+            cache["restrictions"] = restrictions
+            return restrictions
+        except FileNotFoundError:
+            cache["loaded_ts"] = now
+            cache["restrictions"] = []
+            return []
+        except Exception as e:
+            self.logger.warning("[adaptive_restrictions] load failed: %s", e)
+            cache["loaded_ts"] = now
+            cache["restrictions"] = []
+            return []
+
+    @staticmethod
+    def _restriction_context_value(ctx: dict, dimension: str):
+        mapping = {
+            "chart_1h.entry_timing": "entry_timing_1h",
+            "chart_1h.chop_subtype": "chop_1h",
+            "chart_1h.structure_label": "structure_1h",
+            "chart_1h.last_candle_quality": "candle_quality_1h",
+            "chart_4h.structure_label": "structure_4h",
+            "market_regime.regime": "regime",
+            "market_regime.risk_mode": "risk_mode",
+            "market_regime.directional_bias": "directional_bias",
+        }
+        key = mapping.get(str(dimension or ""), str(dimension or ""))
+        return ctx.get(key)
+
+    def _restriction_matches(self, restriction: dict, symbol: str, material_context: Optional[dict] = None) -> bool:
+        scope = str(restriction.get("scope") or "")
+        match = restriction.get("match") or {}
+        if scope == "coin":
+            return str(match.get("symbol") or restriction.get("symbol") or "") == symbol
+        if scope == "cluster" and material_context:
+            dimension = str(match.get("dimension") or "")
+            expected = str(match.get("value") or "").lower()
+            actual = str(self._restriction_context_value(material_context, dimension) or "").lower()
+            return bool(expected) and actual == expected
+        return False
+
+    def _matching_adaptive_restrictions(self, symbol: str, material_context: Optional[dict] = None) -> list[dict]:
+        return [
+            restriction
+            for restriction in self._load_adaptive_restrictions()
+            if self._restriction_matches(restriction, symbol, material_context)
+        ]
+
+    def _adaptive_reopen_condition_met(self, material_context: dict) -> bool:
+        weak = self._is_choppy_context(material_context) or self._is_weak_entry_context(material_context)
+        return (
+            not weak
+            and not self._risk_still_active(material_context)
+            and not self._trend_still_misaligned(material_context)
+        )
+
+    def _should_skip_for_adaptive_restriction(self, symbol: str, material_context: dict) -> tuple[bool, str, Optional[dict]]:
+        for restriction in self._matching_adaptive_restrictions(symbol, material_context):
+            state = str(restriction.get("state") or "")
+            if state == "reduced_risk":
+                continue
+            if state == "strict_confirmation":
+                if (
+                    self._is_choppy_context(material_context)
+                    or self._is_weak_entry_context(material_context)
+                    or self._trend_still_misaligned(material_context)
+                    or self._risk_still_active(material_context)
+                ):
+                    return True, f"adaptive_restriction:{restriction.get('restriction_id')}:strict_confirmation", restriction
+            if state == "conditional_cooldown" and not self._adaptive_reopen_condition_met(material_context):
+                return True, f"adaptive_restriction:{restriction.get('restriction_id')}:cooldown_until_reopen", restriction
+        return False, "", None
+
+    @staticmethod
+    def _bucket(value: Optional[float], step: float, default: str = "missing") -> str:
+        try:
+            if value is None:
+                return default
+            bucketed = round(round(float(value) / step) * step, 6)
+            return f"{bucketed:g}"
+        except Exception:
+            return default
+
+    def _gpt_material_context(
+        self,
+        *,
+        symbol: str,
+        algo_signal: str,
+        trend_1h: str,
+        trend_4h: str,
+        chart_features: dict,
+        market_regime: dict,
+        coin_profile: dict,
+        rsi_1h: float,
+        rsi_4h: float,
+        macd_1h: float,
+        atr_1h: float,
+    ) -> dict:
+        one_h = chart_features.get("1h", {}) or {}
+        four_h = chart_features.get("4h", {}) or {}
+        return {
+            "symbol": symbol,
+            "algo_signal": algo_signal,
+            "trend_1h": trend_1h,
+            "trend_4h": trend_4h,
+            "structure_1h": one_h.get("structure_label"),
+            "structure_4h": four_h.get("structure_label"),
+            "chop_1h": one_h.get("chop_subtype"),
+            "entry_timing_1h": one_h.get("entry_timing"),
+            "candle_quality_1h": one_h.get("last_candle_quality"),
+            "ema20_distance_1h_bucket": self._bucket(one_h.get("ema20_distance_pct"), 0.25),
+            "ema50_distance_1h_bucket": self._bucket(one_h.get("ema50_distance_pct"), 0.25),
+            "pullback_depth_1h_bucket": self._bucket(one_h.get("pullback_depth_pct"), 0.25),
+            "close_location_1h_bucket": self._bucket(one_h.get("last_close_location_pct"), 10),
+            "regime": market_regime.get("regime"),
+            "risk_mode": market_regime.get("risk_mode"),
+            "directional_bias": market_regime.get("directional_bias"),
+            "coin_profile_generated_at": coin_profile.get("generated_at_utc"),
+            "coin_profile_bias": coin_profile.get("bias"),
+            "coin_profile_risk": coin_profile.get("risk_multiplier"),
+            "rsi_1h_bucket": self._bucket(rsi_1h, 5),
+            "rsi_4h_bucket": self._bucket(rsi_4h, 5),
+            "macd_1h_sign": "pos" if macd_1h > 0 else "neg" if macd_1h < 0 else "zero",
+            "atr_1h_bucket": self._bucket(atr_1h, 0.001),
+        }
+
+    @staticmethod
+    def _is_choppy_context(ctx: dict) -> bool:
+        structure = str(ctx.get("structure_1h") or "").lower()
+        chop = str(ctx.get("chop_1h") or "").lower()
+        timing = str(ctx.get("entry_timing_1h") or "").lower()
+        return (
+            "chop" in structure
+            or "mixed" in structure
+            or "chop" in chop
+            or timing in {"noisy", "late"}
+        )
+
+    @staticmethod
+    def _is_weak_entry_context(ctx: dict) -> bool:
+        timing = str(ctx.get("entry_timing_1h") or "").lower()
+        quality = str(ctx.get("candle_quality_1h") or "").lower()
+        return timing in {"noisy", "late", "continuation"} or quality in {"doji", "neutral", "weak"}
+
+    @staticmethod
+    def _is_late_trend_context(ctx: dict) -> bool:
+        timing = str(ctx.get("entry_timing_1h") or "").lower()
+        structure = str(ctx.get("structure_1h") or "").lower()
+        return timing in {"late", "continuation"} or "late" in structure
+
+    @staticmethod
+    def _trend_still_misaligned(ctx: dict) -> bool:
+        algo = str(ctx.get("algo_signal") or "")
+        t1 = str(ctx.get("trend_1h") or "")
+        t4 = str(ctx.get("trend_4h") or "")
+        if algo == "long_candidate":
+            return not (t1 == "bull" and t4 == "bull")
+        if algo == "short_candidate":
+            return not (t1 == "bear" and t4 == "bear")
+        return True
+
+    @staticmethod
+    def _risk_still_active(ctx: dict) -> bool:
+        regime = str(ctx.get("regime") or "").lower()
+        risk_mode = str(ctx.get("risk_mode") or "").lower()
+        risk = str(ctx.get("coin_profile_risk") or "")
+        try:
+            low_profile_risk = float(risk) < 0.75
+        except Exception:
+            low_profile_risk = False
+        return regime in {"risk_off", "chop"} or risk_mode in {"cautious", "defensive"} or low_profile_risk
+
+    def _hold_reason_still_valid(self, veto: str, cached_ctx: dict, current_ctx: dict) -> tuple[bool, str]:
+        if cached_ctx.get("symbol") != current_ctx.get("symbol"):
+            return False, "symbol_changed"
+        if cached_ctx.get("algo_signal") != current_ctx.get("algo_signal"):
+            return False, "direction_changed"
+
+        if veto == "local_chop":
+            return self._is_choppy_context(current_ctx), "local_chop_resolved"
+        if veto == "weak_entry":
+            return self._is_weak_entry_context(current_ctx), "entry_strength_changed"
+        if veto == "late_trend":
+            return self._is_late_trend_context(current_ctx), "late_trend_resolved"
+        if veto == "trend_misaligned":
+            return self._trend_still_misaligned(current_ctx), "trend_alignment_changed"
+        if veto in {"drawdown_risk", "counterfactual_negative", "sentiment_risk"}:
+            return self._risk_still_active(current_ctx), "risk_context_improved"
+        if veto == "mixed_evidence":
+            weak_checks = [
+                self._is_choppy_context(current_ctx),
+                self._is_weak_entry_context(current_ctx),
+                self._trend_still_misaligned(current_ctx),
+                self._risk_still_active(current_ctx),
+            ]
+            return sum(1 for value in weak_checks if value) >= 2, "mixed_evidence_improved"
+        return False, "unsupported_hold_veto"
+
+    def _should_reuse_gpt_hold(self, symbol: str, material_context: dict) -> tuple[bool, str, dict]:
+        if not self.pre_gpt_hold_cache_enabled:
+            return False, "hold_cache_disabled", {}
+        cached = self.gpt_hold_cache.get(symbol) or {}
+        if cached.get("action") != "HOLD":
+            return False, "previous_action_not_hold", cached
+        cached_ts = float(cached.get("created_ts") or 0.0)
+        max_age_sec = max(0.0, self.pre_gpt_hold_cache_max_age_hours) * 3600.0
+        if max_age_sec and time.time() - cached_ts > max_age_sec:
+            return False, "hold_cache_expired", cached
+        veto = str(cached.get("primary_veto") or "")
+        still_valid, changed_reason = self._hold_reason_still_valid(
+            veto=veto,
+            cached_ctx=cached.get("material_context") or {},
+            current_ctx=material_context,
+        )
+        if not still_valid:
+            return False, changed_reason, cached
+        return True, f"hold_reason_still_valid:{veto}", cached
+
+    def _remember_gpt_decision_for_gate(self, symbol: str, action: str, decision: dict, material_context: dict):
+        veto = str(decision.get("primary_veto") or "")
+        if action == "HOLD" and veto not in {"gpt_error", "parse_error"}:
+            self.gpt_hold_cache[symbol] = {
+                "action": "HOLD",
+                "created_ts": time.time(),
+                "primary_veto": veto,
+                "journal_tags": decision.get("journal_tags", []),
+                "rationale": decision.get("rationale", ""),
+                "material_context": material_context,
+            }
+        else:
+            self.gpt_hold_cache.pop(symbol, None)
+        self._save_gpt_state()
 
     def _notify(self, text: str):
         """Stuur strategy-berichten via de globale notifier-bus."""
@@ -855,6 +1125,97 @@ class TrendStrategy4H:
                     "flags": ["MARKET_REGIME_ERROR"],
                 }
 
+            material_context = self._gpt_material_context(
+                symbol=symbol,
+                algo_signal=algo_signal,
+                trend_1h=trend_1h,
+                trend_4h=trend_4h,
+                chart_features=chart_features,
+                market_regime=market_regime,
+                coin_profile=coin_profile,
+                rsi_1h=rsi_1h,
+                rsi_4h=rsi_4h,
+                macd_1h=macd_1h,
+                atr_1h=atr_1h,
+            )
+            adaptive_skip, adaptive_reason, adaptive_restriction = self._should_skip_for_adaptive_restriction(
+                symbol,
+                material_context,
+            )
+            if adaptive_skip:
+                self._daily_stats["hold"] += 1
+                self.logger.info("[%s] pre-GPT skip by adaptive restriction: %s", symbol, adaptive_reason)
+                self._log_strategy_event(
+                    symbol=symbol,
+                    event_type="skip",
+                    decision_stage="pre_gpt_gate",
+                    skip_reason=adaptive_reason,
+                    trend_dir=trend_dir,
+                    price=float(current_price),
+                    adx_4h=adx_4h,
+                    adx_4h_delta=adx_4h_delta,
+                    adx_4h_slope=adx_4h_slope,
+                    adx_1h=adx_1h,
+                    di_pos_1h=di_pos_1h,
+                    di_neg_1h=di_neg_1h,
+                    rsi_1h=rsi_1h,
+                    rsi_4h=rsi_4h,
+                    macd_1h=macd_1h,
+                    atr_1h=atr_1h,
+                    algo_signal=algo_signal,
+                    gpt_action="HOLD",
+                    gpt_confidence=None,
+                    coin_profile=coin_profile,
+                    features={
+                        "adaptive_restriction_applied": True,
+                        "adaptive_restriction": adaptive_restriction,
+                        "material_context": material_context,
+                    },
+                )
+                return
+            reuse_hold, reuse_reason, cached_hold = self._should_reuse_gpt_hold(symbol, material_context)
+            if reuse_hold:
+                self._daily_stats["hold"] += 1
+                self._daily_stats["gpt_reused_hold"] += 1
+                self.logger.info(
+                    "[%s] pre-GPT skip: previous HOLD still valid (%s, veto=%s)",
+                    symbol,
+                    reuse_reason,
+                    cached_hold.get("primary_veto"),
+                )
+                self._log_strategy_event(
+                    symbol=symbol,
+                    event_type="skip",
+                    decision_stage="pre_gpt_gate",
+                    skip_reason=reuse_reason,
+                    trend_dir=trend_dir,
+                    price=float(current_price),
+                    adx_4h=adx_4h,
+                    adx_4h_delta=adx_4h_delta,
+                    adx_4h_slope=adx_4h_slope,
+                    adx_1h=adx_1h,
+                    di_pos_1h=di_pos_1h,
+                    di_neg_1h=di_neg_1h,
+                    rsi_1h=rsi_1h,
+                    rsi_4h=rsi_4h,
+                    macd_1h=macd_1h,
+                    atr_1h=atr_1h,
+                    algo_signal=algo_signal,
+                    gpt_action="HOLD",
+                    gpt_confidence=None,
+                    coin_profile=coin_profile,
+                    features={
+                        "reused_gpt_hold": True,
+                        "reuse_reason": reuse_reason,
+                        "cached_primary_veto": cached_hold.get("primary_veto"),
+                        "cached_journal_tags": cached_hold.get("journal_tags", []),
+                        "cached_rationale": cached_hold.get("rationale"),
+                        "cached_material_context": cached_hold.get("material_context"),
+                        "material_context": material_context,
+                    },
+                )
+                return
+
             last_error = None
             self._daily_stats["gpt_calls"] += 1
             llm_max_attempts = int(self.config.get("llm_max_attempts", 3))
@@ -935,7 +1296,9 @@ class TrendStrategy4H:
                 "risk_notes": decision.get("risk_notes"),
                 "chart_features": chart_features,
                 "market_regime": market_regime,
+                "material_context": material_context,
             }
+            self._remember_gpt_decision_for_gate(symbol, action, decision, material_context)
 
             # -------------------------------------------------
             # 1) HOLD-cases loggen (zonder echte trade_id)
@@ -1170,6 +1533,7 @@ class TrendStrategy4H:
             "skip_context": 0,
             "sideways_block": 0,
             "gpt_calls": 0,
+            "gpt_reused_hold": 0,
             "open_long": 0,
             "open_short": 0,
             "hold": 0,
@@ -1198,7 +1562,7 @@ class TrendStrategy4H:
             self._notify(
                 f"📊 Daily Snapshot 17:30\n"                
                 f"Checked: {s['checked']} | SkipContext: {s['skip_context']} | Sideways: {s['sideways_block']}\n"
-                f"GPT calls: {s['gpt_calls']} | Opens L{s['open_long']}/S{s['open_short']} | Holds {s['hold']}\n"
+                f"GPT calls: {s['gpt_calls']} | Reused HOLD: {s.get('gpt_reused_hold', 0)} | Opens L{s['open_long']}/S{s['open_short']} | Holds {s['hold']}\n"
                 f"Top:\n{top_lines}"
             )
             self._daily_snapshot_sent_date = today
@@ -2024,6 +2388,29 @@ class TrendStrategy4H:
                 mult = Decimal("1.0")
 
             # ✅ DEBUG LOG (belangrijk)
+            adaptive_restrictions = [
+                restriction for restriction in self._matching_adaptive_restrictions(symbol)
+                if str(restriction.get("state") or "") == "reduced_risk"
+            ]
+            for restriction in adaptive_restrictions:
+                adaptive_mult = Decimal(str(restriction.get("risk_multiplier") or "1.0"))
+                if adaptive_mult <= 0:
+                    adaptive_mult = Decimal("0.25")
+                if adaptive_mult > 1:
+                    adaptive_mult = Decimal("1.0")
+                before = mult
+                mult = mult * adaptive_mult
+                if mult < Decimal("0.25"):
+                    mult = Decimal("0.25")
+                self.logger.info(
+                    "[adaptive_restrictions][%s] risk multiplier %s -> %s via %s (%s)",
+                    symbol,
+                    before,
+                    mult,
+                    restriction.get("restriction_id"),
+                    restriction.get("rule_id"),
+                )
+
             self.logger.debug(
                 "[risk] %s risk_multiplier=%s (source=%s)",
                 symbol, mult, source

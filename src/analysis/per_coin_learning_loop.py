@@ -237,6 +237,7 @@ class PerCoinLearningLoop:
             {
                 "rule_id": "coin_risk_0_50",
                 "title": "Verlaag coin sizing naar 50% in paper-test",
+                "action_type": "reduced_risk",
                 "mode": "scale",
                 "multiplier": 0.5,
                 "rows": rows,
@@ -244,31 +245,36 @@ class PerCoinLearningLoop:
             {
                 "rule_id": "coin_risk_0_75",
                 "title": "Verlaag coin sizing naar 75% in paper-test",
+                "action_type": "reduced_risk",
                 "mode": "scale",
                 "multiplier": 0.75,
                 "rows": rows,
             },
             {
-                "rule_id": "coin_block_entries",
-                "title": "Blokkeer deze coin tijdelijk in paper-test",
+                "rule_id": "coin_cooldown_entries",
+                "title": "Zet deze coin tijdelijk op cooldown met heropencriteria",
+                "action_type": "cooldown",
                 "mode": "block",
                 "rows": rows,
             },
             {
                 "rule_id": "coin_require_confidence_70",
                 "title": "Sta deze coin alleen toe bij GPT confidence >= 70",
+                "action_type": "strict_confirmation",
                 "mode": "block",
                 "rows": low_conf_70,
             },
             {
                 "rule_id": "coin_require_confidence_75",
                 "title": "Sta deze coin alleen toe bij GPT confidence >= 75",
+                "action_type": "strict_confirmation",
                 "mode": "block",
                 "rows": low_conf_75,
             },
             {
-                "rule_id": "coin_block_risk_off",
-                "title": "Blokkeer deze coin in risk-off regime in paper-test",
+                "rule_id": "coin_cooldown_risk_off",
+                "title": "Zet deze coin alleen in risk-off tijdelijk op cooldown",
+                "action_type": "conditional_cooldown",
                 "mode": "block",
                 "rows": [
                     row for row in rows
@@ -295,8 +301,11 @@ class PerCoinLearningLoop:
             candidates.append({
                 "rule_id": variant.get("rule_id"),
                 "title": variant.get("title"),
+                "action_type": variant.get("action_type"),
                 "mode": variant.get("mode"),
                 "multiplier": multiplier,
+                "reopen_criteria": self._reopen_criteria(str(variant.get("action_type") or "")),
+                "review_after": "na 10 nieuwe paper/shadow signalen of 48 uur, wat eerder komt",
                 "baseline_R": round(baseline_r, 6),
                 "estimated_after_R": round(adjusted_r, 6),
                 "estimated_net_R": round(estimated_net_r, 6),
@@ -306,8 +315,36 @@ class PerCoinLearningLoop:
                 "affected_R": round(affected_r, 6),
             })
 
-        candidates.sort(key=lambda row: (_safe_float(row.get("estimated_net_R")), _safe_int(row.get("affected_trades"))), reverse=True)
+        candidates.sort(key=self._candidate_sort_key, reverse=True)
         return candidates[:5]
+
+    @staticmethod
+    def _candidate_sort_key(item: dict) -> tuple[int, float, int]:
+        action_type = str(item.get("action_type") or "")
+        soft_priority = {
+            "reduced_risk": 3,
+            "strict_confirmation": 2,
+            "conditional_cooldown": 1,
+            "cooldown": 0,
+        }.get(action_type, 0)
+        return (
+            soft_priority,
+            _safe_float(item.get("estimated_net_R")),
+            -_safe_int(item.get("affected_trades")),
+        )
+
+    @staticmethod
+    def _reopen_criteria(action_type: str) -> list[str]:
+        base = [
+            "coin blijft elk uur in analyse en coin profile context",
+            "heropen als nieuwe paper/shadow signalen voor deze coin positief worden",
+            "heropen als marktregime of 1h/4h structuur duidelijk verbetert",
+        ]
+        if action_type == "reduced_risk":
+            return base + ["normaliseer sizing pas na positieve baseline-vergelijking"]
+        if action_type == "strict_confirmation":
+            return base + ["versoepel bevestiging pas als confidence-filter geen goede entries mist"]
+        return base + ["cooldown is tijdelijk en mag niet als permanente coin-ban worden behandeld"]
 
     @staticmethod
     def _gpt_confidence(row: dict) -> Optional[float]:

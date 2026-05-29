@@ -586,7 +586,7 @@ class RecommendationAggregator:
                 "autonomy_stage": "candidate_simulated",
                 "learning_question": "Welke concrete entryregel verbetert het grootste verliescluster?",
                 "proposed_change": best.get("title") or "Start een gerichte paper-test voor deze entryregel.",
-                "test_plan": "Paper/shadow vergelijk kandidaatregel tegen baseline voordat strategiegedrag wijzigt.",
+                "test_plan": "Paper/shadow vergelijk kandidaatregel tegen baseline, inclusief heropencriteria.",
                 "current_use": "candidate simulation / operator review",
                 "missing_use": "nog niet actief in entrylogica",
             }
@@ -762,10 +762,13 @@ class RecommendationAggregator:
                 evidence=[
                     ("Cluster", f"{cluster.get('dimension')}={cluster.get('value')}" if cluster else f"{summary.get('dimension')}={summary.get('value')}"),
                     ("Regel", best.get("rule_id")),
+                    ("Maatregel", best.get("action_type")),
                     ("Effect", self._fmt_r(best.get("estimated_net_R"))),
                     ("Affected trades", self._fmt_value(best.get("affected_trades"))),
                     ("Geblokkeerde/geraakte verliezers", self._fmt_value(best.get("blocked_or_adjusted_losers"))),
                     ("Gemiste/geraakte winnaars", self._fmt_value(best.get("missed_or_adjusted_winners"))),
+                    ("Reviewmoment", best.get("review_after")),
+                    ("Heropencriteria", "; ".join(best.get("reopen_criteria") or [])),
                     ("Live effect nu", "geen"),
                 ],
                 actions=[
@@ -805,10 +808,13 @@ class RecommendationAggregator:
                     ("Feature edge", self._fmt_r(feature.get("top_feature_edge_R"))),
                     ("Voorstel", proposal.get("suggested_change")),
                     ("Beste coin-regel", best.get("rule_id")),
+                    ("Maatregel", best.get("action_type")),
                     ("Regel effect", self._fmt_r(best.get("estimated_net_R"))),
                     ("Geraakte trades", self._fmt_value(best.get("affected_trades"))),
                     ("Winnaars geraakt", self._fmt_value(best.get("affected_winners"))),
                     ("Verliezers geraakt", self._fmt_value(best.get("affected_losers"))),
+                    ("Reviewmoment", best.get("review_after")),
+                    ("Heropencriteria", "; ".join(best.get("reopen_criteria") or [])),
                     ("Live effect nu", "geen"),
                 ],
                 actions=[

@@ -27,6 +27,7 @@ from src.analysis.bot_advisor import (
     sync_registry as sync_advice_registry,
     write_json as write_advisor_json,
 )
+from src.analysis.adaptive_restrictions import run_adaptive_restrictions
 from src.analysis.approval_inbox import cleanup_reject_candidates, run_approval_inbox
 from src.analysis.bot_alerts_reporter import (
     BotAlertsReporter,
@@ -566,6 +567,16 @@ def _build_recommendation_aggregator() -> dict:
     }
 
 
+def _build_adaptive_restrictions() -> dict:
+    report = run_adaptive_restrictions()
+    return {
+        "status": report.get("status"),
+        "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
+        "live_effect": report.get("live_effect", False),
+    }
+
+
 def _build_recommendation_quality_tracker() -> dict:
     report = run_recommendation_quality_tracker()
     return {
@@ -812,6 +823,9 @@ def run_daily_analysis_job(
     )
     steps["recommendation_aggregator"] = _run_step(
         lambda: _build_recommendation_aggregator(),
+    )
+    steps["adaptive_restrictions"] = _run_step(
+        lambda: _build_adaptive_restrictions(),
     )
     steps["recommendation_quality_tracker"] = _run_step(
         lambda: _build_recommendation_quality_tracker(),

@@ -152,6 +152,14 @@ trend_strategy_4h:
   llm_timeout_sec: 15
   llm_max_attempts: 3
   llm_retry_sleep_sec: 1.5
+  pre_gpt_hold_cache:
+    enabled: true
+    max_age_hours: 8
+  adaptive_restrictions:
+    enabled: true
+    path: "analysis/adaptive_restrictions/latest_adaptive_restrictions.json"
+    apply_modes: ["dryrun"]
+    cache_ttl_sec: 300
 
   flip_early:
     enabled: true

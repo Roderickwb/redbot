@@ -26,6 +26,7 @@ echo "== Compile critical modules =="
   src/analysis/loss_diagnosis_report.py \
   src/analysis/entry_rule_candidate_simulator.py \
   src/analysis/per_coin_learning_loop.py \
+  src/analysis/adaptive_restrictions.py \
   src/analysis/indicator_edge_report.py \
   src/analysis/learning_context_integrator.py \
   src/analysis/exit_management_report.py \
@@ -91,6 +92,7 @@ for name in (
     "risk_advice_history",
     "live_readiness_gate",
     "recommendation_aggregator",
+    "adaptive_restrictions",
     "operator_decisions",
     "recommendation_quality_tracker",
     "pre_gpt_gate_report",
@@ -206,6 +208,14 @@ for name in (
             f"wait={summary.get('wait_more_evidence')} blocked={summary.get('blocked')} "
             f"resolved_active={resolver.get('active')} suppressed={resolver.get('suppressed')} "
             f"pending_live={resolver.get('pending_live_gate')}"
+        )
+    elif name == "adaptive_restrictions":
+        summary = result.get("summary") or {}
+        print(
+            f" status={result.get('status')} active={summary.get('active_restrictions')} "
+            f"coin={summary.get('coin_restrictions')} cluster={summary.get('cluster_restrictions')} "
+            f"reduced_risk={summary.get('reduced_risk')} strict={summary.get('strict_confirmation')} "
+            f"cooldown={summary.get('conditional_cooldown')} live_effect={summary.get('live_effect')}"
         )
     elif name == "recommendation_quality_tracker":
         summary = result.get("summary") or {}

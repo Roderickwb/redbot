@@ -67,6 +67,11 @@ def get_recommendations() -> dict:
     return report("recommendations")
 
 
+@app.get("/api/adaptive-restrictions")
+def get_adaptive_restrictions() -> dict:
+    return report("adaptive_restrictions")
+
+
 @app.get("/api/recommendation-quality")
 def get_recommendation_quality() -> dict:
     return report("recommendation_quality")
@@ -622,6 +627,7 @@ FALLBACK_HTML = """
         const snapshot = bundle.snapshot || {};
         const cockpit = bundle.cockpit || {};
         const recs = bundle.recommendations || {};
+        const adaptive = bundle.adaptive_restrictions || {};
         const positions = bundle.positions || {};
         const trades = bundle.trades || {};
         const safety = bundle.safety || {};
@@ -637,6 +643,7 @@ FALLBACK_HTML = """
           metric("Safety", `${s.status || "-"} kill=${!!s.kill_switch_active} meltdown=${!!s.meltdown_active}`),
           metric("Live readiness", `review=${live.ready_for_operator_review ?? "-"} eligible=${live.eligible_for_live_wiring ?? "-"}`),
           metric("Learning flow", `pending=${(c.recommendations || {}).pending_live_gate ?? "-"} suppressed=${(c.recommendations || {}).suppressed ?? "-"}`),
+          metric("Paper restrictions", `active=${(adaptive.summary || {}).active_restrictions ?? 0}`),
           metric("ML", `${learning.ml_status || "-"} rows=${learning.ml_rows || "-"}`),
           metric("GPT hold", `${learning.gpt_hold_rate_pct || "-"}%`),
           metric("Risk", `down=${risk.risk_down ?? "-"} guard=${risk.guard_verdict || "-"}`)

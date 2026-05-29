@@ -213,6 +213,8 @@ for name in (
         summary = result.get("summary") or {}
         print(
             f" status={result.get('status')} active={summary.get('active_restrictions')} "
+            f"approved={summary.get('approved_items')} supported={summary.get('approved_supported_items')} "
+            f"unsupported={summary.get('approved_unsupported_items')} "
             f"coin={summary.get('coin_restrictions')} cluster={summary.get('cluster_restrictions')} "
             f"reduced_risk={summary.get('reduced_risk')} strict={summary.get('strict_confirmation')} "
             f"cooldown={summary.get('conditional_cooldown')} live_effect={summary.get('live_effect')}"

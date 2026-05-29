@@ -99,12 +99,32 @@ class AdaptiveRestrictionBuilder:
 
     def build(self) -> dict:
         recommendations = _load_json(self.recommendations_path, {"items": [], "resolved_items": []})
-        items = self._candidate_items(recommendations)
-        restrictions = [r for item in items for r in self._restrictions_from_item(item)]
+        approved_items = self._approved_items(recommendations)
+        supported_items = [
+            item for item in approved_items
+            if item.get("candidate_type") in SUPPORTED_CANDIDATES
+        ]
+        unsupported_items = [
+            item for item in approved_items
+            if item.get("candidate_type") not in SUPPORTED_CANDIDATES
+        ]
+        restrictions = [r for item in supported_items for r in self._restrictions_from_item(item)]
         restrictions.sort(key=lambda r: (str(r.get("scope")), str(r.get("symbol")), str(r.get("rule_id"))))
+        active_source_ids = sorted({
+            str(r.get("source_item_id"))
+            for r in restrictions
+            if r.get("source_item_id")
+        })
+        supported_without_restriction = [
+            item for item in supported_items
+            if str(item.get("id")) not in active_source_ids
+        ]
 
         summary = {
-            "approved_items": len(items),
+            "approved_items": len(approved_items),
+            "approved_supported_items": len(supported_items),
+            "approved_unsupported_items": len(unsupported_items),
+            "approved_supported_without_restriction": len(supported_without_restriction),
             "active_restrictions": len(restrictions),
             "coin_restrictions": sum(1 for r in restrictions if r.get("scope") == "coin"),
             "cluster_restrictions": sum(1 for r in restrictions if r.get("scope") == "cluster"),
@@ -119,6 +139,15 @@ class AdaptiveRestrictionBuilder:
             "status": "ACTIVE" if restrictions else "WATCH",
             "summary": summary,
             "restrictions": restrictions,
+            "active_source_ids": active_source_ids,
+            "approved_supported_without_restriction": [
+                self._approval_snapshot(item, reason="supported_but_missing_rule_payload")
+                for item in supported_without_restriction
+            ],
+            "approved_without_paper_restriction": [
+                self._approval_snapshot(item, reason="candidate_type_not_strategy_restriction")
+                for item in unsupported_items
+            ],
             "source_path": self.recommendations_path,
             "output_path": os.path.join(self.output_dir, DEFAULT_LATEST_FILE),
             "live_effect": False,
@@ -126,7 +155,7 @@ class AdaptiveRestrictionBuilder:
         _write_json(report["output_path"], report)
         return report
 
-    def _candidate_items(self, report: dict) -> list[dict]:
+    def _approved_items(self, report: dict) -> list[dict]:
         seen = set()
         result = []
         for item in (report.get("resolved_items") or []) + (report.get("items") or []):
@@ -134,12 +163,25 @@ class AdaptiveRestrictionBuilder:
             if not item_id or item_id in seen:
                 continue
             seen.add(item_id)
-            if item.get("candidate_type") not in SUPPORTED_CANDIDATES:
-                continue
             if not _approved(item):
                 continue
             result.append(item)
         return result
+
+    @staticmethod
+    def _approval_snapshot(item: dict, reason: str) -> dict:
+        resolution = item.get("operator_resolution") or {}
+        return {
+            "id": item.get("id"),
+            "candidate_type": item.get("candidate_type"),
+            "title": item.get("operator_title") or item.get("title"),
+            "status": item.get("status"),
+            "resolution_status": resolution.get("status"),
+            "effect_level": item.get("effect_level"),
+            "reason": reason,
+            "paper_effect": False,
+            "live_effect": False,
+        }
 
     def _restrictions_from_item(self, item: dict) -> list[dict]:
         ctype = item.get("candidate_type")

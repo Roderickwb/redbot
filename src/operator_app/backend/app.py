@@ -539,17 +539,21 @@ FALLBACK_HTML = """
       const status = item.status || "";
       return status === "needs_operator_review";
     }
-    function groupItems(items) {
+    function groupItems(items, adaptive) {
       const decisions = [];
+      const activePaper = [];
       const pendingGate = [];
       const autonomous = [];
       const waiting = [];
       const blocked = [];
+      const activeSourceIds = new Set((adaptive.active_source_ids || []).map((x) => String(x)));
       for (const item of items) {
         const status = item.status || "";
         const level = item.effect_level || "";
         if (status === "blocked") {
           blocked.push(item);
+        } else if (activeSourceIds.has(String(item.id || ""))) {
+          activePaper.push(item);
         } else if (status === "approved_pending_live_gate") {
           pendingGate.push(item);
         } else if (status === "wait_more_evidence") {
@@ -564,6 +568,7 @@ FALLBACK_HTML = """
       }
       return {
         decisions,
+        activePaper,
         pendingGate,
         autonomous,
         waiting,
@@ -588,26 +593,29 @@ FALLBACK_HTML = """
           <div class="card-actions">${primaryActions(item).map((action) => `<button class="${actionClass(action)}" onclick="decideByIndex(${index}, '${action}')">${actionText(item, action)}</button>`).join("")}</div>
         </article>`;
     }
-    function compactSection(title, items, emptyText) {
+    function compactSection(title, items, emptyText, detailFn = null) {
       if (!items.length) return `<section><div class="section-title"><h2>${title}</h2><span class="pill">0</span></div><div class="muted">${emptyText}</div></section>`;
       return `
         <section>
           <div class="section-title"><h2>${title}</h2><span class="pill">${items.length}</span></div>
           <div class="mini-list">
-            ${items.slice(0, 8).map((item) => `<div class="mini-item"><strong>${displayTitle(item)}</strong><br><span class="muted">${item.phase_transition_label || levelLabel(item.effect_level)} | ${statusLabel(item.status)}</span></div>`).join("")}
+            ${items.slice(0, 8).map((item) => `<div class="mini-item"><strong>${displayTitle(item)}</strong><br><span class="muted">${detailFn ? detailFn(item) : `${item.phase_transition_label || levelLabel(item.effect_level)} | ${statusLabel(item.status)}`}</span></div>`).join("")}
           </div>
         </section>`;
     }
-    function recommendationRows(data) {
+    function recommendationRows(data, adaptive = {}) {
       const items = data.items || data.recommendations || data.review_items || data.actions || [];
       recommendationItems = items;
       if (!items.length) return '<div class="muted">Geen aanbevelingen gevonden.</div>';
-      const grouped = groupItems(items);
+      const grouped = groupItems(items, adaptive);
       const indexOf = (item) => items.indexOf(item);
+      const unsupportedApproved = adaptive.approved_without_paper_restriction || [];
+      const unsupportedDetail = (item) => `${item.candidate_type || "approved"} | goedgekeurd, maar geen paper-strategy hook`;
       const strip = `
         <div class="summary-strip">
           ${metric("Beslissen", grouped.decisions.length)}
-          ${metric("Goedgekeurd", grouped.pendingGate.length)}
+          ${metric("Actief paper", grouped.activePaper.length)}
+          ${metric("Zonder hook", grouped.pendingGate.length + unsupportedApproved.length)}
           ${metric("Autonoom", grouped.autonomous.length)}
           ${metric("Wacht", grouped.waiting.length)}
           ${metric("Geblokkeerd", grouped.blocked.length)}
@@ -616,7 +624,9 @@ FALLBACK_HTML = """
         ? `<section><div class="section-title"><h2>Kansen/problemen nu beslissen</h2><span class="pill">${grouped.decisions.length}</span></div>${grouped.decisions.map((item) => decisionCard(item, indexOf(item))).join("")}</section>`
         : `<section><div class="section-title"><h2>Kansen/problemen nu beslissen</h2><span class="pill">0</span></div><div class="muted">Geen directe operatorbeslissing nodig.</div></section>`;
       return strip + decisions
-        + compactSection("Goedgekeurd voor volgende fase", grouped.pendingGate, "Nog niets goedgekeurd voor een volgende fase.")
+        + compactSection("Actief in paper-strategie", grouped.activePaper, "Nog geen goedgekeurde restrictie actief in de strategie.", () => "Wordt geraadpleegd bij pre-GPT en/of sizing")
+        + compactSection("Goedgekeurd, nog zonder strategy-effect", grouped.pendingGate, "Geen goedgekeurde items zonder strategy-effect.", () => "Klaargezet voor volgende fase, maar nog geen actieve paper-restrictie")
+        + compactSection("Goedgekeurd maar niet toepasbaar als restrictie", unsupportedApproved, "Geen unsupported approvals.", unsupportedDetail)
         + compactSection("Autonoom verwerkt", grouped.autonomous, "Context en shadow learning lopen autonoom.")
         + compactSection("Wacht op bewijs", grouped.waiting, "Geen wachtende items.")
         + compactSection("Geblokkeerd / parkeren", grouped.blocked, "Geen geblokkeerde items.");
@@ -649,7 +659,7 @@ FALLBACK_HTML = """
           metric("Risk", `down=${risk.risk_down ?? "-"} guard=${risk.guard_verdict || "-"}`)
         ].join("");
         document.getElementById("next").innerHTML = (c.next_actions || []).slice(0, 5).map((x) => `<div class="metric" style="margin-bottom:8px">${fmt(x)}</div>`).join("") || '<div class="muted">Geen acties.</div>';
-        document.getElementById("recommendations").innerHTML = recommendationRows(recs);
+        document.getElementById("recommendations").innerHTML = recommendationRows(recs, adaptive);
         const lifecycles = positions.lifecycles || positions.positions || positions.items || [];
         document.getElementById("positions").innerHTML = list(lifecycles.filter((p) => p.status !== "closed").slice(0, 10).map((p) => [p.symbol || p.position_id, p.status, `amount ${fmt(p.master_amount || p.amount)}`, `pnl ${fmt(p.realized_pnl_eur || p.pnl)}`]));
         const tradeRows = trades.rows || trades.trades || trades.items || [];

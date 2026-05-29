@@ -29,6 +29,7 @@ DEFAULT_PRE_GPT_GATE = os.path.join("analysis", "gpt_decisions", "latest_pre_gpt
 DEFAULT_ML_EDGE = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_LOSS_DIAGNOSIS = os.path.join("analysis", "loss_diagnosis", "latest_loss_diagnosis_report.json")
 DEFAULT_ENTRY_RULE_CANDIDATES = os.path.join("analysis", "entry_rules", "latest_entry_rule_candidate_simulator.json")
+DEFAULT_PER_COIN_LEARNING = os.path.join("analysis", "per_coin_learning", "latest_per_coin_learning_loop.json")
 DEFAULT_EXIT_MANAGEMENT = os.path.join("analysis", "exits", "latest_exit_management_report.json")
 DEFAULT_POSITION_LIFECYCLE = os.path.join("analysis", "positions", "latest_position_lifecycle_report.json")
 
@@ -83,6 +84,7 @@ class RecommendationAggregator:
         ml_edge_path: str = DEFAULT_ML_EDGE,
         loss_diagnosis_path: str = DEFAULT_LOSS_DIAGNOSIS,
         entry_rule_candidates_path: str = DEFAULT_ENTRY_RULE_CANDIDATES,
+        per_coin_learning_path: str = DEFAULT_PER_COIN_LEARNING,
         exit_management_path: str = DEFAULT_EXIT_MANAGEMENT,
         position_lifecycle_path: str = DEFAULT_POSITION_LIFECYCLE,
     ):
@@ -96,6 +98,7 @@ class RecommendationAggregator:
             "ml_edge": ml_edge_path,
             "loss_diagnosis": loss_diagnosis_path,
             "entry_rule_candidates": entry_rule_candidates_path,
+            "per_coin_learning": per_coin_learning_path,
             "exit_management": exit_management_path,
             "position_lifecycle": position_lifecycle_path,
         }
@@ -111,6 +114,7 @@ class RecommendationAggregator:
         items.extend(self._from_ml_edge(reports.get("ml_edge") or {}))
         items.extend(self._from_loss_diagnosis(reports.get("loss_diagnosis") or {}))
         items.extend(self._from_entry_rule_candidates(reports.get("entry_rule_candidates") or {}))
+        items.extend(self._from_per_coin_learning(reports.get("per_coin_learning") or {}))
         items.extend(self._from_indicator_edge(reports.get("indicator_edge") or {}))
         items.extend(self._from_exit_management(reports.get("exit_management") or {}))
         items.extend(self._from_position_lifecycle(reports.get("position_lifecycle") or {}))
@@ -315,6 +319,25 @@ class RecommendationAggregator:
                 "source_cluster": cluster,
                 "candidates": report.get("candidates", [])[:6],
             },
+        )]
+
+    def _from_per_coin_learning(self, report: dict) -> list[dict]:
+        actionable = report.get("actionable_coins", []) or []
+        if not actionable:
+            return []
+        top = actionable[0] or {}
+        proposal = top.get("proposal") or {}
+        return [self._item(
+            area="coin_learning",
+            candidate_type="per_coin_learning_candidate",
+            subject=str(top.get("symbol") or "coin"),
+            status=STATUS_REVIEW,
+            title=proposal.get("title") or f"{top.get('symbol')} coin-specific learning candidate",
+            headline=proposal.get("why") or "Coin-specific learning found an actionable proposal.",
+            why="This bundles coin performance, feature context and risk advice into one per-coin learning loop.",
+            default_action="wait",
+            effect_level="strategy_live",
+            evidence={"coin": top, "summary": report.get("summary", {})},
         )]
 
     def _from_ml_edge(self, report: dict) -> list[dict]:
@@ -553,6 +576,20 @@ class RecommendationAggregator:
                 "current_use": "candidate simulation / operator review",
                 "missing_use": "nog niet actief in entrylogica",
             }
+        if ctype == "per_coin_learning_candidate":
+            evidence = item.get("evidence") or {}
+            coin = evidence.get("coin") or {}
+            proposal = coin.get("proposal") or {}
+            return {
+                "candidate_kind": "problem" if coin.get("status") == "underperforming" else "opportunity",
+                "improvement_area": proposal.get("type") or "coin_learning",
+                "autonomy_stage": "coin_learning_review",
+                "learning_question": f"Welke risk/feature/KPI set past bij {coin.get('symbol')}?",
+                "proposed_change": proposal.get("suggested_change") or "Start coin-specifieke paper-test.",
+                "test_plan": "Paper/shadow vergelijk coin-specifieke kandidaat tegen huidig profiel.",
+                "current_use": "per-coin learning proposal",
+                "missing_use": "nog geen actieve coin-specifieke policy/profile wijziging",
+            }
         if ctype in {"pre_gpt_gate_shadow", "pre_gpt_gate_too_risky"}:
             return {
                 "candidate_kind": "opportunity" if status != STATUS_BLOCKED else "problem",
@@ -715,6 +752,43 @@ class RecommendationAggregator:
                 ],
                 actions=[
                     ("approve", "Start paper-test"),
+                    ("wait", "Meer bewijs"),
+                    ("reject", "Afwijzen"),
+                    ("freeze", "Parkeren"),
+                ],
+                recommended_action="approve",
+            )
+
+        if ctype == "per_coin_learning_candidate":
+            coin = (evidence.get("coin") or {})
+            proposal = coin.get("proposal") or {}
+            perf = coin.get("performance") or {}
+            risk = coin.get("risk_advice") or {}
+            feature = coin.get("entry_feature_context") or {}
+            return self._operator_fields(
+                title=proposal.get("title") or "Coin-specifieke learning kandidaat",
+                question=f"Mag de bot voor {coin.get('symbol')} een coin-specifieke paper-test voorbereiden?",
+                summary=proposal.get("why") or item.get("headline") or "",
+                consequence="Akkoord betekent: deze coin krijgt een eigen testvoorstel. Er verandert nu niets live.",
+                current_phase="diagnosis",
+                target_phase="validation",
+                returns_as="coin-specifiek profile/risk/KPI voorstel",
+                evidence=[
+                    ("Coin", coin.get("symbol")),
+                    ("Status", coin.get("status")),
+                    ("Opened", self._fmt_value(perf.get("opened_trades"))),
+                    ("Netto R", self._fmt_r(perf.get("net_R"))),
+                    ("Winrate", self._fmt_pct(perf.get("win_rate_pct"))),
+                    ("Risk-down dagen", self._fmt_value(risk.get("data_down_days"))),
+                    ("Long mult", self._fmt_value(risk.get("long_multiplier"))),
+                    ("Short mult", self._fmt_value(risk.get("short_multiplier"))),
+                    ("Top feature", feature.get("top_feature")),
+                    ("Feature edge", self._fmt_r(feature.get("top_feature_edge_R"))),
+                    ("Voorstel", proposal.get("suggested_change")),
+                    ("Live effect nu", "geen"),
+                ],
+                actions=[
+                    ("approve", "Start coin-test"),
                     ("wait", "Meer bewijs"),
                     ("reject", "Afwijzen"),
                     ("freeze", "Parkeren"),

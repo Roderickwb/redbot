@@ -81,6 +81,7 @@ from src.analysis.opportunity_reporter import (
 from src.analysis.operator_app_snapshot import run_operator_app_snapshot
 from src.analysis.operator_cockpit import run_operator_cockpit
 from src.analysis.operator_decisions import run_operator_decisions
+from src.analysis.per_coin_learning_loop import run_per_coin_learning_loop
 from src.analysis.promotion_gate import run_promotion_gate
 from src.analysis.position_lifecycle_report import run_position_lifecycle_report
 from src.analysis.pre_gpt_gate_report import run_pre_gpt_gate_report
@@ -318,6 +319,16 @@ def _build_entry_rule_candidate_simulator(limit: int) -> dict:
         "status": report.get("status"),
         "summary": summary,
         "best_candidate": best,
+        "output_path": report.get("output_path"),
+    }
+
+
+def _build_per_coin_learning_loop(limit: int) -> dict:
+    report = run_per_coin_learning_loop(limit=limit)
+    summary = report.get("summary", {}) or {}
+    return {
+        "status": report.get("status"),
+        "summary": summary,
         "output_path": report.get("output_path"),
     }
 
@@ -702,6 +713,9 @@ def run_daily_analysis_job(
     )
     steps["entry_rule_candidate_simulator"] = _run_step(
         lambda: _build_entry_rule_candidate_simulator(limit=report_limit),
+    )
+    steps["per_coin_learning_loop"] = _run_step(
+        lambda: _build_per_coin_learning_loop(limit=report_limit),
     )
     steps["indicator_edge_report"] = _run_step(
         lambda: _build_indicator_edge_report(limit=report_limit),

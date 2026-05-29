@@ -25,6 +25,7 @@ echo "== Compile critical modules =="
   src/analysis/ml_edge_model.py \
   src/analysis/loss_diagnosis_report.py \
   src/analysis/entry_rule_candidate_simulator.py \
+  src/analysis/per_coin_learning_loop.py \
   src/analysis/indicator_edge_report.py \
   src/analysis/learning_context_integrator.py \
   src/analysis/exit_management_report.py \
@@ -81,6 +82,7 @@ for name in (
     "ml_edge_model",
     "loss_diagnosis_report",
     "entry_rule_candidate_simulator",
+    "per_coin_learning_loop",
     "indicator_edge_report",
     "learning_context_integrator",
     "exit_management_report",
@@ -128,6 +130,13 @@ for name in (
             f" status={result.get('status')} cluster={summary.get('dimension')}:{summary.get('value')} "
             f"best={best.get('rule_id')} net_R={best.get('estimated_net_R')} "
             f"affected={best.get('affected_trades')}"
+        )
+    elif name == "per_coin_learning_loop":
+        summary = result.get("summary") or {}
+        print(
+            f" status={result.get('status')} symbols={summary.get('symbols')} "
+            f"actionable={summary.get('actionable')} under={summary.get('underperforming')} "
+            f"opp={summary.get('opportunity')} risk_down={summary.get('risk_down_candidates')}"
         )
     elif name == "indicator_edge_report":
         summary = result.get("summary") or {}

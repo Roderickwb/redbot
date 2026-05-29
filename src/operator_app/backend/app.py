@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from src.analysis.adaptive_restrictions import run_adaptive_restrictions
+from src.analysis.adaptive_restriction_outcome_tracker import run_adaptive_restriction_outcome_tracker
 from src.analysis.operator_decisions import record_operator_decision
 from src.analysis.recommendation_aggregator import run_recommendation_aggregator
 from src.operator_app.backend.auth import require_operator_token
@@ -72,6 +74,11 @@ def get_adaptive_restrictions() -> dict:
     return report("adaptive_restrictions")
 
 
+@app.get("/api/adaptive-restriction-outcomes")
+def get_adaptive_restriction_outcomes() -> dict:
+    return report("adaptive_restriction_outcomes")
+
+
 @app.get("/api/recommendation-quality")
 def get_recommendation_quality() -> dict:
     return report("recommendation_quality")
@@ -117,12 +124,22 @@ def post_decision(payload: DecisionRequest) -> dict:
         expires_utc=payload.expires_utc,
     )
     recommendations = run_recommendation_aggregator()
+    adaptive = run_adaptive_restrictions()
+    adaptive_outcomes = run_adaptive_restriction_outcome_tracker()
     return {
         "status": "OK",
         "decision": item,
         "recommendations": {
             "status": recommendations.get("status"),
             "summary": recommendations.get("summary", {}),
+        },
+        "adaptive_restrictions": {
+            "status": adaptive.get("status"),
+            "summary": adaptive.get("summary", {}),
+        },
+        "adaptive_restriction_outcomes": {
+            "status": adaptive_outcomes.get("status"),
+            "summary": adaptive_outcomes.get("summary", {}),
         },
         "live_effect": False,
     }
@@ -603,7 +620,7 @@ FALLBACK_HTML = """
           </div>
         </section>`;
     }
-    function recommendationRows(data, adaptive = {}) {
+    function recommendationRows(data, adaptive = {}, adaptiveOutcomes = {}) {
       const items = data.items || data.recommendations || data.review_items || data.actions || [];
       recommendationItems = items;
       if (!items.length) return '<div class="muted">Geen aanbevelingen gevonden.</div>';
@@ -611,6 +628,8 @@ FALLBACK_HTML = """
       const indexOf = (item) => items.indexOf(item);
       const unsupportedApproved = adaptive.approved_without_paper_restriction || [];
       const unsupportedDetail = (item) => `${item.candidate_type || "approved"} | goedgekeurd, maar geen paper-strategy hook`;
+      const outcomeRows = (adaptiveOutcomes.restrictions || []).filter((row) => row.applied_events || row.status === "READY_FOR_REVIEW");
+      const outcomeDetail = (row) => `${row.scope || "regel"} | toegepast=${row.applied_events || 0} labeled=${row.labeled_events || 0} R=${row.observed_R || 0}`;
       const strip = `
         <div class="summary-strip">
           ${metric("Beslissen", grouped.decisions.length)}
@@ -625,6 +644,7 @@ FALLBACK_HTML = """
         : `<section><div class="section-title"><h2>Kansen/problemen nu beslissen</h2><span class="pill">0</span></div><div class="muted">Geen directe operatorbeslissing nodig.</div></section>`;
       return strip + decisions
         + compactSection("Actief in paper-strategie", grouped.activePaper, "Nog geen goedgekeurde restrictie actief in de strategie.", () => "Wordt geraadpleegd bij pre-GPT en/of sizing")
+        + compactSection("Paper-resultaatmeting", outcomeRows, "Nog geen toegepaste paper-restricties om te beoordelen.", outcomeDetail)
         + compactSection("Goedgekeurd, nog zonder strategy-effect", grouped.pendingGate, "Geen goedgekeurde items zonder strategy-effect.", () => "Klaargezet voor volgende fase, maar nog geen actieve paper-restrictie")
         + compactSection("Goedgekeurd maar niet toepasbaar als restrictie", unsupportedApproved, "Geen unsupported approvals.", unsupportedDetail)
         + compactSection("Autonoom verwerkt", grouped.autonomous, "Context en shadow learning lopen autonoom.")
@@ -638,6 +658,7 @@ FALLBACK_HTML = """
         const cockpit = bundle.cockpit || {};
         const recs = bundle.recommendations || {};
         const adaptive = bundle.adaptive_restrictions || {};
+        const adaptiveOutcomes = bundle.adaptive_restriction_outcomes || {};
         const positions = bundle.positions || {};
         const trades = bundle.trades || {};
         const safety = bundle.safety || {};
@@ -654,12 +675,13 @@ FALLBACK_HTML = """
           metric("Live readiness", `review=${live.ready_for_operator_review ?? "-"} eligible=${live.eligible_for_live_wiring ?? "-"}`),
           metric("Learning flow", `pending=${(c.recommendations || {}).pending_live_gate ?? "-"} suppressed=${(c.recommendations || {}).suppressed ?? "-"}`),
           metric("Paper restrictions", `active=${(adaptive.summary || {}).active_restrictions ?? 0}`),
+          metric("Paper outcomes", `applied=${(adaptiveOutcomes.summary || {}).applied_events ?? 0} ready=${(adaptiveOutcomes.summary || {}).ready_for_review ?? 0}`),
           metric("ML", `${learning.ml_status || "-"} rows=${learning.ml_rows || "-"}`),
           metric("GPT hold", `${learning.gpt_hold_rate_pct || "-"}%`),
           metric("Risk", `down=${risk.risk_down ?? "-"} guard=${risk.guard_verdict || "-"}`)
         ].join("");
         document.getElementById("next").innerHTML = (c.next_actions || []).slice(0, 5).map((x) => `<div class="metric" style="margin-bottom:8px">${fmt(x)}</div>`).join("") || '<div class="muted">Geen acties.</div>';
-        document.getElementById("recommendations").innerHTML = recommendationRows(recs, adaptive);
+        document.getElementById("recommendations").innerHTML = recommendationRows(recs, adaptive, adaptiveOutcomes);
         const lifecycles = positions.lifecycles || positions.positions || positions.items || [];
         document.getElementById("positions").innerHTML = list(lifecycles.filter((p) => p.status !== "closed").slice(0, 10).map((p) => [p.symbol || p.position_id, p.status, `amount ${fmt(p.master_amount || p.amount)}`, `pnl ${fmt(p.realized_pnl_eur || p.pnl)}`]));
         const tradeRows = trades.rows || trades.trades || trades.items || [];

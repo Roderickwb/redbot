@@ -28,6 +28,7 @@ from src.analysis.bot_advisor import (
     write_json as write_advisor_json,
 )
 from src.analysis.adaptive_restrictions import run_adaptive_restrictions
+from src.analysis.adaptive_restriction_outcome_tracker import run_adaptive_restriction_outcome_tracker
 from src.analysis.approval_inbox import cleanup_reject_candidates, run_approval_inbox
 from src.analysis.bot_alerts_reporter import (
     BotAlertsReporter,
@@ -577,6 +578,16 @@ def _build_adaptive_restrictions() -> dict:
     }
 
 
+def _build_adaptive_restriction_outcomes(limit: int) -> dict:
+    report = run_adaptive_restriction_outcome_tracker(limit=limit)
+    return {
+        "status": report.get("status"),
+        "summary": report.get("summary", {}),
+        "output_path": report.get("output_path"),
+        "live_effect": report.get("live_effect", False),
+    }
+
+
 def _build_recommendation_quality_tracker() -> dict:
     report = run_recommendation_quality_tracker()
     return {
@@ -826,6 +837,9 @@ def run_daily_analysis_job(
     )
     steps["adaptive_restrictions"] = _run_step(
         lambda: _build_adaptive_restrictions(),
+    )
+    steps["adaptive_restriction_outcomes"] = _run_step(
+        lambda: _build_adaptive_restriction_outcomes(limit=report_limit),
     )
     steps["recommendation_quality_tracker"] = _run_step(
         lambda: _build_recommendation_quality_tracker(),

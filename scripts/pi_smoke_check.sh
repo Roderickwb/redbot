@@ -27,6 +27,7 @@ echo "== Compile critical modules =="
   src/analysis/entry_rule_candidate_simulator.py \
   src/analysis/per_coin_learning_loop.py \
   src/analysis/adaptive_restrictions.py \
+  src/analysis/adaptive_restriction_outcome_tracker.py \
   src/analysis/indicator_edge_report.py \
   src/analysis/learning_context_integrator.py \
   src/analysis/exit_management_report.py \
@@ -93,6 +94,7 @@ for name in (
     "live_readiness_gate",
     "recommendation_aggregator",
     "adaptive_restrictions",
+    "adaptive_restriction_outcomes",
     "operator_decisions",
     "recommendation_quality_tracker",
     "pre_gpt_gate_report",
@@ -218,6 +220,16 @@ for name in (
             f"coin={summary.get('coin_restrictions')} cluster={summary.get('cluster_restrictions')} "
             f"reduced_risk={summary.get('reduced_risk')} strict={summary.get('strict_confirmation')} "
             f"cooldown={summary.get('conditional_cooldown')} live_effect={summary.get('live_effect')}"
+        )
+    elif name == "adaptive_restriction_outcomes":
+        summary = result.get("summary") or {}
+        print(
+            f" status={result.get('status')} active={summary.get('active_restrictions')} "
+            f"with_events={summary.get('restrictions_with_events')} "
+            f"labeled={summary.get('restrictions_with_labeled_outcomes')} "
+            f"ready={summary.get('ready_for_review')} collecting={summary.get('collecting')} "
+            f"applied={summary.get('applied_events')} sizing={summary.get('sizing_adjustments')} "
+            f"skips={summary.get('pre_gpt_skips')} obs_R={summary.get('observed_r')}"
         )
     elif name == "recommendation_quality_tracker":
         summary = result.get("summary") or {}

@@ -36,7 +36,7 @@ DEFAULT_SOURCES = {
 }
 
 APP_ALLOWED_ACTIONS = {
-    "approve": "Record approval intent only; no live effect in v1.",
+    "approve": "Record approval intent; supported items may start paper/dryrun effect, never live exchange effect in v1.",
     "reject": "Record rejection intent only; no live effect in v1.",
     "wait": "Keep item pending for more evidence.",
     "freeze": "Record operator freeze intent for review queues; live behavior remains unchanged in v1.",

@@ -249,6 +249,7 @@ class TrendStrategy4H:
 
         self._last_coin_profile: Dict[str, dict] = {}
         self._last_price_source: Dict[str, str] = {}
+        self._last_adaptive_sizing: Dict[str, dict] = {}
 
 
         # Dagelijkse strategy-statistieken; snapshot moet periodiek vanuit executor aangeroepen worden.
@@ -1391,7 +1392,8 @@ class TrendStrategy4H:
                 symbol=symbol,
                 side=side,
                 entry_price=live_entry_price,
-                atr_value=_to_decimal(atr_1h)
+                atr_value=_to_decimal(atr_1h),
+                material_context=material_context,
             )
 
             # -------------------------------------------------
@@ -1399,7 +1401,12 @@ class TrendStrategy4H:
             #    (zodat je later GPT vs. trade-resultaten kunt koppelen)
             # -------------------------------------------------
             if master_id:
-                self._log_strategy_event(symbol=symbol, event_type="trade_open", decision_stage="open", trend_dir=trend_dir, price=float(live_entry_price), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h, rsi_1h=rsi_1h, rsi_4h=rsi_4h, macd_1h=macd_1h, atr_1h=atr_1h, algo_signal=algo_signal, gpt_action=action, gpt_confidence=conf, trade_id=master_id, coin_profile=coin_profile)
+                open_features = {"material_context": material_context}
+                adaptive_sizing = self._last_adaptive_sizing.get(symbol) or {}
+                if adaptive_sizing.get("applied"):
+                    open_features["adaptive_restriction_sizing"] = adaptive_sizing
+                    open_features["adaptive_restriction_applied"] = True
+                self._log_strategy_event(symbol=symbol, event_type="trade_open", decision_stage="open", trend_dir=trend_dir, price=float(live_entry_price), adx_4h=adx_4h, adx_4h_delta=adx_4h_delta, adx_4h_slope=adx_4h_slope, adx_1h=adx_1h, di_pos_1h=di_pos_1h, di_neg_1h=di_neg_1h, rsi_1h=rsi_1h, rsi_4h=rsi_4h, macd_1h=macd_1h, atr_1h=atr_1h, algo_signal=algo_signal, gpt_action=action, gpt_confidence=conf, trade_id=master_id, coin_profile=coin_profile, features=open_features)
                 try:
                     self.db_manager.save_gpt_decision({
                         "timestamp": int(time.time() * 1000),
@@ -2306,6 +2313,7 @@ class TrendStrategy4H:
         symbol: str,
         entry_price: Decimal,
         min_lot: Decimal,
+        material_context: Optional[dict] = None,
     ) -> Decimal:
         """
         Berekent de COIN-amount op basis van:
@@ -2321,7 +2329,7 @@ class TrendStrategy4H:
             return Decimal("0")
 
         # 1) per-coin risk factor
-        risk_mult = self._get_coin_risk_multiplier(symbol)
+        risk_mult = self._get_coin_risk_multiplier(symbol, material_context=material_context)
 
         # 2) ruwe target: base_max_eur * multiplier
         raw_eur = self.base_max_eur * risk_mult
@@ -2368,7 +2376,7 @@ class TrendStrategy4H:
         )
         return amount
 
-    def _get_coin_risk_multiplier(self, symbol: str) -> Decimal:
+    def _get_coin_risk_multiplier(self, symbol: str, material_context: Optional[dict] = None) -> Decimal:
         try:
             source = "ram"
 
@@ -2388,8 +2396,9 @@ class TrendStrategy4H:
                 mult = Decimal("1.0")
 
             # ✅ DEBUG LOG (belangrijk)
+            applied_restrictions = []
             adaptive_restrictions = [
-                restriction for restriction in self._matching_adaptive_restrictions(symbol)
+                restriction for restriction in self._matching_adaptive_restrictions(symbol, material_context)
                 if str(restriction.get("state") or "") == "reduced_risk"
             ]
             for restriction in adaptive_restrictions:
@@ -2402,6 +2411,17 @@ class TrendStrategy4H:
                 mult = mult * adaptive_mult
                 if mult < Decimal("0.25"):
                     mult = Decimal("0.25")
+                applied_restrictions.append({
+                    "restriction_id": restriction.get("restriction_id"),
+                    "source_item_id": restriction.get("source_item_id"),
+                    "scope": restriction.get("scope"),
+                    "rule_id": restriction.get("rule_id"),
+                    "state": restriction.get("state"),
+                    "risk_multiplier": float(adaptive_mult),
+                    "before": float(before),
+                    "after": float(mult),
+                    "match": restriction.get("match") or {},
+                })
                 self.logger.info(
                     "[adaptive_restrictions][%s] risk multiplier %s -> %s via %s (%s)",
                     symbol,
@@ -2410,6 +2430,16 @@ class TrendStrategy4H:
                     restriction.get("restriction_id"),
                     restriction.get("rule_id"),
                 )
+            if applied_restrictions:
+                self._last_adaptive_sizing[symbol] = {
+                    "applied": True,
+                    "base_profile_risk_multiplier": float(Decimal(str(raw))),
+                    "final_risk_multiplier": float(mult),
+                    "restrictions": applied_restrictions,
+                    "material_context": material_context or {},
+                }
+            else:
+                self._last_adaptive_sizing.pop(symbol, None)
 
             self.logger.debug(
                 "[risk] %s risk_multiplier=%s (source=%s)",
@@ -2468,7 +2498,14 @@ class TrendStrategy4H:
         self.logger.info("[LIVE ORDER][%s][%s] confirmed: %s", context, symbol, response)
         return response
 
-    def _open_position(self, symbol: str, side: str, entry_price: Decimal, atr_value: Decimal):
+    def _open_position(
+        self,
+        symbol: str,
+        side: str,
+        entry_price: Decimal,
+        atr_value: Decimal,
+        material_context: Optional[dict] = None,
+    ):
         if symbol in self.open_positions:
             return
 
@@ -2501,7 +2538,7 @@ class TrendStrategy4H:
         base_max_eur = _to_decimal(cfg.get("base_max_eur", "25"))   # absolute maximum per trade
 
         # 2) Risk multiplier [0..1] per coin
-        risk_mult = self._get_coin_risk_multiplier(symbol)
+        risk_mult = self._get_coin_risk_multiplier(symbol, material_context=material_context)
         if risk_mult < 0:
             risk_mult = Decimal("0")
         if risk_mult > 1:

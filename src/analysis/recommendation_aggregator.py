@@ -436,8 +436,103 @@ class RecommendationAggregator:
             "live_effect": False,
             "evidence": evidence,
         }
+        item.update(self._improvement_fields(item))
         item.update(self._operator_card_fields(item))
         return item
+
+    def _improvement_fields(self, item: dict) -> dict:
+        """Normalize module signals into one autonomy-loop vocabulary."""
+        ctype = str(item.get("candidate_type") or "")
+        status = str(item.get("status") or "")
+        effect = str(item.get("effect_level") or "")
+
+        if ctype == "indicator_edge_context":
+            return {
+                "candidate_kind": "opportunity",
+                "improvement_area": "entry_context",
+                "autonomy_stage": "context_integrated",
+                "learning_question": "Welke indicator/timeframe combinaties voorspellen betere entries?",
+                "proposed_change": "Gebruik sterke indicator-edge als context in coin profiles en GPT; niet als harde entryregel.",
+                "test_plan": "Blijf meten of setups met deze feature betere counterfactual R en paper outcomes houden.",
+                "current_use": "coin_profile/GPT context",
+                "missing_use": "geen harde entry scoring of live filter",
+            }
+        if ctype == "ml_edge_shadow_model":
+            return {
+                "candidate_kind": "opportunity",
+                "improvement_area": "entry_quality",
+                "autonomy_stage": "shadow_context",
+                "learning_question": "Kan ML setupkwaliteit voorspellen voordat of nadat GPT beslist?",
+                "proposed_change": "Gebruik ML voorlopig als context/signaal; geen entry, sizing of skip-beslissing.",
+                "test_plan": "Vergelijk ML-score buckets tegen latere R en gemiste/gewonnen trades.",
+                "current_use": "rapport + learned_context",
+                "missing_use": "geen actieve entry gate, sizing of GPT-call skip",
+            }
+        if ctype in {"pre_gpt_gate_shadow", "pre_gpt_gate_too_risky"}:
+            return {
+                "candidate_kind": "opportunity" if status != STATUS_BLOCKED else "problem",
+                "improvement_area": "cost_and_entry_filter",
+                "autonomy_stage": "shadow_test",
+                "learning_question": "Kan de bot dure GPT-calls overslaan zonder goede entries te missen?",
+                "proposed_change": "Test een pre-GPT filter in shadow; pas later eventueel GPT-call skippen.",
+                "test_plan": "Meet false skips, skipped opens en netto R tegenover baseline GPT-flow.",
+                "current_use": "shadow report",
+                "missing_use": "geen live GPT-call skip",
+            }
+        if ctype == "guard_threshold_calibration":
+            return {
+                "candidate_kind": "problem",
+                "improvement_area": "entry_guard",
+                "autonomy_stage": "validation_candidate",
+                "learning_question": "Blokkeert de daglimiet te veel goede entries?",
+                "proposed_change": "Valideer een ruimere of slimmere max_daily_opens guard tegen baseline.",
+                "test_plan": "Replay/paper vergelijk: huidige guard versus kandidaatguard op bescherming en gemiste R.",
+                "current_use": "operator review",
+                "missing_use": "geen aangepaste live/paper guard zolang validatie niet rond is",
+            }
+        if ctype in {"risk_down_advice_batch", "risk_down_helpful", "risk_down_too_strict", "live_readiness_batch"}:
+            return {
+                "candidate_kind": "problem" if ctype == "risk_down_too_strict" else "opportunity",
+                "improvement_area": "risk_sizing",
+                "autonomy_stage": "live_gate_candidate" if ctype == "live_readiness_batch" else "validation",
+                "learning_question": "Moet de bot per coin/regime minder risico nemen om verliesclusters te beperken?",
+                "proposed_change": "Test of conservatiever risico verlies verlaagt zonder te veel positieve expectancy te missen.",
+                "test_plan": "Bridge history vergelijkt adjusted sizing met baseline outcomes en netto R.",
+                "current_use": "operator review/shadow bridge",
+                "missing_use": "geen live risk sizing zolang live gate niet expliciet groen is",
+            }
+        if ctype in {"exit_reason_instrumentation", "exit_reason_collection", "exit_management_collecting", "exit_management_review"}:
+            return {
+                "candidate_kind": "problem",
+                "improvement_area": "exit_management",
+                "autonomy_stage": "evidence_collection",
+                "learning_question": "Verliest de bot door te late, te vroege of slecht gelabelde exits?",
+                "proposed_change": "Gebruik verse exit reasons om later TP/SL/trailing hypotheses te maken.",
+                "test_plan": "Wacht op genoeg reason-labeled exits en vergelijk exit types met realized R.",
+                "current_use": "exit report/app",
+                "missing_use": "nog geen TP/SL/trailing wijziging",
+            }
+        if ctype.startswith("position_lifecycle"):
+            return {
+                "candidate_kind": "health",
+                "improvement_area": "position_state",
+                "autonomy_stage": "readiness_check",
+                "learning_question": "Is positie-administratie betrouwbaar genoeg voor app/autonomie?",
+                "proposed_change": "Gebruik lifecycle status als gate voor latere autonomie.",
+                "test_plan": "Blijf checken op orphan/duplicate/partial-close issues.",
+                "current_use": "health/app readiness",
+                "missing_use": "geen tradingbeslissing",
+            }
+        return {
+            "candidate_kind": "problem" if status == STATUS_BLOCKED else "opportunity",
+            "improvement_area": effect or "unknown",
+            "autonomy_stage": "review",
+            "learning_question": "Welke verbetering probeert dit signaal te bereiken?",
+            "proposed_change": item.get("headline") or item.get("why") or "",
+            "test_plan": "Meer bewijs verzamelen en vergelijken met baseline.",
+            "current_use": "recommendation",
+            "missing_use": "geen live effect",
+        }
 
     def _operator_card_fields(self, item: dict) -> dict:
         """Render-ready operator copy for app cards.
@@ -829,11 +924,17 @@ class RecommendationAggregator:
     def _summary(self, items: list[dict]) -> dict:
         by_status = Counter(item.get("status") or "unknown" for item in items)
         by_area = Counter(item.get("area") or "unknown" for item in items)
+        by_candidate_kind = Counter(item.get("candidate_kind") or "unknown" for item in items)
+        by_improvement_area = Counter(item.get("improvement_area") or "unknown" for item in items)
+        by_stage = Counter(item.get("autonomy_stage") or "unknown" for item in items)
         review_items = [item for item in items if item.get("status") == STATUS_REVIEW]
         return {
             "total": len(items),
             "by_status": dict(by_status),
             "by_area": dict(by_area),
+            "by_candidate_kind": dict(by_candidate_kind),
+            "by_improvement_area": dict(by_improvement_area),
+            "by_autonomy_stage": dict(by_stage),
             "needs_operator_review": by_status.get(STATUS_REVIEW, 0),
             "auto_accept_as_context": by_status.get(STATUS_AUTO_CONTEXT, 0),
             "wait_more_evidence": by_status.get(STATUS_WAIT, 0),

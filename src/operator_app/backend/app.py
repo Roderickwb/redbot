@@ -567,11 +567,16 @@ FALLBACK_HTML = """
     }
     function decisionCard(item, index) {
       const phase = item.phase_transition_label || `${levelLabel(item.effect_level)} → volgende fase`;
+      const kind = item.candidate_kind ? fmt(item.candidate_kind) : "verbeterkans";
+      const area = item.improvement_area ? fmt(item.improvement_area).replaceAll("_", " ") : fmt(item.area || "");
       return `
         <article class="metric decision-card" style="margin-bottom:10px">
           <div class="section-title"><h3>${displayTitle(item)}</h3><span class="pill hot">${statusLabel(item.status)}</span></div>
-          <div class="decision-meta"><span class="pill">${phase}</span><span class="pill">${fmt(item.area || "")}</span></div>
+          <div class="decision-meta"><span class="pill">${kind}</span><span class="pill">${area}</span><span class="pill">${phase}</span></div>
           <div class="decision-question">${decisionQuestion(item)}</div>
+          <div class="card-copy"><strong>Leervraag:</strong> ${fmt(item.learning_question || "Welke verbetering probeert de bot te vinden?")}</div>
+          <div class="card-copy"><strong>Voorstel:</strong> ${fmt(item.proposed_change || item.operator_summary || item.headline || "")}</div>
+          <div class="card-copy"><strong>Test:</strong> ${fmt(item.test_plan || "Vergelijken met baseline voordat gedrag wijzigt.")}</div>
           <div class="card-copy"><strong>Waarom nu:</strong> ${whyNowText(item)}</div>
           <div class="card-copy"><strong>Effect van je keuze:</strong> ${consequenceText(item)}</div>
           <div class="evidence"><strong>Bewijs:</strong> ${evidenceHumanText(item)}</div>
@@ -594,17 +599,21 @@ FALLBACK_HTML = """
       if (!items.length) return '<div class="muted">Geen aanbevelingen gevonden.</div>';
       const grouped = groupItems(items);
       const indexOf = (item) => items.indexOf(item);
+      const summary = data.summary || {};
+      const kinds = summary.by_candidate_kind || {};
+      const areas = summary.by_improvement_area || {};
       const strip = `
         <div class="summary-strip">
+          ${metric("Kansen", kinds.opportunity ?? 0)}
+          ${metric("Problemen", kinds.problem ?? 0)}
+          ${metric("Entry", (areas.entry_context ?? 0) + (areas.entry_quality ?? 0) + (areas.entry_guard ?? 0))}
+          ${metric("Exit", areas.exit_management ?? 0)}
           ${metric("Beslissen", grouped.decisions.length)}
-          ${metric("Live-gate", grouped.pendingGate.length)}
-          ${metric("Autonoom", grouped.autonomous.length)}
           ${metric("Wacht", grouped.waiting.length)}
-          ${metric("Geblokkeerd", grouped.blocked.length)}
         </div>`;
       const decisions = grouped.decisions.length
-        ? `<section><div class="section-title"><h2>Nu beslissen</h2><span class="pill">${grouped.decisions.length}</span></div>${grouped.decisions.map((item) => decisionCard(item, indexOf(item))).join("")}</section>`
-        : `<section><div class="section-title"><h2>Nu beslissen</h2><span class="pill">0</span></div><div class="muted">Geen directe operatorbeslissing nodig.</div></section>`;
+        ? `<section><div class="section-title"><h2>Kansen/problemen nu beslissen</h2><span class="pill">${grouped.decisions.length}</span></div>${grouped.decisions.map((item) => decisionCard(item, indexOf(item))).join("")}</section>`
+        : `<section><div class="section-title"><h2>Kansen/problemen nu beslissen</h2><span class="pill">0</span></div><div class="muted">Geen directe operatorbeslissing nodig.</div></section>`;
       return strip + decisions
         + compactSection("Goedgekeurd voor volgende fase", grouped.pendingGate, "Nog niets goedgekeurd voor een volgende fase.")
         + compactSection("Autonoom verwerkt", grouped.autonomous, "Context en shadow learning lopen autonoom.")

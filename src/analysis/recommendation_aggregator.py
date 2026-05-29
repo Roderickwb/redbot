@@ -28,6 +28,7 @@ DEFAULT_RISK_GUARD = os.path.join("analysis", "risk", "latest_risk_guard_report.
 DEFAULT_PRE_GPT_GATE = os.path.join("analysis", "gpt_decisions", "latest_pre_gpt_gate_report.json")
 DEFAULT_ML_EDGE = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
 DEFAULT_LOSS_DIAGNOSIS = os.path.join("analysis", "loss_diagnosis", "latest_loss_diagnosis_report.json")
+DEFAULT_ENTRY_RULE_CANDIDATES = os.path.join("analysis", "entry_rules", "latest_entry_rule_candidate_simulator.json")
 DEFAULT_EXIT_MANAGEMENT = os.path.join("analysis", "exits", "latest_exit_management_report.json")
 DEFAULT_POSITION_LIFECYCLE = os.path.join("analysis", "positions", "latest_position_lifecycle_report.json")
 
@@ -81,6 +82,7 @@ class RecommendationAggregator:
         pre_gpt_gate_path: str = DEFAULT_PRE_GPT_GATE,
         ml_edge_path: str = DEFAULT_ML_EDGE,
         loss_diagnosis_path: str = DEFAULT_LOSS_DIAGNOSIS,
+        entry_rule_candidates_path: str = DEFAULT_ENTRY_RULE_CANDIDATES,
         exit_management_path: str = DEFAULT_EXIT_MANAGEMENT,
         position_lifecycle_path: str = DEFAULT_POSITION_LIFECYCLE,
     ):
@@ -93,6 +95,7 @@ class RecommendationAggregator:
             "pre_gpt_gate": pre_gpt_gate_path,
             "ml_edge": ml_edge_path,
             "loss_diagnosis": loss_diagnosis_path,
+            "entry_rule_candidates": entry_rule_candidates_path,
             "exit_management": exit_management_path,
             "position_lifecycle": position_lifecycle_path,
         }
@@ -107,6 +110,7 @@ class RecommendationAggregator:
         items.extend(self._from_pre_gpt_gate(reports.get("pre_gpt_gate") or {}))
         items.extend(self._from_ml_edge(reports.get("ml_edge") or {}))
         items.extend(self._from_loss_diagnosis(reports.get("loss_diagnosis") or {}))
+        items.extend(self._from_entry_rule_candidates(reports.get("entry_rule_candidates") or {}))
         items.extend(self._from_indicator_edge(reports.get("indicator_edge") or {}))
         items.extend(self._from_exit_management(reports.get("exit_management") or {}))
         items.extend(self._from_position_lifecycle(reports.get("position_lifecycle") or {}))
@@ -286,6 +290,30 @@ class RecommendationAggregator:
                 "summary": summary,
                 "top_loss": summary.get("top_loss"),
                 "top_opportunity": summary.get("top_opportunity"),
+            },
+        )]
+
+    def _from_entry_rule_candidates(self, report: dict) -> list[dict]:
+        summary = report.get("summary", {}) or {}
+        best = report.get("best_candidate") or {}
+        if not best or _safe_float(best.get("estimated_net_R")) <= 0:
+            return []
+        cluster = report.get("source_cluster") or {}
+        return [self._item(
+            area="entry",
+            candidate_type="entry_rule_candidate",
+            subject=str(best.get("rule_id") or "entry_rule"),
+            status=STATUS_REVIEW,
+            title=best.get("title") or "Entry rule candidate is ready for paper test",
+            headline=f"Replay estimate: {best.get('rule_id')} improves the diagnosed cluster by {best.get('estimated_net_R')} R.",
+            why="The bot simulated concrete entry-rule variants against the top loss cluster and found a positive candidate.",
+            default_action="wait",
+            effect_level="strategy_live",
+            evidence={
+                "summary": summary,
+                "best_candidate": best,
+                "source_cluster": cluster,
+                "candidates": report.get("candidates", [])[:6],
             },
         )]
 
@@ -512,6 +540,19 @@ class RecommendationAggregator:
                 "current_use": "loss diagnosis / operator review",
                 "missing_use": "nog geen filter, sizing of entryregel actief",
             }
+        if ctype == "entry_rule_candidate":
+            evidence = item.get("evidence") or {}
+            best = evidence.get("best_candidate") or {}
+            return {
+                "candidate_kind": "problem",
+                "improvement_area": "entry_rule",
+                "autonomy_stage": "candidate_simulated",
+                "learning_question": "Welke concrete entryregel verbetert het grootste verliescluster?",
+                "proposed_change": best.get("title") or "Start een gerichte paper-test voor deze entryregel.",
+                "test_plan": "Paper/shadow vergelijk kandidaatregel tegen baseline voordat strategiegedrag wijzigt.",
+                "current_use": "candidate simulation / operator review",
+                "missing_use": "nog niet actief in entrylogica",
+            }
         if ctype in {"pre_gpt_gate_shadow", "pre_gpt_gate_too_risky"}:
             return {
                 "candidate_kind": "opportunity" if status != STATUS_BLOCKED else "problem",
@@ -649,6 +690,36 @@ class RecommendationAggregator:
                     ("freeze", "Parkeren"),
                 ],
                 recommended_action="approve" if kind == "problem" else "wait",
+            )
+
+        if ctype == "entry_rule_candidate":
+            summary = evidence.get("summary") or {}
+            best = evidence.get("best_candidate") or {}
+            cluster = evidence.get("source_cluster") or {}
+            return self._operator_fields(
+                title="Entryregel klaar voor paper-test",
+                question="Mag de bot deze kandidaatregel in paper/shadow tegen de baseline testen?",
+                summary=f"De simulator ziet +{best.get('estimated_net_R')} R voor deze variant op het grootste verliescluster.",
+                consequence="Akkoord betekent: kandidaatregel voorbereiden voor paper-test. Er verandert nu niets live.",
+                current_phase="validation",
+                target_phase="validation",
+                returns_as="paper-test resultaat met baselinevergelijking",
+                evidence=[
+                    ("Cluster", f"{cluster.get('dimension')}={cluster.get('value')}" if cluster else f"{summary.get('dimension')}={summary.get('value')}"),
+                    ("Regel", best.get("rule_id")),
+                    ("Effect", self._fmt_r(best.get("estimated_net_R"))),
+                    ("Affected trades", self._fmt_value(best.get("affected_trades"))),
+                    ("Geblokkeerde/geraakte verliezers", self._fmt_value(best.get("blocked_or_adjusted_losers"))),
+                    ("Gemiste/geraakte winnaars", self._fmt_value(best.get("missed_or_adjusted_winners"))),
+                    ("Live effect nu", "geen"),
+                ],
+                actions=[
+                    ("approve", "Start paper-test"),
+                    ("wait", "Meer bewijs"),
+                    ("reject", "Afwijzen"),
+                    ("freeze", "Parkeren"),
+                ],
+                recommended_action="approve",
             )
 
         if ctype == "live_readiness_batch":

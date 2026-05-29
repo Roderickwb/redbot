@@ -42,6 +42,7 @@ from src.analysis.chart_vision_reporter import (
     write_json as write_chart_json,
 )
 from src.analysis.daily_control_report import run_daily_control_report
+from src.analysis.entry_rule_candidate_simulator import run_entry_rule_candidate_simulator
 from src.analysis.exit_management_report import run_exit_management_report
 from src.analysis.indicator_edge_report import run_indicator_edge_report
 from src.analysis.learning_context_integrator import run_learning_context_integrator
@@ -305,6 +306,18 @@ def _build_loss_diagnosis_report(limit: int) -> dict:
         "top_loss": summary.get("top_loss"),
         "top_opportunity": summary.get("top_opportunity"),
         "candidate_count": summary.get("candidate_count"),
+        "output_path": report.get("output_path"),
+    }
+
+
+def _build_entry_rule_candidate_simulator(limit: int) -> dict:
+    report = run_entry_rule_candidate_simulator(limit=limit)
+    summary = report.get("summary", {}) or {}
+    best = report.get("best_candidate") or {}
+    return {
+        "status": report.get("status"),
+        "summary": summary,
+        "best_candidate": best,
         "output_path": report.get("output_path"),
     }
 
@@ -686,6 +699,9 @@ def run_daily_analysis_job(
     )
     steps["loss_diagnosis_report"] = _run_step(
         lambda: _build_loss_diagnosis_report(limit=report_limit),
+    )
+    steps["entry_rule_candidate_simulator"] = _run_step(
+        lambda: _build_entry_rule_candidate_simulator(limit=report_limit),
     )
     steps["indicator_edge_report"] = _run_step(
         lambda: _build_indicator_edge_report(limit=report_limit),

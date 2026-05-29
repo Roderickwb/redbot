@@ -24,6 +24,7 @@ echo "== Compile critical modules =="
   src/ai/gpt_trend_decider.py \
   src/analysis/ml_edge_model.py \
   src/analysis/loss_diagnosis_report.py \
+  src/analysis/entry_rule_candidate_simulator.py \
   src/analysis/indicator_edge_report.py \
   src/analysis/learning_context_integrator.py \
   src/analysis/exit_management_report.py \
@@ -79,6 +80,7 @@ for name in (
     "safety_control",
     "ml_edge_model",
     "loss_diagnosis_report",
+    "entry_rule_candidate_simulator",
     "indicator_edge_report",
     "learning_context_integrator",
     "exit_management_report",
@@ -118,6 +120,14 @@ for name in (
             f"total_R={summary.get('total_R')} candidates={summary.get('candidate_count')} "
             f"top_loss={top_loss.get('dimension')}:{top_loss.get('value')} "
             f"top_opp={top_opp.get('dimension')}:{top_opp.get('value')}"
+        )
+    elif name == "entry_rule_candidate_simulator":
+        summary = result.get("summary") or {}
+        best = result.get("best_candidate") or {}
+        print(
+            f" status={result.get('status')} cluster={summary.get('dimension')}:{summary.get('value')} "
+            f"best={best.get('rule_id')} net_R={best.get('estimated_net_R')} "
+            f"affected={best.get('affected_trades')}"
         )
     elif name == "indicator_edge_report":
         summary = result.get("summary") or {}

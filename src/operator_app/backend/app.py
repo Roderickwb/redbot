@@ -599,17 +599,13 @@ FALLBACK_HTML = """
       if (!items.length) return '<div class="muted">Geen aanbevelingen gevonden.</div>';
       const grouped = groupItems(items);
       const indexOf = (item) => items.indexOf(item);
-      const summary = data.summary || {};
-      const kinds = summary.by_candidate_kind || {};
-      const areas = summary.by_improvement_area || {};
       const strip = `
         <div class="summary-strip">
-          ${metric("Kansen", kinds.opportunity ?? 0)}
-          ${metric("Problemen", kinds.problem ?? 0)}
-          ${metric("Entry", (areas.entry_context ?? 0) + (areas.entry_quality ?? 0) + (areas.entry_guard ?? 0))}
-          ${metric("Exit", areas.exit_management ?? 0)}
           ${metric("Beslissen", grouped.decisions.length)}
+          ${metric("Goedgekeurd", grouped.pendingGate.length)}
+          ${metric("Autonoom", grouped.autonomous.length)}
           ${metric("Wacht", grouped.waiting.length)}
+          ${metric("Geblokkeerd", grouped.blocked.length)}
         </div>`;
       const decisions = grouped.decisions.length
         ? `<section><div class="section-title"><h2>Kansen/problemen nu beslissen</h2><span class="pill">${grouped.decisions.length}</span></div>${grouped.decisions.map((item) => decisionCard(item, indexOf(item))).join("")}</section>`

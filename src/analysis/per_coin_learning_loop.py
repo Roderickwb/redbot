@@ -77,6 +77,14 @@ def _symbol_stats(rows: list[dict]) -> dict[str, dict]:
     return stats
 
 
+def _rows_by_symbol(rows: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        symbol = str(row.get("symbol") or "UNKNOWN")
+        grouped[symbol].append(row)
+    return grouped
+
+
 def _index_by_symbol(rows: list[dict]) -> dict[str, dict]:
     return {str(row.get("symbol")): row for row in rows if row.get("symbol")}
 
@@ -115,6 +123,7 @@ class PerCoinLearningLoop:
     def build_report(self, limit: Optional[int] = None, min_trades: int = 3) -> dict:
         rows = [row for row in _load_jsonl(self.dataset_path, limit=limit) if _opened(row)]
         stats = _symbol_stats(rows)
+        coin_rows = _rows_by_symbol(rows)
         indicator = _indicator_by_symbol(_load_json(self.indicator_edge_path, {}))
         risk_report = _load_json(self.risk_advice_history_path, {})
         risk_symbols = _index_by_symbol(risk_report.get("symbols", []) or [])
@@ -131,6 +140,7 @@ class PerCoinLearningLoop:
                 risk=risk_symbols.get(symbol, {}),
                 loss=loss,
                 entry_sim=entry_sim,
+                coin_rows=coin_rows.get(symbol, []),
                 min_trades=min_trades,
             )
             profiles.append(row)
@@ -168,6 +178,7 @@ class PerCoinLearningLoop:
         risk: dict,
         loss: dict,
         entry_sim: dict,
+        coin_rows: list[dict],
         min_trades: int,
     ) -> dict:
         opened = _safe_int(stats.get("opened_trades"))
@@ -191,7 +202,12 @@ class PerCoinLearningLoop:
         if risk_advice["current_risk_down"] and risk_advice["data_down_days"] >= 3:
             decision_needed = True
 
-        proposed = self._proposal(symbol, status, stats, risk_advice, indicator, entry_sim)
+        candidates = self._coin_rule_candidates(coin_rows)
+        best_candidate = candidates[0] if candidates else {}
+        if best_candidate:
+            decision_needed = True
+
+        proposed = self._proposal(symbol, status, stats, risk_advice, indicator, entry_sim, best_candidate)
         return {
             "symbol": symbol,
             "status": status,
@@ -204,11 +220,128 @@ class PerCoinLearningLoop:
                 "top_opportunity": (loss.get("summary") or {}).get("top_opportunity"),
             },
             "entry_rule_candidate": entry_sim.get("best_candidate"),
+            "coin_rule_candidates": candidates,
+            "best_coin_rule_candidate": best_candidate,
             "proposal": proposed,
             "live_effect": False,
         }
 
-    def _proposal(self, symbol: str, status: str, stats: dict, risk: dict, indicator: dict, entry_sim: dict) -> dict:
+    def _coin_rule_candidates(self, rows: list[dict]) -> list[dict]:
+        if len(rows) < 3:
+            return []
+
+        baseline_r = sum(_target_r(row) for row in rows)
+        low_conf_70 = [row for row in rows if self._gpt_confidence(row) is not None and self._gpt_confidence(row) < 70.0]
+        low_conf_75 = [row for row in rows if self._gpt_confidence(row) is not None and self._gpt_confidence(row) < 75.0]
+        variants = [
+            {
+                "rule_id": "coin_risk_0_50",
+                "title": "Verlaag coin sizing naar 50% in paper-test",
+                "mode": "scale",
+                "multiplier": 0.5,
+                "rows": rows,
+            },
+            {
+                "rule_id": "coin_risk_0_75",
+                "title": "Verlaag coin sizing naar 75% in paper-test",
+                "mode": "scale",
+                "multiplier": 0.75,
+                "rows": rows,
+            },
+            {
+                "rule_id": "coin_block_entries",
+                "title": "Blokkeer deze coin tijdelijk in paper-test",
+                "mode": "block",
+                "rows": rows,
+            },
+            {
+                "rule_id": "coin_require_confidence_70",
+                "title": "Sta deze coin alleen toe bij GPT confidence >= 70",
+                "mode": "block",
+                "rows": low_conf_70,
+            },
+            {
+                "rule_id": "coin_require_confidence_75",
+                "title": "Sta deze coin alleen toe bij GPT confidence >= 75",
+                "mode": "block",
+                "rows": low_conf_75,
+            },
+            {
+                "rule_id": "coin_block_risk_off",
+                "title": "Blokkeer deze coin in risk-off regime in paper-test",
+                "mode": "block",
+                "rows": [
+                    row for row in rows
+                    if str(_nested(row, "features", "market_regime", "risk_mode") or "").lower() == "risk_off"
+                ],
+            },
+        ]
+
+        candidates = []
+        for variant in variants:
+            affected = list(variant.get("rows") or [])
+            if not affected:
+                continue
+            affected_r = sum(_target_r(row) for row in affected)
+            if variant.get("mode") == "scale":
+                multiplier = _safe_float(variant.get("multiplier"), 1.0)
+                adjusted_r = baseline_r - affected_r + (affected_r * multiplier)
+            else:
+                multiplier = 0.0
+                adjusted_r = baseline_r - affected_r
+            estimated_net_r = adjusted_r - baseline_r
+            if estimated_net_r <= 0:
+                continue
+            candidates.append({
+                "rule_id": variant.get("rule_id"),
+                "title": variant.get("title"),
+                "mode": variant.get("mode"),
+                "multiplier": multiplier,
+                "baseline_R": round(baseline_r, 6),
+                "estimated_after_R": round(adjusted_r, 6),
+                "estimated_net_R": round(estimated_net_r, 6),
+                "affected_trades": len(affected),
+                "affected_winners": sum(1 for row in affected if _target_r(row) > 0),
+                "affected_losers": sum(1 for row in affected if _target_r(row) <= 0),
+                "affected_R": round(affected_r, 6),
+            })
+
+        candidates.sort(key=lambda row: (_safe_float(row.get("estimated_net_R")), _safe_int(row.get("affected_trades"))), reverse=True)
+        return candidates[:5]
+
+    @staticmethod
+    def _gpt_confidence(row: dict) -> Optional[float]:
+        for path in (
+            ("features", "gpt", "confidence"),
+            ("features", "gpt_confidence"),
+            ("gpt_confidence",),
+        ):
+            value = _nested(row, *path)
+            if value is not None:
+                return _safe_float(value)
+        return None
+
+    def _proposal(
+        self,
+        symbol: str,
+        status: str,
+        stats: dict,
+        risk: dict,
+        indicator: dict,
+        entry_sim: dict,
+        best_candidate: dict,
+    ) -> dict:
+        if best_candidate:
+            return {
+                "type": "coin_rule_candidate",
+                "title": f"{symbol}: {best_candidate.get('title')}",
+                "recommended_action": "approve_paper_test",
+                "suggested_change": best_candidate.get("title"),
+                "why": (
+                    f"Replay schat {best_candidate.get('estimated_net_R')} R verbetering "
+                    f"over {best_candidate.get('affected_trades')} geraakte trades."
+                ),
+            }
         if status == "underperforming":
             return {
                 "type": "coin_risk_or_entry_review",

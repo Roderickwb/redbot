@@ -119,6 +119,7 @@ class RecommendationAggregator:
         items.extend(self._from_exit_management(reports.get("exit_management") or {}))
         items.extend(self._from_position_lifecycle(reports.get("position_lifecycle") or {}))
 
+        items = self._suppress_redundant_loss_diagnosis(items)
         items = self._dedupe(items)
         resolver_report = run_operator_decision_resolver(items=items)
         suppressed_items = resolver_report.get("suppressed_items", []) or []
@@ -320,6 +321,19 @@ class RecommendationAggregator:
                 "candidates": report.get("candidates", [])[:6],
             },
         )]
+
+    def _suppress_redundant_loss_diagnosis(self, items: list[dict]) -> list[dict]:
+        has_concrete_entry_rule = any(
+            item.get("candidate_type") == "entry_rule_candidate"
+            and item.get("status") == STATUS_REVIEW
+            for item in items
+        )
+        if not has_concrete_entry_rule:
+            return items
+        return [
+            item for item in items
+            if item.get("candidate_type") != "loss_diagnosis_candidate"
+        ]
 
     def _from_per_coin_learning(self, report: dict) -> list[dict]:
         actionable = report.get("actionable_coins", []) or []
@@ -580,13 +594,17 @@ class RecommendationAggregator:
             evidence = item.get("evidence") or {}
             coin = evidence.get("coin") or {}
             proposal = coin.get("proposal") or {}
+            best = coin.get("best_coin_rule_candidate") or {}
             return {
                 "candidate_kind": "problem" if coin.get("status") == "underperforming" else "opportunity",
                 "improvement_area": proposal.get("type") or "coin_learning",
                 "autonomy_stage": "coin_learning_review",
                 "learning_question": f"Welke risk/feature/KPI set past bij {coin.get('symbol')}?",
                 "proposed_change": proposal.get("suggested_change") or "Start coin-specifieke paper-test.",
-                "test_plan": "Paper/shadow vergelijk coin-specifieke kandidaat tegen huidig profiel.",
+                "test_plan": (
+                    f"Paper/shadow vergelijk {best.get('rule_id')} tegen huidig profiel."
+                    if best else "Paper/shadow vergelijk coin-specifieke kandidaat tegen huidig profiel."
+                ),
                 "current_use": "per-coin learning proposal",
                 "missing_use": "nog geen actieve coin-specifieke policy/profile wijziging",
             }
@@ -765,6 +783,7 @@ class RecommendationAggregator:
             perf = coin.get("performance") or {}
             risk = coin.get("risk_advice") or {}
             feature = coin.get("entry_feature_context") or {}
+            best = coin.get("best_coin_rule_candidate") or {}
             return self._operator_fields(
                 title=proposal.get("title") or "Coin-specifieke learning kandidaat",
                 question=f"Mag de bot voor {coin.get('symbol')} een coin-specifieke paper-test voorbereiden?",
@@ -785,6 +804,11 @@ class RecommendationAggregator:
                     ("Top feature", feature.get("top_feature")),
                     ("Feature edge", self._fmt_r(feature.get("top_feature_edge_R"))),
                     ("Voorstel", proposal.get("suggested_change")),
+                    ("Beste coin-regel", best.get("rule_id")),
+                    ("Regel effect", self._fmt_r(best.get("estimated_net_R"))),
+                    ("Geraakte trades", self._fmt_value(best.get("affected_trades"))),
+                    ("Winnaars geraakt", self._fmt_value(best.get("affected_winners"))),
+                    ("Verliezers geraakt", self._fmt_value(best.get("affected_losers"))),
                     ("Live effect nu", "geen"),
                 ],
                 actions=[

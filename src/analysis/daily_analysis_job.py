@@ -45,6 +45,7 @@ from src.analysis.daily_control_report import run_daily_control_report
 from src.analysis.exit_management_report import run_exit_management_report
 from src.analysis.indicator_edge_report import run_indicator_edge_report
 from src.analysis.learning_context_integrator import run_learning_context_integrator
+from src.analysis.loss_diagnosis_report import run_loss_diagnosis_report
 from src.analysis.gpt_decision_reporter import (
     GptDecisionReporter,
     DEFAULT_LATEST_FILE as GPT_LATEST_FILE,
@@ -291,6 +292,19 @@ def _build_indicator_edge_report(limit: int) -> dict:
         "summary": summary,
         "top_feature": top,
         "weak_feature": weak,
+        "output_path": report.get("output_path"),
+    }
+
+
+def _build_loss_diagnosis_report(limit: int) -> dict:
+    report = run_loss_diagnosis_report(limit=limit)
+    summary = report.get("summary", {}) or {}
+    return {
+        "status": report.get("status"),
+        "summary": summary,
+        "top_loss": summary.get("top_loss"),
+        "top_opportunity": summary.get("top_opportunity"),
+        "candidate_count": summary.get("candidate_count"),
         "output_path": report.get("output_path"),
     }
 
@@ -669,6 +683,9 @@ def run_daily_analysis_job(
     )
     steps["ml_edge_model"] = _run_step(
         lambda: _build_ml_edge_model(limit=report_limit),
+    )
+    steps["loss_diagnosis_report"] = _run_step(
+        lambda: _build_loss_diagnosis_report(limit=report_limit),
     )
     steps["indicator_edge_report"] = _run_step(
         lambda: _build_indicator_edge_report(limit=report_limit),

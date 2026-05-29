@@ -27,6 +27,7 @@ DEFAULT_RISK_BRIDGE_HISTORY = os.path.join("analysis", "risk", "latest_risk_brid
 DEFAULT_RISK_GUARD = os.path.join("analysis", "risk", "latest_risk_guard_report.json")
 DEFAULT_PRE_GPT_GATE = os.path.join("analysis", "gpt_decisions", "latest_pre_gpt_gate_report.json")
 DEFAULT_ML_EDGE = os.path.join("analysis", "ml_models", "latest_edge_model_report.json")
+DEFAULT_LOSS_DIAGNOSIS = os.path.join("analysis", "loss_diagnosis", "latest_loss_diagnosis_report.json")
 DEFAULT_EXIT_MANAGEMENT = os.path.join("analysis", "exits", "latest_exit_management_report.json")
 DEFAULT_POSITION_LIFECYCLE = os.path.join("analysis", "positions", "latest_position_lifecycle_report.json")
 
@@ -79,6 +80,7 @@ class RecommendationAggregator:
         risk_guard_path: str = DEFAULT_RISK_GUARD,
         pre_gpt_gate_path: str = DEFAULT_PRE_GPT_GATE,
         ml_edge_path: str = DEFAULT_ML_EDGE,
+        loss_diagnosis_path: str = DEFAULT_LOSS_DIAGNOSIS,
         exit_management_path: str = DEFAULT_EXIT_MANAGEMENT,
         position_lifecycle_path: str = DEFAULT_POSITION_LIFECYCLE,
     ):
@@ -90,6 +92,7 @@ class RecommendationAggregator:
             "risk_guard": risk_guard_path,
             "pre_gpt_gate": pre_gpt_gate_path,
             "ml_edge": ml_edge_path,
+            "loss_diagnosis": loss_diagnosis_path,
             "exit_management": exit_management_path,
             "position_lifecycle": position_lifecycle_path,
         }
@@ -103,6 +106,7 @@ class RecommendationAggregator:
         items.extend(self._from_risk_guard(reports.get("risk_guard") or {}))
         items.extend(self._from_pre_gpt_gate(reports.get("pre_gpt_gate") or {}))
         items.extend(self._from_ml_edge(reports.get("ml_edge") or {}))
+        items.extend(self._from_loss_diagnosis(reports.get("loss_diagnosis") or {}))
         items.extend(self._from_indicator_edge(reports.get("indicator_edge") or {}))
         items.extend(self._from_exit_management(reports.get("exit_management") or {}))
         items.extend(self._from_position_lifecycle(reports.get("position_lifecycle") or {}))
@@ -257,6 +261,33 @@ class RecommendationAggregator:
                 evidence=summary,
             )]
         return []
+
+    def _from_loss_diagnosis(self, report: dict) -> list[dict]:
+        summary = report.get("summary", {}) or {}
+        candidates = report.get("improvement_candidates", []) or []
+        if not candidates:
+            return []
+        top = candidates[0] or {}
+        evidence = top.get("evidence") or {}
+        status = STATUS_REVIEW if top.get("kind") == "problem" else STATUS_WAIT
+        return [self._item(
+            area=top.get("area") or "diagnosis",
+            candidate_type="loss_diagnosis_candidate",
+            subject=str(top.get("title") or "top_candidate"),
+            status=status,
+            title=top.get("title") or "Loss diagnosis found a candidate",
+            headline=top.get("problem_or_opportunity") or "Loss diagnosis found a testable improvement candidate.",
+            why="This is the central PnL diagnosis: it ranks where opened trades lose or find edge before changing rules.",
+            default_action="wait",
+            effect_level="strategy_live",
+            evidence={
+                "candidate": top,
+                "cluster": evidence,
+                "summary": summary,
+                "top_loss": summary.get("top_loss"),
+                "top_opportunity": summary.get("top_opportunity"),
+            },
+        )]
 
     def _from_ml_edge(self, report: dict) -> list[dict]:
         readiness = report.get("readiness", {}) or {}
@@ -468,6 +499,19 @@ class RecommendationAggregator:
                 "current_use": "rapport + learned_context",
                 "missing_use": "geen actieve entry gate, sizing of GPT-call skip",
             }
+        if ctype == "loss_diagnosis_candidate":
+            evidence = item.get("evidence") or {}
+            candidate = evidence.get("candidate") or {}
+            return {
+                "candidate_kind": candidate.get("kind") or "problem",
+                "improvement_area": candidate.get("area") or "diagnosis",
+                "autonomy_stage": "diagnosis",
+                "learning_question": "Waar verliest of verdient de bot nu echt R/PnL?",
+                "proposed_change": candidate.get("proposed_change") or "Maak een testbare hypothese voor dit cluster.",
+                "test_plan": candidate.get("test_plan") or "Shadow/paper vergelijk met baseline.",
+                "current_use": "loss diagnosis / operator review",
+                "missing_use": "nog geen filter, sizing of entryregel actief",
+            }
         if ctype in {"pre_gpt_gate_shadow", "pre_gpt_gate_too_risky"}:
             return {
                 "candidate_kind": "opportunity" if status != STATUS_BLOCKED else "problem",
@@ -573,6 +617,38 @@ class RecommendationAggregator:
                     ("freeze", "Parkeren"),
                 ],
                 recommended_action="approve",
+            )
+
+        if ctype == "loss_diagnosis_candidate":
+            candidate = evidence.get("candidate") or {}
+            cluster = evidence.get("cluster") or {}
+            kind = candidate.get("kind") or "problem"
+            return self._operator_fields(
+                title="Grootste verlies/kans cluster gevonden",
+                question="Mag de bot dit cluster doorzetten naar een gerichte shadow/paper test?",
+                summary=candidate.get("problem_or_opportunity") or item.get("headline") or "",
+                consequence="Akkoord betekent: testbare hypothese voorbereiden. Er verandert nu niets live.",
+                current_phase="diagnosis",
+                target_phase="validation",
+                returns_as="gerichte entry/risk/coin validatie",
+                evidence=[
+                    ("Type", kind),
+                    ("Gebied", candidate.get("area")),
+                    ("Cluster", f"{cluster.get('dimension')}={cluster.get('value')}"),
+                    ("Trades", self._fmt_value(cluster.get("count"))),
+                    ("Netto R", self._fmt_r(cluster.get("net_R"))),
+                    ("Gem. R", self._fmt_r(cluster.get("avg_R"))),
+                    ("Winrate", self._fmt_pct(cluster.get("win_rate_pct"))),
+                    ("Voorstel", candidate.get("proposed_change")),
+                    ("Live effect nu", "geen"),
+                ],
+                actions=[
+                    ("approve", "Door naar test"),
+                    ("wait", "Meer bewijs"),
+                    ("reject", "Afwijzen"),
+                    ("freeze", "Parkeren"),
+                ],
+                recommended_action="approve" if kind == "problem" else "wait",
             )
 
         if ctype == "live_readiness_batch":
@@ -819,6 +895,7 @@ class RecommendationAggregator:
 
     def _phase_label(self, phase: str) -> str:
         return {
+            "diagnosis": "Diagnose",
             "context": "Context",
             "shadow": "Shadow",
             "validation": "Validatie",

@@ -23,6 +23,7 @@ echo "== Compile critical modules =="
   src/database_manager/database_manager.py \
   src/ai/gpt_trend_decider.py \
   src/analysis/ml_edge_model.py \
+  src/analysis/loss_diagnosis_report.py \
   src/analysis/indicator_edge_report.py \
   src/analysis/learning_context_integrator.py \
   src/analysis/exit_management_report.py \
@@ -77,6 +78,7 @@ steps = d.get("steps") or {}
 for name in (
     "safety_control",
     "ml_edge_model",
+    "loss_diagnosis_report",
     "indicator_edge_report",
     "learning_context_integrator",
     "exit_management_report",
@@ -106,6 +108,16 @@ for name in (
             f"acc={metrics.get('classification_accuracy')} "
             f"mae_R={metrics.get('regression_mae_r')} "
             f"avg_pred_R={prediction_summary.get('avg_predicted_r')}"
+        )
+    elif name == "loss_diagnosis_report":
+        summary = result.get("summary") or {}
+        top_loss = result.get("top_loss") or summary.get("top_loss") or {}
+        top_opp = result.get("top_opportunity") or summary.get("top_opportunity") or {}
+        print(
+            f" status={result.get('status')} opened={summary.get('opened_rows')} "
+            f"total_R={summary.get('total_R')} candidates={summary.get('candidate_count')} "
+            f"top_loss={top_loss.get('dimension')}:{top_loss.get('value')} "
+            f"top_opp={top_opp.get('dimension')}:{top_opp.get('value')}"
         )
     elif name == "indicator_edge_report":
         summary = result.get("summary") or {}

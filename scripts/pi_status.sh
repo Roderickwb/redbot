@@ -6,6 +6,11 @@ PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/venv/bin/python3}"
 BOT_SERVICE="${BOT_SERVICE:-redbot.service}"
 APP_SERVICE="${APP_SERVICE:-redbot-operator-app.service}"
 WATCHDOG_TIMER="${WATCHDOG_TIMER:-redbot-watchdog.timer}"
+VERBOSE="${VERBOSE:-0}"
+
+if [[ "${1:-}" == "--verbose" ]]; then
+  VERBOSE=1
+fi
 
 cd "$ROOT_DIR"
 
@@ -33,8 +38,11 @@ HEALTH_RC=$?
 set -e
 echo "health_exit_code: $HEALTH_RC"
 
-if systemctl cat "$BOT_SERVICE" >/dev/null 2>&1; then
+if [[ "$VERBOSE" == "1" ]] && systemctl cat "$BOT_SERVICE" >/dev/null 2>&1; then
   echo
   echo "== Recent bot service log =="
   journalctl -u "$BOT_SERVICE" -n 30 --no-pager
+else
+  echo
+  echo "Details: bash scripts/pi_status.sh --verbose"
 fi

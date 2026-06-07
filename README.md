@@ -36,6 +36,10 @@ alleen met `export`, zodat het token ook na een reboot beschikbaar blijft.
 cd ~/redbot
 bash scripts/pi_status.sh
 
+# volledige update- of statusdiagnose
+./scripts/pi_update.sh --verbose
+bash scripts/pi_status.sh --verbose
+
 # service-logs bekijken
 journalctl -u redbot.service -n 100 --no-pager
 journalctl -u redbot-watchdog.service -n 100 --no-pager

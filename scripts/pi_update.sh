@@ -10,6 +10,11 @@ BRANCH="${BRANCH:-master}"
 SEND_COCKPIT="${SEND_COCKPIT:-1}"
 SYSTEMD_SERVICE="${SYSTEMD_SERVICE:-redbot.service}"
 UPDATE_LOCK="${UPDATE_LOCK:-/tmp/redbot-update-in-progress}"
+VERBOSE="${VERBOSE:-0}"
+
+if [[ "${1:-}" == "--verbose" ]]; then
+  VERBOSE=1
+fi
 
 cd "$ROOT_DIR"
 touch "$UPDATE_LOCK"
@@ -110,7 +115,7 @@ start_bot() {
       journalctl -u "$SYSTEMD_SERVICE" -n 40 --no-pager || true
       exit 1
     fi
-    bot_status || true
+    echo "bot: RUNNING (systemd)"
     return 0
   fi
 
@@ -167,19 +172,41 @@ ensure_single_bot() {
 }
 
 echo "== Red Bot Update =="
-echo "root: $ROOT_DIR"
-echo "remote: $REMOTE/$BRANCH"
-echo
-
 stop_bot
 echo
 
 echo "== Git pull =="
-git pull "$REMOTE" "$BRANCH"
+GIT_LOG="/tmp/redbot_git_pull.log"
+BEFORE_REV="$(git rev-parse --short HEAD)"
+if git pull "$REMOTE" "$BRANCH" > "$GIT_LOG" 2>&1; then
+  AFTER_REV="$(git rev-parse --short HEAD)"
+  if [[ "$BEFORE_REV" == "$AFTER_REV" ]]; then
+    echo "git: already up to date ($AFTER_REV)"
+  else
+    echo "git: updated $BEFORE_REV -> $AFTER_REV"
+  fi
+  if [[ "$VERBOSE" == "1" ]]; then
+    cat "$GIT_LOG"
+  fi
+else
+  cat "$GIT_LOG"
+  exit 1
+fi
 echo
 
 echo "== Smoke check =="
-SEND_COCKPIT="$SEND_COCKPIT" "$ROOT_DIR/scripts/pi_smoke_check.sh"
+SMOKE_LOG="/tmp/redbot_pi_smoke_check.log"
+if SEND_COCKPIT="$SEND_COCKPIT" "$ROOT_DIR/scripts/pi_smoke_check.sh" > "$SMOKE_LOG" 2>&1; then
+  if [[ "$VERBOSE" == "1" ]]; then
+    cat "$SMOKE_LOG"
+  else
+    grep -E '^(compile: OK|rounding: OK|safety: |daily_status:|failed_steps:|adaptive_restrictions:|adaptive_restriction_outcomes:|daily_control_report:|operator_cockpit:|SMOKE CHECK OK)' "$SMOKE_LOG" || true
+  fi
+else
+  echo "smoke check failed; full output:"
+  cat "$SMOKE_LOG"
+  exit 1
+fi
 echo
 
 start_bot

@@ -27,7 +27,9 @@ import requests
 import queue  # <-- Toevoegen voor queue.Queue
 # [QUEUE CHANGE END]
 
-logger = setup_kraken_logger(logfile="logs/kraken_client.log", level=logging.DEBUG)
+_kraken_log_level_name = os.getenv("KRAKEN_LOG_LEVEL", "INFO").strip().upper()
+_kraken_log_level = getattr(logging, _kraken_log_level_name, logging.INFO)
+logger = setup_kraken_logger(logfile="logs/kraken_client.log", level=_kraken_log_level)
 
 
 def _round_bar_end_timestamp(time_s: float, iv_int: int) -> int:
@@ -244,6 +246,8 @@ class KrakenMixedClient:
         # [QUEUE CHANGE START]
         # Maak een nieuwe Queue voor fills
         self.trade_fills_queue = queue.Queue()
+        self._seen_private_trade_ids = set()
+        self._own_trades_snapshot_received = False
         # [QUEUE CHANGE END]
 
         # channel_id => (local_pair, interval_str, iv_int)
@@ -930,13 +934,42 @@ class KrakenMixedClient:
                 else:
                     logger.debug(f"[PrivateWS] dict => {data}")
             elif isinstance(data, list):
-                if len(data) >= 3 and data[-1] == "ownTrades":
-                    own_trades_arr = data[0]
+                channel_name = data[-2] if len(data) >= 3 and isinstance(data[-2], str) else None
+                if channel_name == "ownTrades":
+                    own_trades_arr = data[0] if isinstance(data[0], list) else []
+                    trade_ids = {
+                        txid
+                        for tx_info in own_trades_arr
+                        if isinstance(tx_info, dict)
+                        for txid in tx_info
+                    }
+                    if not self._own_trades_snapshot_received:
+                        self._seen_private_trade_ids.update(trade_ids)
+                        self._own_trades_snapshot_received = True
+                        logger.info(
+                            "[PrivateWS] ownTrades snapshot received => trades=%d; future fills will be processed",
+                            len(trade_ids),
+                        )
+                        return
+
+                    processed = 0
                     for tx_info in own_trades_arr:
+                        if not isinstance(tx_info, dict):
+                            continue
                         for txid, fill_data in tx_info.items():
+                            if txid in self._seen_private_trade_ids:
+                                continue
+                            self._seen_private_trade_ids.add(txid)
                             self._handle_own_trade(txid, fill_data)
+                            processed += 1
+                    if processed:
+                        logger.info("[PrivateWS] processed new ownTrades fills => count=%d", processed)
                 else:
-                    logger.debug(f"[PrivateWS] array => {data}")
+                    logger.debug(
+                        "[PrivateWS] unhandled array => channel=%s, items=%d",
+                        channel_name,
+                        len(data),
+                    )
             else:
                 logger.debug(f"[PrivateWS] ??? => {data}")
         except Exception as e:

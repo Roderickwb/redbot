@@ -1,0 +1,22 @@
+[Unit]
+Description=Red Bot trading runtime
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__RUN_USER__
+WorkingDirectory=__ROOT_DIR__
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-__ROOT_DIR__/.env
+ExecStartPre=/usr/bin/test -x __ROOT_DIR__/venv/bin/python3
+ExecStart=__ROOT_DIR__/venv/bin/python3 -m src.main
+Restart=always
+RestartSec=15
+KillSignal=SIGINT
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

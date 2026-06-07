@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Red Bot stale-candle watchdog every five minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=redbot-watchdog.service
+
+[Install]
+WantedBy=timers.target

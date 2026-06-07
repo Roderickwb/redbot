@@ -1,0 +1,9 @@
+[Unit]
+Description=Red Bot stale-candle watchdog
+After=redbot.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=__ROOT_DIR__
+ExecStart=/usr/bin/env bash __ROOT_DIR__/scripts/pi_runtime_watchdog.sh

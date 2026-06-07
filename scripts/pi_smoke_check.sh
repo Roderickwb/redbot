@@ -28,6 +28,7 @@ echo "== Compile critical modules =="
   src/analysis/per_coin_learning_loop.py \
   src/analysis/adaptive_restrictions.py \
   src/analysis/adaptive_restriction_outcome_tracker.py \
+  src/maintenance/runtime_healthcheck.py \
   src/analysis/indicator_edge_report.py \
   src/analysis/learning_context_integrator.py \
   src/analysis/exit_management_report.py \

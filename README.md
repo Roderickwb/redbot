@@ -17,6 +17,29 @@ Dit script doet automatisch:
 Gebruik dit als standaard na een nieuwe push.
 Je hoeft geen chmod, pkill of losse smoke-check meer te draaien.
 
+# eenmalig: automatisch herstel na stroomuitval installeren
+cd ~/redbot
+bash scripts/pi_install_services.sh
+
+Dit installeert:
+1. `redbot.service`: start de bot automatisch na reboot/stroomherstel en herstart na een crash
+2. `redbot-operator-app.service`: start de mobiele operator-app automatisch
+3. `redbot-watchdog.timer`: controleert iedere 5 minuten de nieuwste 5m candle
+4. bij candles ouder dan 30 minuten herstart de watchdog de bot, met 30 minuten restart-cooldown
+
+Na deze eenmalige installatie blijft `./scripts/pi_update.sh` werken en gebruikt het automatisch systemd.
+De operator-app hoeft niet meer handmatig gestart te worden. `bash scripts/operator_app.sh` blijft wel
+bruikbaar en herstart dan de systemd-appservice. Zet een blijvend `OPERATOR_APP_TOKEN` in `.env`, niet
+alleen met `export`, zodat het token ook na een reboot beschikbaar blijft.
+
+# snelle runtime- en candlecontrole
+cd ~/redbot
+bash scripts/pi_status.sh
+
+# service-logs bekijken
+journalctl -u redbot.service -n 100 --no-pager
+journalctl -u redbot-watchdog.service -n 100 --no-pager
+
 # operator app v1 starten op de Pi
 cd ~/redbot
 source venv/bin/activate

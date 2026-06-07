@@ -1,0 +1,21 @@
+[Unit]
+Description=Red Bot operator app
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__RUN_USER__
+WorkingDirectory=__ROOT_DIR__
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-__ROOT_DIR__/.env
+ExecStartPre=/usr/bin/test -x __ROOT_DIR__/venv/bin/python3
+ExecStart=__ROOT_DIR__/venv/bin/python3 -m uvicorn src.operator_app.backend.app:app --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

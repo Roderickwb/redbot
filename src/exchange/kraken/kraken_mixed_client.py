@@ -4,12 +4,13 @@
 
 import json
 import logging
+import os
 import time
 import threading
 import websocket
 import math
 
-websocket.enableTrace(True)  # Laat debug-logs van de websocket-library zien
+websocket.enableTrace(os.getenv("KRAKEN_WEBSOCKET_TRACE", "").strip().lower() in {"1", "true", "yes", "on"})
 
 import hashlib
 import hmac
@@ -41,14 +42,18 @@ def _round_bar_end_timestamp(time_s: float, iv_int: int) -> int:
 
     return: eindtijd in ms (int).
     """
-    dt = datetime.utcfromtimestamp(time_s)  # time_s = float(seconds)
+    if int(iv_int) <= 0:
+        raise ValueError(f"iv_int must be positive, got {iv_int}")
+
+    dt = datetime.fromtimestamp(time_s, timezone.utc)
     # Bereken het aantal minuten sinds middernacht
     total_minutes = dt.hour * 60 + dt.minute
     # Hoeveel "candles" van 'iv_int' minuten zijn er al voorbij
     bar_count = total_minutes // iv_int
-    # Start van deze candle
-    start_minute = bar_count * iv_int
-    start_dt = dt.replace(minute=start_minute, second=0, microsecond=0)
+    # Start vanaf middernacht rekenen. datetime.replace(minute=...) accepteert
+    # alleen 0..59 en faalde daardoor voor ieder tijdstip na het eerste uur.
+    midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_dt = midnight + timedelta(minutes=bar_count * iv_int)
     # Einde = start + iv_int
     end_dt = start_dt + timedelta(minutes=iv_int)
 

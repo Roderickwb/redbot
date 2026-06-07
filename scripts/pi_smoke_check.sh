@@ -41,6 +41,7 @@ echo "== Compile critical modules =="
   src/analysis/operator_cockpit.py \
   src/analysis/operator_app_snapshot.py \
   src/analysis/operator_decisions.py \
+  src/exchange/kraken/kraken_mixed_client.py \
   src/operator_app/backend/app.py \
   src/operator_app/backend/auth.py \
   src/operator_app/backend/data.py \
@@ -53,6 +54,24 @@ echo "== Compile critical modules =="
   src/analysis/run_daily_coin_profiles.py \
   src/strategy/trend_strategy_4h.py
 echo "compile: OK"
+echo
+
+echo "== Kraken candle rounding =="
+"$PYTHON_BIN" - <<'PY'
+from datetime import datetime, timezone
+from src.exchange.kraken.kraken_mixed_client import _round_bar_end_timestamp
+
+def rounded(iso_utc: str, interval: int) -> str:
+    dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
+    end_ms = _round_bar_end_timestamp(dt.timestamp(), interval)
+    return datetime.fromtimestamp(end_ms / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
+
+assert rounded("2026-06-07T13:38:55Z", 15) == "2026-06-07T13:45:00Z"
+assert rounded("2026-06-07T21:02:03Z", 15) == "2026-06-07T21:15:00Z"
+assert rounded("2026-06-07T23:59:59Z", 15) == "2026-06-08T00:00:00Z"
+assert rounded("2026-06-07T21:02:03Z", 240) == "2026-06-08T00:00:00Z"
+print("rounding: OK")
+PY
 echo
 
 echo "== Safety status =="

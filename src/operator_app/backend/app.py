@@ -629,7 +629,7 @@ FALLBACK_HTML = """
       const unsupportedApproved = adaptive.approved_without_paper_restriction || [];
       const unsupportedDetail = (item) => `${item.candidate_type || "approved"} | goedgekeurd, maar geen paper-strategy hook`;
       const outcomeRows = (adaptiveOutcomes.restrictions || []).filter((row) => row.applied_events || row.status === "READY_FOR_REVIEW");
-      const outcomeDetail = (row) => `${row.scope || "regel"} | toegepast=${row.applied_events || 0} labeled=${row.labeled_events || 0} R=${row.observed_R || 0}`;
+      const outcomeDetail = (row) => `${row.scope || "regel"} | toegepast=${row.applied_events || 0} labeled=${row.labeled_events || 0} verschil=${row.delta_R || 0} R | ${row.conclusion || row.status || ""}`;
       const strip = `
         <div class="summary-strip">
           ${metric("Beslissen", grouped.decisions.length)}

@@ -25,7 +25,11 @@ Dit installeert:
 1. `redbot.service`: start de bot automatisch na reboot/stroomherstel en herstart na een crash
 2. `redbot-operator-app.service`: start de mobiele operator-app automatisch
 3. `redbot-watchdog.timer`: controleert iedere 5 minuten de nieuwste 5m candle
-4. bij candles ouder dan 30 minuten herstart de watchdog de bot, met 30 minuten restart-cooldown
+4. `redbot-learning.timer`: labelt ieder uur uitkomsten en sluit paper-tests tegen hun baseline
+5. bij candles ouder dan 30 minuten herstart de watchdog de bot, met 30 minuten restart-cooldown
+
+De uurcyclus verrijkt context en meet goedgekeurde paper-tests, maar schrijft geen
+gedragsprofielen/risk multipliers zonder de expliciete optie `--write-learning-profiles`.
 
 Na deze eenmalige installatie blijft `./scripts/pi_update.sh` werken en gebruikt het automatisch systemd.
 De operator-app hoeft niet meer handmatig gestart te worden. `bash scripts/operator_app.sh` blijft wel

@@ -1,0 +1,14 @@
+[Unit]
+Description=Red Bot closed learning cycle
+After=redbot.service
+
+[Service]
+Type=oneshot
+User=__RUN_USER__
+Group=__RUN_USER__
+WorkingDirectory=__ROOT_DIR__
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-__ROOT_DIR__/.env
+ExecStart=/usr/bin/env bash __ROOT_DIR__/scripts/pi_learning_cycle.sh
+Nice=10
+TimeoutStartSec=45min

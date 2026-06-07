@@ -48,6 +48,7 @@ def _parse_windows(raw: str) -> list[int]:
 
 def run_strategy_learning_job(
     apply_labels: bool = True,
+    apply_profiles: bool = False,
     label_limit: int = 1000,
     report_limit: int = 5000,
     windows: Optional[list[int]] = None,
@@ -74,6 +75,7 @@ def run_strategy_learning_job(
             "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "job": {
                 "apply_labels": apply_labels,
+                "apply_profiles": apply_profiles,
                 "label_limit": label_limit,
                 "report_limit": report_limit,
                 "windows": windows or [30, 100, 500],
@@ -95,7 +97,7 @@ def run_strategy_learning_job(
         with open(proposals_path, "w", encoding="utf-8") as f:
             json.dump(proposals, f, indent=2, ensure_ascii=False)
         profiles_written = 0
-        if apply_labels:
+        if apply_profiles:
             profiles_written = proposer.write_coin_profiles_to_db(payload, db=db)
 
         notification_sent = False
@@ -114,6 +116,7 @@ def run_strategy_learning_job(
             "proposals_path": proposals_path,
             "proposal_symbols": proposals.get("n_symbols", 0),
             "profiles_written": profiles_written,
+            "profiles_applied": apply_profiles,
             "notification_sent": notification_sent,
         }
     finally:
@@ -177,6 +180,11 @@ def _format_daily_summary(payload: dict, proposals: dict) -> str:
 def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run autonomous strategy-event learning job.")
     parser.add_argument("--dry-run", action="store_true", help="Do not write event labels; still writes report file.")
+    parser.add_argument(
+        "--write-profiles",
+        action="store_true",
+        help="Explicitly write proposed behavioral coin profiles, including risk multipliers.",
+    )
     parser.add_argument("--label-limit", type=int, default=1000, help="Max pending events to label.")
     parser.add_argument("--report-limit", type=int, default=5000, help="Max labeled events to read for report.")
     parser.add_argument("--windows", type=str, default="30,100,500", help="Comma-separated report windows.")
@@ -188,6 +196,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     result = run_strategy_learning_job(
         apply_labels=not args.dry_run,
+        apply_profiles=args.write_profiles,
         label_limit=args.label_limit,
         report_limit=args.report_limit,
         windows=_parse_windows(args.windows),

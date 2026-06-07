@@ -74,6 +74,54 @@ print("rounding: OK")
 PY
 echo
 
+echo "== Adaptive learning loop math =="
+"$PYTHON_BIN" - <<'PY'
+from src.analysis.adaptive_restriction_outcome_tracker import (
+    AdaptiveRestrictionOutcomeTracker,
+    candidate_effect_r,
+    outcome_conclusion,
+)
+from src.analysis.adaptive_restrictions import _restriction_id
+from inspect import signature
+from src.analysis.daily_analysis_job import run_daily_analysis_job
+from src.analysis.strategy_learning_job import run_strategy_learning_job
+
+restriction = {"risk_multiplier": 0.5}
+assert candidate_effect_r("pre_gpt_skip", -1.0, restriction, {}) == (0.0, 1.0)
+assert candidate_effect_r("pre_gpt_skip", 2.0, restriction, {}) == (0.0, -2.0)
+assert candidate_effect_r("sizing", -1.0, restriction, {}) == (-0.5, 0.5)
+assert candidate_effect_r("sizing", 2.0, restriction, {}) == (1.0, -1.0)
+actual = {"adaptive_restriction_sizing": {"restrictions": [{"restriction_id": "r1", "before": 0.8, "after": 0.4}]}}
+assert candidate_effect_r("sizing", 2.0, {"restriction_id": "r1", "risk_multiplier": 0.9}, actual) == (1.0, -1.0)
+assert outcome_conclusion(9, 2.0) == "COLLECT_MORE"
+assert outcome_conclusion(10, 0.1) == "READY_FOR_PROMOTION_REVIEW"
+assert outcome_conclusion(10, -0.1) == "STOP_PAPER"
+assert outcome_conclusion(10, 0.0) == "INCONCLUSIVE"
+assert signature(run_strategy_learning_job).parameters["apply_profiles"].default is False
+assert signature(run_daily_analysis_job).parameters["apply_profiles"].default is False
+item = {"id": "same_source"}
+base = {"scope": "coin", "symbol": "ALGO-EUR", "rule_id": "risk_multiplier_0.5", "state": "reduced_risk", "match": {"symbol": "ALGO-EUR"}}
+assert _restriction_id(item, {**base, "evidence": {"net_R": 1.0}}) == _restriction_id(item, {**base, "evidence": {"net_R": 2.0}})
+assert _restriction_id(item, base) != _restriction_id(item, {**base, "rule_id": "strict_confirmation"})
+stopped = AdaptiveRestrictionOutcomeTracker()._restriction_row({
+    "restriction_id": "stopped",
+    "auto_suspended": True,
+    "outcome_conclusion": {
+        "conclusion": "STOP_PAPER",
+        "applied_events": 12,
+        "labeled_events": 10,
+        "baseline_R": 2.0,
+        "candidate_R": 0.0,
+        "delta_R": -2.0,
+        "avg_delta_R": -0.2,
+    },
+}, [])
+assert stopped["conclusion"] == "STOP_PAPER"
+assert stopped["labeled_events"] == 10
+print("adaptive_loop_math: OK")
+PY
+echo
+
 echo "== Safety status =="
 "$PYTHON_BIN" -m src.analysis.safety_control status > /tmp/redbot_safety_status.json
 "$PYTHON_BIN" - <<'PY'
@@ -235,6 +283,7 @@ for name in (
         summary = result.get("summary") or {}
         print(
             f" status={result.get('status')} active={summary.get('active_restrictions')} "
+            f"suspended={summary.get('auto_suspended_restrictions')} "
             f"approved={summary.get('approved_items')} supported={summary.get('approved_supported_items')} "
             f"unsupported={summary.get('approved_unsupported_items')} "
             f"coin={summary.get('coin_restrictions')} cluster={summary.get('cluster_restrictions')} "
@@ -246,10 +295,11 @@ for name in (
         print(
             f" status={result.get('status')} active={summary.get('active_restrictions')} "
             f"with_events={summary.get('restrictions_with_events')} "
-            f"labeled={summary.get('restrictions_with_labeled_outcomes')} "
+            f"labeled={summary.get('labeled_events')} pending={summary.get('pending_events')} "
             f"ready={summary.get('ready_for_review')} collecting={summary.get('collecting')} "
             f"applied={summary.get('applied_events')} sizing={summary.get('sizing_adjustments')} "
-            f"skips={summary.get('pre_gpt_skips')} obs_R={summary.get('observed_r')}"
+            f"skips={summary.get('pre_gpt_skips')} delta_R={summary.get('delta_r')} "
+            f"positive={summary.get('positive_conclusions')} harmful={summary.get('harmful_conclusions')}"
         )
     elif name == "recommendation_quality_tracker":
         summary = result.get("summary") or {}

@@ -16,7 +16,7 @@ if [[ ! -x "$ROOT_DIR/venv/bin/python3" ]]; then
   exit 1
 fi
 
-for unit in redbot.service redbot-operator-app.service redbot-watchdog.service redbot-watchdog.timer; do
+for unit in redbot.service redbot-operator-app.service redbot-watchdog.service redbot-watchdog.timer redbot-learning.service redbot-learning.timer; do
   if [[ ! -f "$UNIT_SOURCE_DIR/$unit" ]]; then
     echo "install failed: missing $UNIT_SOURCE_DIR/$unit"
     exit 1
@@ -38,11 +38,11 @@ echo "== Install Red Bot systemd services =="
 echo "root: $ROOT_DIR"
 echo "user: $RUN_USER"
 
-for unit in redbot.service redbot-operator-app.service redbot-watchdog.service redbot-watchdog.timer; do
+for unit in redbot.service redbot-operator-app.service redbot-watchdog.service redbot-watchdog.timer redbot-learning.service redbot-learning.timer; do
   render_unit "$unit"
 done
 
-"${SUDO[@]}" systemctl stop redbot-watchdog.timer redbot.service redbot-operator-app.service 2>/dev/null || true
+"${SUDO[@]}" systemctl stop redbot-watchdog.timer redbot-learning.timer redbot-learning.service redbot.service redbot-operator-app.service 2>/dev/null || true
 
 LEGACY_BOT_PIDS="$(pgrep -f "$ROOT_DIR/venv/bin/python3 -m src.main" || true)"
 if [[ -n "$LEGACY_BOT_PIDS" ]]; then
@@ -59,16 +59,16 @@ if [[ -n "$LEGACY_APP_PIDS" ]]; then
 fi
 
 mkdir -p "$ROOT_DIR/logs"
-for unit in redbot.service redbot-operator-app.service redbot-watchdog.service redbot-watchdog.timer; do
+for unit in redbot.service redbot-operator-app.service redbot-watchdog.service redbot-watchdog.timer redbot-learning.service redbot-learning.timer; do
   "${SUDO[@]}" install -m 0644 "$TMP_DIR/$unit" "/etc/systemd/system/$unit"
 done
 
 "${SUDO[@]}" systemctl daemon-reload
-"${SUDO[@]}" systemctl enable --now redbot.service redbot-operator-app.service redbot-watchdog.timer
+"${SUDO[@]}" systemctl enable --now redbot.service redbot-operator-app.service redbot-watchdog.timer redbot-learning.timer
 sleep 5
 
 echo
 echo "== Installed status =="
-systemctl --no-pager --full status redbot.service redbot-operator-app.service redbot-watchdog.timer || true
+systemctl --no-pager --full status redbot.service redbot-operator-app.service redbot-watchdog.timer redbot-learning.timer || true
 echo
 echo "Services installed. Future power restores will start the bot automatically."

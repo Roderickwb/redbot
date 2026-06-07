@@ -22,6 +22,7 @@ from typing import Any, Iterable, Optional
 DEFAULT_RECOMMENDATIONS_PATH = os.path.join("analysis", "recommendations", "latest_recommendation_aggregator.json")
 DEFAULT_OUTPUT_DIR = os.path.join("analysis", "adaptive_restrictions")
 DEFAULT_LATEST_FILE = "latest_adaptive_restrictions.json"
+DEFAULT_OUTCOMES_PATH = os.path.join("analysis", "adaptive_restrictions", "latest_adaptive_restriction_outcomes.json")
 
 APPROVED_STATUSES = {
     "approved_pending_live_gate",
@@ -85,20 +86,38 @@ def _action_state(action_type: str) -> str:
 
 
 def _restriction_id(item: dict, payload: dict) -> str:
-    return f"arest_{_stable_hash({'item': item.get('id'), 'payload': payload})}"
+    # Evidence changes every analysis cycle. Keep one experiment identity until
+    # the actual rule, scope or match criteria change.
+    identity = {
+        "source_item_id": item.get("id"),
+        "scope": payload.get("scope"),
+        "symbol": payload.get("symbol"),
+        "rule_id": payload.get("rule_id"),
+        "state": payload.get("state"),
+        "match": payload.get("match") or {},
+    }
+    return f"arest_{_stable_hash(identity)}"
 
 
 class AdaptiveRestrictionBuilder:
     def __init__(
         self,
         recommendations_path: str = DEFAULT_RECOMMENDATIONS_PATH,
+        outcomes_path: str = DEFAULT_OUTCOMES_PATH,
         output_dir: str = DEFAULT_OUTPUT_DIR,
     ):
         self.recommendations_path = recommendations_path
+        self.outcomes_path = outcomes_path
         self.output_dir = output_dir
 
     def build(self) -> dict:
         recommendations = _load_json(self.recommendations_path, {"items": [], "resolved_items": []})
+        previous_outcomes = _load_json(self.outcomes_path, {"restrictions": []})
+        conclusions = {
+            str(row.get("restriction_id")): row
+            for row in previous_outcomes.get("restrictions", []) or []
+            if isinstance(row, dict) and row.get("restriction_id")
+        }
         approved_items = self._approved_items(recommendations)
         supported_items = [
             item for item in approved_items
@@ -108,16 +127,33 @@ class AdaptiveRestrictionBuilder:
             item for item in approved_items
             if item.get("candidate_type") not in SUPPORTED_CANDIDATES
         ]
-        restrictions = [r for item in supported_items for r in self._restrictions_from_item(item)]
+        generated_restrictions = [r for item in supported_items for r in self._restrictions_from_item(item)]
+        restrictions = []
+        suspended_restrictions = []
+        for restriction in generated_restrictions:
+            outcome = conclusions.get(str(restriction.get("restriction_id"))) or {}
+            if outcome.get("conclusion") == "STOP_PAPER":
+                restriction["auto_suspended"] = True
+                restriction["suspension_reason"] = "measured_candidate_underperformed_baseline"
+                restriction["outcome_conclusion"] = outcome
+                suspended_restrictions.append(restriction)
+            else:
+                restrictions.append(restriction)
         restrictions.sort(key=lambda r: (str(r.get("scope")), str(r.get("symbol")), str(r.get("rule_id"))))
+        suspended_restrictions.sort(key=lambda r: (str(r.get("scope")), str(r.get("symbol")), str(r.get("rule_id"))))
         active_source_ids = sorted({
             str(r.get("source_item_id"))
             for r in restrictions
             if r.get("source_item_id")
         })
+        generated_source_ids = {
+            str(r.get("source_item_id"))
+            for r in generated_restrictions
+            if r.get("source_item_id")
+        }
         supported_without_restriction = [
             item for item in supported_items
-            if str(item.get("id")) not in active_source_ids
+            if str(item.get("id")) not in generated_source_ids
         ]
 
         summary = {
@@ -126,6 +162,7 @@ class AdaptiveRestrictionBuilder:
             "approved_unsupported_items": len(unsupported_items),
             "approved_supported_without_restriction": len(supported_without_restriction),
             "active_restrictions": len(restrictions),
+            "auto_suspended_restrictions": len(suspended_restrictions),
             "coin_restrictions": sum(1 for r in restrictions if r.get("scope") == "coin"),
             "cluster_restrictions": sum(1 for r in restrictions if r.get("scope") == "cluster"),
             "reduced_risk": sum(1 for r in restrictions if r.get("state") == "reduced_risk"),
@@ -139,6 +176,7 @@ class AdaptiveRestrictionBuilder:
             "status": "ACTIVE" if restrictions else "WATCH",
             "summary": summary,
             "restrictions": restrictions,
+            "suspended_restrictions": suspended_restrictions,
             "active_source_ids": active_source_ids,
             "approved_supported_without_restriction": [
                 self._approval_snapshot(item, reason="supported_but_missing_rule_payload")
@@ -149,6 +187,7 @@ class AdaptiveRestrictionBuilder:
                 for item in unsupported_items
             ],
             "source_path": self.recommendations_path,
+            "outcomes_path": self.outcomes_path,
             "output_path": os.path.join(self.output_dir, DEFAULT_LATEST_FILE),
             "live_effect": False,
         }
@@ -260,10 +299,12 @@ class AdaptiveRestrictionBuilder:
 
 def run_adaptive_restrictions(
     recommendations_path: str = DEFAULT_RECOMMENDATIONS_PATH,
+    outcomes_path: str = DEFAULT_OUTCOMES_PATH,
     output_dir: str = DEFAULT_OUTPUT_DIR,
 ) -> dict:
     return AdaptiveRestrictionBuilder(
         recommendations_path=recommendations_path,
+        outcomes_path=outcomes_path,
         output_dir=output_dir,
     ).build()
 
@@ -271,10 +312,12 @@ def run_adaptive_restrictions(
 def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Build active adaptive paper restrictions from operator approvals.")
     parser.add_argument("--recommendations-path", type=str, default=DEFAULT_RECOMMENDATIONS_PATH)
+    parser.add_argument("--outcomes-path", type=str, default=DEFAULT_OUTCOMES_PATH)
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args(list(argv) if argv is not None else None)
     report = run_adaptive_restrictions(
         recommendations_path=args.recommendations_path,
+        outcomes_path=args.outcomes_path,
         output_dir=args.output_dir,
     )
     print(json.dumps({

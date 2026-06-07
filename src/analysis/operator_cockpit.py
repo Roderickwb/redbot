@@ -614,8 +614,10 @@ def format_status_summary(cockpit: dict, restriction_outcomes: Optional[dict] = 
         ),
         (
             f"Toegepast in paper: restrictions={outcomes.get('active_restrictions', 0)} | "
-            f"events={outcomes.get('applied_events', 0)} | labeled={outcomes.get('restrictions_with_labeled_outcomes', 0)} | "
-            f"observed_R={outcomes.get('observed_r', 0.0)}"
+            f"events={outcomes.get('applied_events', 0)} | labeled={outcomes.get('labeled_events', 0)} | "
+            f"baseline_R={outcomes.get('baseline_r', 0.0)} | kandidaat_R={outcomes.get('candidate_r', 0.0)} | "
+            f"verschil_R={outcomes.get('delta_r', 0.0)} | positief={outcomes.get('positive_conclusions', 0)} | "
+            f"gestopt={outcomes.get('harmful_conclusions', 0)}"
         ),
         (
             f"Besluiten: nu={recommendations.get('needs_operator_review', 0)} | "

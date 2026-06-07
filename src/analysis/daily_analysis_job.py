@@ -648,6 +648,7 @@ def _build_operator_cockpit(send_cockpit: bool) -> dict:
 
 def run_daily_analysis_job(
     apply_labels: bool = True,
+    apply_profiles: bool = False,
     relabel_existing: bool = False,
     label_limit: int = 1000,
     report_limit: int = 5000,
@@ -671,6 +672,7 @@ def run_daily_analysis_job(
     steps["strategy_learning"] = _run_step(
         lambda: run_strategy_learning_job(
             apply_labels=apply_labels,
+            apply_profiles=apply_profiles,
             label_limit=label_limit,
             report_limit=report_limit,
             windows=windows or [30, 100, 500],
@@ -832,6 +834,11 @@ def run_daily_analysis_job(
     steps["live_readiness_gate"] = _run_step(
         lambda: _build_live_readiness_gate(),
     )
+    # Measure existing restrictions first, so recommendations and restriction
+    # activation can react to fresh labeled outcomes in this same cycle.
+    steps["pre_adaptive_restriction_outcomes"] = _run_step(
+        lambda: _build_adaptive_restriction_outcomes(limit=report_limit),
+    )
     steps["recommendation_aggregator"] = _run_step(
         lambda: _build_recommendation_aggregator(),
     )
@@ -857,6 +864,7 @@ def run_daily_analysis_job(
         "duration_sec": round(time.time() - started, 3),
         "config": {
             "apply_labels": apply_labels,
+            "apply_profiles": apply_profiles,
             "relabel_existing": relabel_existing,
             "label_limit": label_limit,
             "report_limit": report_limit,
@@ -921,7 +929,16 @@ def _summary_for_cli(payload: dict) -> dict:
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run the full daily bot analysis stack.")
-    parser.add_argument("--dry-run-labels", action="store_true", help="Do not write strategy_event labels or coin profiles.")
+    parser.add_argument(
+        "--dry-run-labels",
+        action="store_true",
+        help="Do not write strategy_event outcome labels; reports and context integration still run.",
+    )
+    parser.add_argument(
+        "--write-learning-profiles",
+        action="store_true",
+        help="Explicitly write proposed behavioral coin profiles, including risk multipliers.",
+    )
     parser.add_argument("--relabel", action="store_true", help="Rebuild existing labeled outcomes too.")
     parser.add_argument("--label-limit", type=int, default=1000, help="Max events to label.")
     parser.add_argument("--report-limit", type=int, default=5000, help="Max labeled events to read per report.")
@@ -942,6 +959,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     result = run_daily_analysis_job(
         apply_labels=not args.dry_run_labels,
+        apply_profiles=args.write_learning_profiles,
         relabel_existing=args.relabel,
         label_limit=args.label_limit,
         report_limit=args.report_limit,

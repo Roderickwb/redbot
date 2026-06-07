@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Red Bot closed learning cycle hourly
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=redbot-learning.service
+
+[Install]
+WantedBy=timers.target

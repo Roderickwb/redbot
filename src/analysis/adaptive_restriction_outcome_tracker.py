@@ -28,6 +28,8 @@ DEFAULT_RESTRICTIONS_PATH = os.path.join(
 )
 DEFAULT_OUTPUT_DIR = os.path.join("analysis", "adaptive_restrictions")
 DEFAULT_LATEST_FILE = "latest_adaptive_restriction_outcomes.json"
+MIN_LABELED_FOR_CONCLUSION = 10
+MIN_AVG_DELTA_R = 0.10
 
 
 def _utc_now() -> str:
@@ -108,6 +110,37 @@ def _applied_kind(features: dict) -> str:
     return "unknown"
 
 
+def candidate_effect_r(kind: str, baseline_r: float, restriction: dict, features: dict) -> tuple[float, float]:
+    """Return candidate R and delta versus the unrestricted baseline."""
+    if kind == "pre_gpt_skip":
+        candidate_r = 0.0
+    elif kind == "sizing":
+        multiplier = _safe_float(restriction.get("risk_multiplier"), 1.0)
+        sizing = features.get("adaptive_restriction_sizing") or {}
+        for applied in sizing.get("restrictions", []) or []:
+            if str(applied.get("restriction_id")) != str(restriction.get("restriction_id")):
+                continue
+            before = _safe_float(applied.get("before"), 0.0)
+            after = _safe_float(applied.get("after"), 0.0)
+            if before > 0:
+                multiplier = after / before
+            break
+        candidate_r = baseline_r * min(max(multiplier, 0.0), 1.0)
+    else:
+        candidate_r = baseline_r
+    return candidate_r, candidate_r - baseline_r
+
+
+def outcome_conclusion(labeled_count: int, avg_delta_r: float) -> str:
+    if labeled_count < MIN_LABELED_FOR_CONCLUSION:
+        return "COLLECT_MORE"
+    if avg_delta_r >= MIN_AVG_DELTA_R:
+        return "READY_FOR_PROMOTION_REVIEW"
+    if avg_delta_r <= -MIN_AVG_DELTA_R:
+        return "STOP_PAPER"
+    return "INCONCLUSIVE"
+
+
 class AdaptiveRestrictionOutcomeTracker:
     def __init__(
         self,
@@ -121,10 +154,15 @@ class AdaptiveRestrictionOutcomeTracker:
 
     def build(self, limit: int = 10000) -> dict:
         restriction_report = _load_json(self.restrictions_path, {})
-        restrictions = [
+        active_restrictions = [
             row for row in restriction_report.get("restrictions", []) or []
             if isinstance(row, dict) and row.get("restriction_id")
         ]
+        suspended_restrictions = [
+            row for row in restriction_report.get("suspended_restrictions", []) or []
+            if isinstance(row, dict) and row.get("restriction_id")
+        ]
+        restrictions = active_restrictions + suspended_restrictions
         events, event_error = self._load_events(limit=limit)
         rows = [
             self._restriction_row(restriction, events)
@@ -135,17 +173,28 @@ class AdaptiveRestrictionOutcomeTracker:
         labeled = [row for row in rows if row.get("labeled_events", 0) > 0]
         ready = [row for row in rows if row.get("status") == "READY_FOR_REVIEW"]
         collecting = [row for row in rows if row.get("status") == "COLLECTING"]
+        positive = [row for row in rows if row.get("conclusion") == "READY_FOR_PROMOTION_REVIEW"]
+        harmful = [row for row in rows if row.get("conclusion") == "STOP_PAPER"]
+        inconclusive = [row for row in rows if row.get("conclusion") == "INCONCLUSIVE"]
 
         summary = {
-            "active_restrictions": len(restrictions),
+            "active_restrictions": len(active_restrictions),
+            "suspended_restrictions": len(suspended_restrictions),
             "restrictions_with_events": len(applied),
             "restrictions_with_labeled_outcomes": len(labeled),
             "ready_for_review": len(ready),
             "collecting": len(collecting),
+            "positive_conclusions": len(positive),
+            "harmful_conclusions": len(harmful),
+            "inconclusive_conclusions": len(inconclusive),
             "applied_events": sum(row.get("applied_events", 0) for row in rows),
+            "labeled_events": sum(row.get("labeled_events", 0) for row in rows),
+            "pending_events": sum(row.get("pending_events", 0) for row in rows),
             "pre_gpt_skips": sum(row.get("pre_gpt_skips", 0) for row in rows),
             "sizing_adjustments": sum(row.get("sizing_adjustments", 0) for row in rows),
-            "observed_r": round(sum(_safe_float(row.get("observed_R")) for row in rows), 6),
+            "baseline_r": round(sum(_safe_float(row.get("baseline_R")) for row in rows), 6),
+            "candidate_r": round(sum(_safe_float(row.get("candidate_R")) for row in rows), 6),
+            "delta_r": round(sum(_safe_float(row.get("delta_R")) for row in rows), 6),
             "event_error": event_error,
             "live_effect": False,
         }
@@ -196,7 +245,9 @@ class AdaptiveRestrictionOutcomeTracker:
 
         labeled = []
         pending = 0
-        observed_r = 0.0
+        baseline_r = 0.0
+        candidate_r = 0.0
+        delta_r = 0.0
         pre_gpt_skips = 0
         sizing_adjustments = 0
         latest_ts = None
@@ -211,16 +262,38 @@ class AdaptiveRestrictionOutcomeTracker:
             r_value = _cf_r(outcome)
             if str(event.get("outcome_status") or "") == "labeled" and r_value is not None:
                 labeled.append(event)
-                observed_r += r_value
+                event_candidate_r, event_delta_r = candidate_effect_r(kind, r_value, restriction, features)
+                baseline_r += r_value
+                candidate_r += event_candidate_r
+                delta_r += event_delta_r
             else:
                 pending += 1
 
         applied_count = len(matched)
         labeled_count = len(labeled)
+        avg_delta_r = delta_r / labeled_count if labeled_count else 0.0
+        conclusion = outcome_conclusion(labeled_count, avg_delta_r)
+        prior_conclusion = restriction.get("outcome_conclusion") or {}
+        prior_labeled = int(prior_conclusion.get("labeled_events") or 0)
+        if (
+            restriction.get("auto_suspended")
+            and prior_conclusion.get("conclusion") == "STOP_PAPER"
+            and prior_labeled > labeled_count
+        ):
+            # A stopped test creates no new events, so its original evidence
+            # eventually falls outside the rolling event window. Preserve the
+            # measured stop instead of silently reactivating the same rule.
+            labeled_count = prior_labeled
+            applied_count = max(applied_count, int(prior_conclusion.get("applied_events") or 0))
+            baseline_r = _safe_float(prior_conclusion.get("baseline_R"))
+            candidate_r = _safe_float(prior_conclusion.get("candidate_R"))
+            delta_r = _safe_float(prior_conclusion.get("delta_R"))
+            avg_delta_r = _safe_float(prior_conclusion.get("avg_delta_R"))
+            conclusion = "STOP_PAPER"
         status = "NO_EVENTS"
         if applied_count:
             status = "COLLECTING"
-        if labeled_count >= 10 or (applied_count >= 10 and pending == 0):
+        if conclusion in {"READY_FOR_PROMOTION_REVIEW", "STOP_PAPER", "INCONCLUSIVE"}:
             status = "READY_FOR_REVIEW"
 
         evidence = restriction.get("evidence") or {}
@@ -232,14 +305,18 @@ class AdaptiveRestrictionOutcomeTracker:
             "symbol": restriction.get("symbol"),
             "state": restriction.get("state"),
             "rule_id": restriction.get("rule_id"),
+            "auto_suspended": bool(restriction.get("auto_suspended")),
             "status": status,
+            "conclusion": conclusion,
             "applied_events": applied_count,
             "labeled_events": labeled_count,
             "pending_events": pending,
             "pre_gpt_skips": pre_gpt_skips,
             "sizing_adjustments": sizing_adjustments,
-            "observed_R": round(observed_r, 6),
-            "avg_observed_R": round(observed_r / labeled_count, 6) if labeled_count else 0.0,
+            "baseline_R": round(baseline_r, 6),
+            "candidate_R": round(candidate_r, 6),
+            "delta_R": round(delta_r, 6),
+            "avg_delta_R": round(avg_delta_r, 6),
             "expected_net_R": best.get("estimated_net_R"),
             "candidate_baseline_R": best.get("baseline_R"),
             "candidate_after_R": best.get("candidate_R") or best.get("estimated_after_R"),

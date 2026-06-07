@@ -30,6 +30,9 @@ DEFAULT_ML_EDGE = os.path.join("analysis", "ml_models", "latest_edge_model_repor
 DEFAULT_LOSS_DIAGNOSIS = os.path.join("analysis", "loss_diagnosis", "latest_loss_diagnosis_report.json")
 DEFAULT_ENTRY_RULE_CANDIDATES = os.path.join("analysis", "entry_rules", "latest_entry_rule_candidate_simulator.json")
 DEFAULT_PER_COIN_LEARNING = os.path.join("analysis", "per_coin_learning", "latest_per_coin_learning_loop.json")
+DEFAULT_ADAPTIVE_RESTRICTION_OUTCOMES = os.path.join(
+    "analysis", "adaptive_restrictions", "latest_adaptive_restriction_outcomes.json"
+)
 DEFAULT_EXIT_MANAGEMENT = os.path.join("analysis", "exits", "latest_exit_management_report.json")
 DEFAULT_POSITION_LIFECYCLE = os.path.join("analysis", "positions", "latest_position_lifecycle_report.json")
 
@@ -85,6 +88,7 @@ class RecommendationAggregator:
         loss_diagnosis_path: str = DEFAULT_LOSS_DIAGNOSIS,
         entry_rule_candidates_path: str = DEFAULT_ENTRY_RULE_CANDIDATES,
         per_coin_learning_path: str = DEFAULT_PER_COIN_LEARNING,
+        adaptive_restriction_outcomes_path: str = DEFAULT_ADAPTIVE_RESTRICTION_OUTCOMES,
         exit_management_path: str = DEFAULT_EXIT_MANAGEMENT,
         position_lifecycle_path: str = DEFAULT_POSITION_LIFECYCLE,
     ):
@@ -99,6 +103,7 @@ class RecommendationAggregator:
             "loss_diagnosis": loss_diagnosis_path,
             "entry_rule_candidates": entry_rule_candidates_path,
             "per_coin_learning": per_coin_learning_path,
+            "adaptive_restriction_outcomes": adaptive_restriction_outcomes_path,
             "exit_management": exit_management_path,
             "position_lifecycle": position_lifecycle_path,
         }
@@ -115,6 +120,7 @@ class RecommendationAggregator:
         items.extend(self._from_loss_diagnosis(reports.get("loss_diagnosis") or {}))
         items.extend(self._from_entry_rule_candidates(reports.get("entry_rule_candidates") or {}))
         items.extend(self._from_per_coin_learning(reports.get("per_coin_learning") or {}))
+        items.extend(self._from_adaptive_restriction_outcomes(reports.get("adaptive_restriction_outcomes") or {}))
         items.extend(self._from_indicator_edge(reports.get("indicator_edge") or {}))
         items.extend(self._from_exit_management(reports.get("exit_management") or {}))
         items.extend(self._from_position_lifecycle(reports.get("position_lifecycle") or {}))
@@ -241,6 +247,55 @@ class RecommendationAggregator:
                 evidence={"verdict": verdict, "primary_issue": issue, "summary": summary},
             )]
         return []
+
+    def _from_adaptive_restriction_outcomes(self, report: dict) -> list[dict]:
+        items = []
+        for row in report.get("restrictions", []) or []:
+            conclusion = str(row.get("conclusion") or "")
+            rid = str(row.get("restriction_id") or "")
+            if not rid:
+                continue
+            evidence = dict(row)
+            if conclusion == "READY_FOR_PROMOTION_REVIEW":
+                items.append(self._item(
+                    area="adaptive_learning",
+                    candidate_type="adaptive_restriction_promotion",
+                    subject=rid,
+                    status=STATUS_REVIEW,
+                    title="Paper-test presteert beter dan baseline",
+                    headline=f"De maatregel verbeterde de gemeten uitkomst met {row.get('delta_R')} R.",
+                    why="De gesloten paper-loop heeft genoeg gelabelde uitkomsten en ziet een positief verschil tegenover baseline.",
+                    default_action="wait",
+                    effect_level="strategy_live",
+                    evidence=evidence,
+                ))
+            elif conclusion == "STOP_PAPER":
+                items.append(self._item(
+                    area="adaptive_learning",
+                    candidate_type="adaptive_restriction_stopped",
+                    subject=rid,
+                    status=STATUS_AUTO_CONTEXT,
+                    title="Schadelijke paper-test automatisch gestopt",
+                    headline=f"De maatregel presteerde {row.get('delta_R')} R slechter dan baseline en is gepauzeerd.",
+                    why="Paper-tests mogen autonoom stoppen wanneer voldoende gelabeld bewijs duidelijk negatief is.",
+                    default_action="auto_accept_context",
+                    effect_level="shadow_only",
+                    evidence=evidence,
+                ))
+            elif conclusion == "INCONCLUSIVE":
+                items.append(self._item(
+                    area="adaptive_learning",
+                    candidate_type="adaptive_restriction_inconclusive",
+                    subject=rid,
+                    status=STATUS_WAIT,
+                    title="Paper-test heeft nog geen duidelijke winnaar",
+                    headline="De test heeft genoeg uitkomsten, maar het verschil met baseline is nog te klein.",
+                    why="De bot houdt de test in paper en verzamelt nieuw bewijs.",
+                    default_action="wait",
+                    effect_level="shadow_only",
+                    evidence=evidence,
+                ))
+        return items
 
     def _from_pre_gpt_gate(self, report: dict) -> list[dict]:
         summary = report.get("summary", {}) or {}
@@ -608,6 +663,37 @@ class RecommendationAggregator:
                 "current_use": "per-coin learning proposal",
                 "missing_use": "nog geen actieve coin-specifieke policy/profile wijziging",
             }
+        if ctype in {
+            "adaptive_restriction_promotion",
+            "adaptive_restriction_stopped",
+            "adaptive_restriction_inconclusive",
+        }:
+            evidence = item.get("evidence") or {}
+            return {
+                "candidate_kind": "opportunity" if ctype == "adaptive_restriction_promotion" else "problem",
+                "improvement_area": "closed_learning_loop",
+                "autonomy_stage": (
+                    "promotion_review"
+                    if ctype == "adaptive_restriction_promotion"
+                    else "paper_auto_stopped"
+                    if ctype == "adaptive_restriction_stopped"
+                    else "paper_collecting"
+                ),
+                "learning_question": "Presteert deze goedgekeurde maatregel aantoonbaar beter dan dezelfde situaties zonder maatregel?",
+                "proposed_change": (
+                    "Beoordeel promotie naar de volgende veilige fase."
+                    if ctype == "adaptive_restriction_promotion"
+                    else "Laat de maatregel gepauzeerd en analyseer heropencriteria."
+                    if ctype == "adaptive_restriction_stopped"
+                    else "Blijf bewijs verzamelen zonder uitbreiding."
+                ),
+                "test_plan": (
+                    f"Baseline {evidence.get('baseline_R')} R versus kandidaat {evidence.get('candidate_R')} R; "
+                    f"verschil {evidence.get('delta_R')} R over {evidence.get('labeled_events')} gelabelde events."
+                ),
+                "current_use": "gesloten paper-loop",
+                "missing_use": "geen live effect zonder expliciete vervolgbeslissing",
+            }
         if ctype in {"pre_gpt_gate_shadow", "pre_gpt_gate_too_risky"}:
             return {
                 "candidate_kind": "opportunity" if status != STATUS_BLOCKED else "problem",
@@ -684,6 +770,67 @@ class RecommendationAggregator:
         evidence = item.get("evidence") or {}
         status = item.get("status")
         effect_level = item.get("effect_level")
+
+        if ctype in {
+            "adaptive_restriction_promotion",
+            "adaptive_restriction_stopped",
+            "adaptive_restriction_inconclusive",
+        }:
+            positive = ctype == "adaptive_restriction_promotion"
+            stopped = ctype == "adaptive_restriction_stopped"
+            return self._operator_fields(
+                title=(
+                    "Paper-test presteert beter dan baseline"
+                    if positive
+                    else "Schadelijke paper-test automatisch gestopt"
+                    if stopped
+                    else "Paper-test blijft onbeslist"
+                ),
+                question=(
+                    "Mag deze bewezen verbetering naar de volgende veilige fase?"
+                    if positive
+                    else "Deze paper-test is automatisch gepauzeerd; wil je alleen een notitie toevoegen?"
+                    if stopped
+                    else "Wil je meer bewijs blijven verzamelen?"
+                ),
+                summary=item.get("headline") or "",
+                consequence=(
+                    "Akkoord zet alleen een vervolgreview klaar; er verandert niets live."
+                    if positive
+                    else "De maatregel blijft uit de actieve paper-strategie."
+                    if stopped
+                    else "De maatregel blijft uitsluitend in paper actief."
+                ),
+                current_phase="validation",
+                target_phase="live_gate" if positive else "blocked" if stopped else "validation",
+                returns_as=(
+                    "live-gate voorstel"
+                    if positive
+                    else "nieuw paper-testvoorstel bij gewijzigde regel/criteria"
+                    if stopped
+                    else "nieuwe conclusie"
+                ),
+                evidence=[
+                    ("Regel", evidence.get("rule_id")),
+                    ("Toegepast", evidence.get("applied_events")),
+                    ("Gelabeld", evidence.get("labeled_events")),
+                    ("Baseline R", self._fmt_r(evidence.get("baseline_R"))),
+                    ("Kandidaat R", self._fmt_r(evidence.get("candidate_R"))),
+                    ("Verschil R", self._fmt_r(evidence.get("delta_R"))),
+                    ("Gemiddeld verschil R", self._fmt_r(evidence.get("avg_delta_R"))),
+                    ("Conclusie", evidence.get("conclusion")),
+                    ("Heropencriteria", "; ".join(evidence.get("reopen_criteria") or [])),
+                    ("Live effect nu", "geen"),
+                ],
+                actions=(
+                    [("approve", "Door naar live-gate"), ("wait", "Meer bewijs"), ("reject", "Afwijzen"), ("freeze", "Parkeren")]
+                    if positive
+                    else [("note", "Notitie"), ("freeze", "Parkeren")]
+                    if stopped
+                    else [("wait", "Meer bewijs"), ("freeze", "Parkeren")]
+                ),
+                recommended_action="wait" if positive else "auto_accept_context" if stopped else "wait",
+            )
 
         if ctype == "guard_threshold_calibration":
             issue = evidence.get("primary_issue") or {}

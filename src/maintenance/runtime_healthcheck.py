@@ -89,6 +89,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--db-path", default=DB_FILE)
     parser.add_argument("--interval", default="5m")
     parser.add_argument("--max-age-min", type=float, default=30.0)
+    parser.add_argument("--compact", action="store_true")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     result = check_runtime_health(
@@ -96,7 +97,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         interval=args.interval,
         max_age_min=args.max_age_min,
     )
-    print(json.dumps(result, ensure_ascii=False))
+    if args.compact:
+        age = result.get("age_min")
+        age_text = f"{age:.2f} min" if isinstance(age, (int, float)) else "unknown"
+        print(
+            f"Candles: {result.get('status')} | {result.get('interval')} age={age_text} | "
+            f"latest={result.get('latest_utc')} | rows={result.get('count', 0)}"
+        )
+    else:
+        print(json.dumps(result, ensure_ascii=False))
     if result["status"] == "HEALTHY":
         return EXIT_HEALTHY
     if result["status"] == "STALE":

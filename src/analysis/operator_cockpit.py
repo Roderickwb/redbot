@@ -19,6 +19,9 @@ from src.notifier.telegram_notifier import TelegramNotifier
 DEFAULT_OUTPUT_DIR = os.path.join("analysis", "operator_cockpit")
 DEFAULT_LATEST_FILE = "latest_operator_cockpit.json"
 DEFAULT_CONTROL_REPORT = os.path.join("analysis", "daily_control", "latest_daily_control_report.json")
+DEFAULT_RESTRICTION_OUTCOMES = os.path.join(
+    "analysis", "adaptive_restrictions", "latest_adaptive_restriction_outcomes.json"
+)
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -590,6 +593,43 @@ def format_cockpit_message(cockpit: dict) -> str:
     return "\n".join(line for line in lines if line is not None)
 
 
+def format_status_summary(cockpit: dict, restriction_outcomes: Optional[dict] = None) -> str:
+    decision = cockpit.get("daily_decision", {}) or {}
+    action = cockpit.get("action_needed", {}) or {}
+    learning = cockpit.get("learning", {}) or {}
+    risk = cockpit.get("risk", {}) or {}
+    recommendations = cockpit.get("recommendations", {}) or {}
+    outcomes = (restriction_outcomes or {}).get("summary", {}) or {}
+
+    return "\n".join([
+        f"Vandaag: {decision.get('label', 'UNKNOWN')} | {decision.get('reason') or action.get('headline')}",
+        (
+            f"Trading: open={risk.get('lifecycle_open', 0)} | closed={risk.get('lifecycle_closed', 0)} | "
+            f"win={risk.get('exit_win_rate_pct', 0.0)}% | pnl={risk.get('exit_total_pnl_eur', 0.0)} EUR"
+        ),
+        (
+            f"Learning: ML auc={learning.get('ml_auc')} rows={learning.get('ml_rows', 0)} | "
+            f"indicator={learning.get('indicator_top_feature')} edge_R={learning.get('indicator_top_edge_r', 0.0)} | "
+            f"market={learning.get('market_regime')}"
+        ),
+        (
+            f"Toegepast in paper: restrictions={outcomes.get('active_restrictions', 0)} | "
+            f"events={outcomes.get('applied_events', 0)} | labeled={outcomes.get('restrictions_with_labeled_outcomes', 0)} | "
+            f"observed_R={outcomes.get('observed_r', 0.0)}"
+        ),
+        (
+            f"Besluiten: nu={recommendations.get('needs_operator_review', 0)} | "
+            f"live-gate={recommendations.get('pending_live_gate', 0)} | "
+            f"wacht={recommendations.get('wait_more_evidence', 0)} | "
+            f"geblokkeerd={recommendations.get('blocked', 0)}"
+        ),
+        (
+            f"Risico: guard={risk.get('guard_primary_issue')} ({risk.get('guard_verdict')}) | "
+            f"history={risk.get('history_verdict')} | net_R={risk.get('history_net_saved_r', 0.0)}"
+        ),
+    ])
+
+
 def send_telegram(cockpit: dict) -> bool:
     load_dotenv()
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -619,6 +659,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR, help="Output directory.")
     parser.add_argument("--send", action="store_true", help="Send cockpit digest to Telegram.")
     parser.add_argument("--json", action="store_true", help="Print JSON instead of the human cockpit text.")
+    parser.add_argument("--summary", action="store_true", help="Print only the high-signal operator summary.")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     cockpit = run_operator_cockpit(
@@ -626,7 +667,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         output_dir=args.output_dir,
         send=args.send,
     )
-    if args.json:
+    if args.summary:
+        print(format_status_summary(cockpit, load_json(DEFAULT_RESTRICTION_OUTCOMES)))
+    elif args.json:
         print(json.dumps({
             "status": cockpit.get("status"),
             "daily_decision": cockpit.get("daily_decision"),

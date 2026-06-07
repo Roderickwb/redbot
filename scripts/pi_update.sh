@@ -200,7 +200,9 @@ if SEND_COCKPIT="$SEND_COCKPIT" "$ROOT_DIR/scripts/pi_smoke_check.sh" > "$SMOKE_
   if [[ "$VERBOSE" == "1" ]]; then
     cat "$SMOKE_LOG"
   else
-    grep -E '^(compile: OK|rounding: OK|safety: |daily_status:|failed_steps:|adaptive_restrictions:|adaptive_restriction_outcomes:|daily_control_report:|operator_cockpit:|SMOKE CHECK OK)' "$SMOKE_LOG" || true
+    grep -E '^(compile: OK|rounding: OK|safety: |daily_status:|failed_steps:|SMOKE CHECK OK)' "$SMOKE_LOG" || true
+    echo
+    "$PYTHON_BIN" -m src.analysis.operator_cockpit --summary
   fi
 else
   echo "smoke check failed; full output:"

@@ -15,34 +15,43 @@ fi
 cd "$ROOT_DIR"
 
 echo "== Red Bot Runtime Status =="
-echo "root: $ROOT_DIR"
-echo
 
+SERVICE_LINES=()
 for unit in "$BOT_SERVICE" "$APP_SERVICE" "$WATCHDOG_TIMER"; do
   if systemctl cat "$unit" >/dev/null 2>&1; then
-    echo "$unit: $(systemctl is-active "$unit" 2>/dev/null || true) / $(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    SERVICE_LINES+=("$unit=$(systemctl is-active "$unit" 2>/dev/null || true)/$(systemctl is-enabled "$unit" 2>/dev/null || true)")
   else
-    echo "$unit: not installed"
+    SERVICE_LINES+=("$unit=not-installed")
   fi
 done
+echo "Services: ${SERVICE_LINES[*]}"
 
-echo
-echo "== Bot process =="
-pgrep -af "python3? -m src.main" || echo "no src.main process found"
+BOT_PID="$(pgrep -f "python3? -m src.main" | head -n 1 || true)"
+if [[ -n "$BOT_PID" ]]; then
+  echo "Bot: RUNNING | pid=$BOT_PID"
+else
+  echo "Bot: STOPPED"
+fi
 
-echo
-echo "== Candle freshness =="
 set +e
-"$PYTHON_BIN" -m src.maintenance.runtime_healthcheck --max-age-min 30
+"$PYTHON_BIN" -m src.maintenance.runtime_healthcheck --max-age-min 30 --compact
 HEALTH_RC=$?
 set -e
-echo "health_exit_code: $HEALTH_RC"
+
+echo
+echo "== Trading & Learning =="
+"$PYTHON_BIN" -m src.analysis.operator_cockpit --summary
 
 if [[ "$VERBOSE" == "1" ]] && systemctl cat "$BOT_SERVICE" >/dev/null 2>&1; then
+  echo
+  echo "== Raw candle health =="
+  "$PYTHON_BIN" -m src.maintenance.runtime_healthcheck --max-age-min 30 || true
   echo
   echo "== Recent bot service log =="
   journalctl -u "$BOT_SERVICE" -n 30 --no-pager
 else
   echo
-  echo "Details: bash scripts/pi_status.sh --verbose"
+  echo "Technische details: bash scripts/pi_status.sh --verbose"
 fi
+
+exit "$HEALTH_RC"

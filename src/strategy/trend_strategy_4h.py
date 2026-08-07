@@ -1704,6 +1704,26 @@ class TrendStrategy4H:
 
         return df
 
+    def _fetch_and_indicator(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
+        """
+        Compatibility helper for MeltdownManager.
+
+        MeltdownManager checks flash-crash candles and RSI re-entry through
+        this method name. TrendStrategy4H already had the separate building
+        blocks; this keeps the safety check from failing before it can decide.
+        """
+        df = self._fetch_df(symbol, interval, limit=limit)
+        if df.empty:
+            return df
+        return self._add_rsi_macd(df)
+
+    def _fetch_and_indicstor(self, symbol: str, interval: str, limit=200) -> pd.DataFrame:
+        """
+        Backward-compatible alias for older typo'd runtime references.
+        New code should call _fetch_and_indicator.
+        """
+        return self._fetch_and_indicator(symbol, interval, limit=limit)
+
     def _last_candle_closed(self, df: pd.DataFrame) -> bool:
         # we gaan ervan uit dat "timestamp_ms" = eindtijd van de candle
         try:

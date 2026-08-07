@@ -56,6 +56,17 @@ echo "== Compile critical modules =="
 echo "compile: OK"
 echo
 
+echo "== Meltdown fetch compatibility =="
+"$PYTHON_BIN" - <<'PY'
+from src.strategy.trend_strategy_4h import TrendStrategy4H
+
+assert hasattr(TrendStrategy4H, "_fetch_df")
+assert hasattr(TrendStrategy4H, "_fetch_and_indicator")
+assert hasattr(TrendStrategy4H, "_fetch_and_indicstor")
+print("meltdown_fetch_compat: OK")
+PY
+echo
+
 echo "== Kraken candle rounding =="
 "$PYTHON_BIN" - <<'PY'
 from datetime import datetime, timezone

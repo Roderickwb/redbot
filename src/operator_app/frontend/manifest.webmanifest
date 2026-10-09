@@ -1,0 +1,16 @@
+{
+  "name": "Red Bot Operator",
+  "short_name": "Red Bot",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f8fa",
+  "theme_color": "#f7f8fa",
+  "icons": [
+    {
+      "src": "/redbot-icon.png",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

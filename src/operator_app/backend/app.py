@@ -708,6 +708,20 @@ FALLBACK_HTML = """
 """
 
 
+@app.get("/redbot-icon.png", response_model=None)
+def app_icon():
+    return FileResponse(APP_ROOT / "frontend" / "redbot-icon.png", media_type="image/png")
+
+
+@app.get("/manifest.webmanifest", response_model=None)
+def app_manifest():
+    return FileResponse(
+        APP_ROOT / "frontend" / "manifest.webmanifest",
+        media_type="application/manifest+json",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/{path:path}", response_model=None)
 def frontend(path: str):
     operator = APP_ROOT / "frontend" / "operator.html"

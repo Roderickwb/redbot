@@ -12,9 +12,11 @@ The output is intentionally conservative:
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
@@ -51,8 +53,15 @@ def _load_json(path: str, default: Any) -> Any:
 
 def _write_json(path: str, payload: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(path), delete=False) as f:
+            temporary = f.name
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -105,10 +114,73 @@ class AdaptiveRestrictionBuilder:
         recommendations_path: str = DEFAULT_RECOMMENDATIONS_PATH,
         outcomes_path: str = DEFAULT_OUTCOMES_PATH,
         output_dir: str = DEFAULT_OUTPUT_DIR,
+        decisions_path: str = os.path.join("analysis", "operator_decisions", "operator_decisions.jsonl"),
     ):
         self.recommendations_path = recommendations_path
         self.outcomes_path = outcomes_path
         self.output_dir = output_dir
+        self.decisions_path = decisions_path
+
+    def _registered_restrictions(self, recommendations: dict) -> list[dict]:
+        registry_path = os.path.join(self.output_dir, "experiment_registry.json")
+        registry = _load_json(registry_path, {})
+        if registry.get("_error"):
+            raise ValueError("Cannot read experiment registry; refusing to overwrite it")
+        entries = {r["restriction_id"]: copy.deepcopy(r)
+                   for r in registry.get("experiments", [])}
+        previous = _load_json(os.path.join(self.output_dir, DEFAULT_LATEST_FILE), {})
+        for r in previous.get("restrictions", []) + previous.get("suspended_restrictions", []):
+            entries.setdefault(r["restriction_id"], copy.deepcopy(r))
+
+        decisions = []
+        if os.path.exists(self.decisions_path):
+            with open(self.decisions_path, encoding="utf-8") as stream:
+                decisions = [json.loads(line) for line in stream if line.strip()]
+        latest = {}
+        current_ids = {i.get("id") for i in recommendations.get("items", []) + recommendations.get("resolved_items", [])}
+        for decision in decisions:
+            if decision.get("source_type", "recommendation") != "recommendation":
+                continue
+            if decision.get("action") not in {"note", "snooze"}:
+                latest[str(decision.get("source_id"))] = decision
+
+        # Historical approval snapshots recover vanished tests without silently
+        # resuming them. Existing rules stay frozen at their approved parameters.
+        for decision in decisions:
+            if decision.get("action") != "approve":
+                continue
+            if decision.get("source_id") in current_ids:
+                continue
+            snapshot = decision.get("source_snapshot") or {}
+            items = snapshot.get("resolved_items", []) + snapshot.get("items", [])
+            item = next((i for i in items if i.get("id") == decision.get("source_id")), None)
+            if not item:
+                continue
+            for r in self._restrictions_from_item(item):
+                r["lifecycle_status"] = "recovered_pending_review"
+                r["suspension_reason"] = "historical_test_missing_from_active_state"
+                r["operator_decision"] = {k: decision.get(k) for k in ("decision_id", "created_utc", "action")}
+                entries.setdefault(r["restriction_id"], r)
+
+        existing_sources = {r.get("source_item_id") for r in entries.values()}
+        for item in self._approved_items(recommendations):
+            if item.get("id") in existing_sources:
+                continue
+            for r in self._restrictions_from_item(item):
+                r["lifecycle_status"] = "active"
+                entries[r["restriction_id"]] = r
+        for r in entries.values():
+            decision = latest.get(str(r.get("source_item_id"))) or {}
+            action = decision.get("action")
+            if action in {"reject", "freeze", "wait"}:
+                r["lifecycle_status"] = "paused_by_operator"
+                r["suspension_reason"] = "operator_" + action
+            elif action == "approve" and r.get("lifecycle_status") in {"paused_by_operator", "recovered_pending_review"}:
+                recorded = (r.get("operator_decision") or {}).get("decision_id")
+                if recorded and recorded != decision.get("decision_id"):
+                    r["lifecycle_status"] = "active"
+            r.setdefault("lifecycle_status", "active")
+        return list(entries.values())
 
     def build(self) -> dict:
         recommendations = _load_json(self.recommendations_path, {"items": [], "resolved_items": []})
@@ -127,15 +199,17 @@ class AdaptiveRestrictionBuilder:
             item for item in approved_items
             if item.get("candidate_type") not in SUPPORTED_CANDIDATES
         ]
-        generated_restrictions = [r for item in supported_items for r in self._restrictions_from_item(item)]
+        generated_restrictions = self._registered_restrictions(recommendations)
         restrictions = []
         suspended_restrictions = []
         for restriction in generated_restrictions:
             outcome = conclusions.get(str(restriction.get("restriction_id"))) or {}
-            if outcome.get("conclusion") == "STOP_PAPER":
+            if outcome.get("conclusion") == "STOP_PAPER" or restriction.get("auto_suspended"):
                 restriction["auto_suspended"] = True
                 restriction["suspension_reason"] = "measured_candidate_underperformed_baseline"
-                restriction["outcome_conclusion"] = outcome
+                restriction["outcome_conclusion"] = outcome or restriction.get("outcome_conclusion", {})
+                suspended_restrictions.append(restriction)
+            elif restriction.get("lifecycle_status") != "active":
                 suspended_restrictions.append(restriction)
             else:
                 restrictions.append(restriction)
@@ -191,6 +265,11 @@ class AdaptiveRestrictionBuilder:
             "output_path": os.path.join(self.output_dir, DEFAULT_LATEST_FILE),
             "live_effect": False,
         }
+        _write_json(os.path.join(self.output_dir, "experiment_registry.json"), {
+            "version": 1, "created_utc": _utc_now(),
+            "experiments": restrictions + suspended_restrictions,
+            "live_effect": False,
+        })
         _write_json(report["output_path"], report)
         return report
 

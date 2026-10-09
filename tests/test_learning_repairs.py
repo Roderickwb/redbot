@@ -11,9 +11,46 @@ from src.analysis.strategy_profile_proposer import StrategyProfileProposer
 from src.analysis.strategy_event_outcome_labeler import StrategyEventOutcomeLabeler, OutcomeConfig
 from src.analysis.simulation_costs import apply_simulation_costs
 from src.operator_app.backend.data import mobile_bundle
+from src.analysis.adaptive_restrictions import AdaptiveRestrictionBuilder
 
 
 class LearningRepairs(unittest.TestCase):
+    def test_experiment_survives_missing_proposal_and_freezes_rule(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "recommendations.json"
+            decisions = Path(root) / "decisions.jsonl"
+            item = {"id": "coin-test", "candidate_type": "per_coin_learning_candidate",
+                    "status": "approved_shadow", "evidence": {"coin": {"symbol": "ALGO-EUR",
+                    "best_coin_rule_candidate": {"rule_id": "half", "action_type": "reduced_risk", "multiplier": 0.5}}}}
+            path.write_text(json.dumps({"items": [item]}))
+            builder = AdaptiveRestrictionBuilder(str(path), str(Path(root)/"outcomes.json"), root, str(decisions))
+            first = builder.build()["restrictions"][0]
+            item["evidence"]["coin"]["best_coin_rule_candidate"]["multiplier"] = 0.75
+            path.write_text(json.dumps({"items": [item]}))
+            self.assertEqual(builder.build()["restrictions"][0]["risk_multiplier"], 0.5)
+            path.write_text(json.dumps({"items": []}))
+            self.assertEqual(builder.build()["restrictions"][0]["restriction_id"], first["restriction_id"])
+            decisions.write_text(json.dumps({"source_id": "coin-test", "action": "freeze"})+"\n")
+            paused = builder.build()
+            self.assertEqual(paused["restrictions"], [])
+            self.assertEqual(len(paused["suspended_restrictions"]), 1)
+
+    def test_historical_approval_recovers_paused_not_active(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "recommendations.json"
+            decisions = Path(root) / "decisions.jsonl"
+            item = {"id": "old-test", "candidate_type": "entry_rule_candidate", "evidence": {
+                "source_cluster": {"dimension": "direction", "value": "short"},
+                "best_candidate": {"rule_id": "half", "action_type": "reduced_risk", "multiplier": 0.5}}}
+            path.write_text('{"items": []}')
+            decisions.write_text(json.dumps({"source_id": "old-test", "action": "approve", "decision_id": "old",
+                                             "source_snapshot": {"items": [item]}})+"\n")
+            builder = AdaptiveRestrictionBuilder(str(path), str(Path(root)/"outcomes.json"), root, str(decisions))
+            report = builder.build()
+            self.assertFalse(report["restrictions"])
+            self.assertEqual(report["suspended_restrictions"][0]["lifecycle_status"], "recovered_pending_review")
+            self.assertFalse(builder.build()["restrictions"])
+
     def test_partial_exits_include_entry_fee_once(self):
         master = {"fees": 0.30, "pnl_eur": 0.20}
         children = [{"status": "partial", "fees": 0.10, "pnl_eur": 0.30},

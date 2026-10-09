@@ -320,6 +320,8 @@ class AdaptiveRestrictionOutcomeTracker:
             "state": restriction.get("state"),
             "rule_id": restriction.get("rule_id"),
             "auto_suspended": bool(restriction.get("auto_suspended")),
+            "lifecycle_status": restriction.get("lifecycle_status", "active"),
+            "suspension_reason": restriction.get("suspension_reason"),
             "status": status,
             "conclusion": conclusion,
             "applied_events": applied_count,

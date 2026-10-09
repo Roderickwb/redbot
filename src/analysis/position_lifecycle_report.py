@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 from src.config.config import DB_FILE
+from src.analysis.trade_accounting import position_accounting
 
 
 DEFAULT_OUTPUT_DIR = os.path.join("analysis", "positions")
@@ -185,8 +186,9 @@ class PositionLifecycleReport:
         child_statuses = [str(row.get("status") or "").lower() for row in children]
         child_amount = sum(_safe_float(row.get("amount")) for row in children)
         master_amount = _safe_float(master.get("amount"))
-        realized_pnl = _safe_float(master.get("pnl_eur")) or sum(_safe_float(row.get("pnl_eur")) for row in children)
-        fees = _safe_float(master.get("fees")) or sum(_safe_float(row.get("fees")) for row in children)
+        accounting = position_accounting(master, children)
+        realized_pnl = accounting["pnl_eur"]
+        fees = accounting["fees_eur"]
         path = self._path(status, child_statuses)
         last_child = children[-1] if children else {}
         final_exit_reason = (

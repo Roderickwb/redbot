@@ -196,6 +196,7 @@ class AdaptiveRestrictionOutcomeTracker:
             "candidate_r": round(sum(_safe_float(row.get("candidate_R")) for row in rows), 6),
             "delta_r": round(sum(_safe_float(row.get("delta_R")) for row in rows), 6),
             "event_error": event_error,
+            "history_scope": "all_retained_restriction_events",
             "live_effect": False,
         }
         payload = {
@@ -218,14 +219,21 @@ class AdaptiveRestrictionOutcomeTracker:
                    gpt_action, trade_id, features_json, outcome_status, outcome_json
               FROM strategy_events
              WHERE features_json IS NOT NULL
+               AND instr(features_json, 'adaptive_restriction') > 0
              ORDER BY timestamp DESC
-             LIMIT ?
         """
         try:
             con = sqlite3.connect(self.db_path)
             con.row_factory = sqlite3.Row
             try:
-                rows = [dict(row) for row in con.execute(sql, (int(limit),)).fetchall()]
+                # Batch size must never truncate an experiment's history.
+                cursor = con.execute(sql)
+                rows = []
+                while True:
+                    batch = cursor.fetchmany(max(1, int(limit)))
+                    if not batch:
+                        break
+                    rows.extend(dict(row) for row in batch)
             finally:
                 con.close()
             return rows, ""

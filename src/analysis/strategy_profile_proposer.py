@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional
 
 from src.config.config import DB_FILE
+from src.analysis.coin_profile_loader import load_coin_profile_json
 from src.database_manager.database_manager import DatabaseManager
 
 logger = logging.getLogger("strategy_profile_proposer")
@@ -200,6 +201,7 @@ class StrategyProfileProposer:
         learning_payload: Dict[str, Any],
         db: Optional[DatabaseManager] = None,
         strategy_name: str = LIVE_STRATEGY_NAME,
+        context_only: bool = False,
     ) -> int:
         local_db = db is None
         if db is None:
@@ -209,6 +211,12 @@ class StrategyProfileProposer:
         updated_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
 
         for symbol, profile in profiles.items():
+            if context_only:
+                existing = load_coin_profile_json(db, symbol, strategy_name=strategy_name) or {}
+                profile = {**existing, **profile}
+                for field, default in (("risk_multiplier", 1.0), ("bias", "neutral"), ("hold_behavior", "unknown")):
+                    profile[field] = existing.get(field, default)
+                profile["risk_settings_preserved"] = True
             db.upsert_coin_profile(
                 symbol=symbol,
                 strategy_name=strategy_name,

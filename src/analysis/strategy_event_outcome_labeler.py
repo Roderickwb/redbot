@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
 
 from src.config.config import DB_FILE, yaml_config
+from src.analysis.trade_accounting import position_accounting
 from src.database_manager.database_manager import DatabaseManager
 
 logger = logging.getLogger("strategy_event_outcome_labeler")
@@ -101,6 +102,25 @@ class StrategyEventOutcomeLabeler:
 
         logger.info("[strategy_event_outcomes] %s", stats)
         return stats
+
+    def refresh_realized_outcomes(self, apply: bool = False) -> int:
+        """Refresh closed trades without rebuilding candle counterfactuals."""
+        rows = self.db.execute_query(
+            """SELECT e.id, e.trade_id, e.outcome_json FROM strategy_events e
+               JOIN trades t ON t.id=e.trade_id AND t.is_master=1
+               WHERE e.event_type='trade_open' AND e.outcome_status='labeled'
+                 AND t.status='closed'"""
+        )
+        updated = 0
+        for event_id, trade_id, raw in rows or []:
+            outcome = json.loads(raw or "{}")
+            if (outcome.get("realized_trade") or {}).get("accounting_version") == "net_entry_exit_v1":
+                continue
+            outcome["realized_trade"] = self._load_realized_trade_outcome(int(trade_id))
+            if apply:
+                self._update_event_outcome(event_id, status="labeled", outcome=outcome)
+            updated += 1
+        return updated
 
     def _load_events(self, limit: int, relabel: bool = False) -> list[Dict[str, Any]]:
         cutoff_ts = int(time.time() * 1000) - int(self.config.lookahead_hours * 3600 * 1000)
@@ -492,6 +512,8 @@ class StrategyEventOutcomeLabeler:
         )
         child_cols = ["id", "timestamp", "side", "price", "amount", "status", "pnl_eur", "fees", "trade_cost"]
         children = [dict(zip(child_cols, row)) for row in child_rows] if child_rows else []
+        accounting = position_accounting(master, children)
+        pnl_eur = accounting["pnl_eur"]
 
         if trade_status != "closed":
             realized_label = "trade_still_open"
@@ -509,6 +531,8 @@ class StrategyEventOutcomeLabeler:
             "trade_id": trade_id,
             "position_id": master.get("position_id"),
             "pnl_eur": round(pnl_eur, 6),
+            "accounting_version": accounting["accounting_version"],
+            "entry_fees_eur": round(accounting["entry_fees_eur"], 6),
             "fees": round(fees, 6),
             "trade_cost": round(trade_cost, 6),
             "roi_pct": round(roi_pct, 4) if roi_pct is not None else None,

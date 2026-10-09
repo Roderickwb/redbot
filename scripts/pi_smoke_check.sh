@@ -56,6 +56,11 @@ echo "== Compile critical modules =="
 echo "compile: OK"
 echo
 
+echo "== Learning accounting and history =="
+"$PYTHON_BIN" -m unittest discover -s tests -p test_learning_repairs.py
+echo "learning_repairs: OK"
+echo
+
 echo "== Meltdown fetch compatibility =="
 "$PYTHON_BIN" - <<'PY'
 from src.strategy.trend_strategy_4h import TrendStrategy4H

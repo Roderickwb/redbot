@@ -17,6 +17,7 @@ from collections import defaultdict
 from typing import Any, Dict, Iterable, Optional
 
 from src.config.config import DB_FILE
+from src.analysis.strategy_event_outcome_labeler import StrategyEventOutcomeLabeler
 from src.database_manager.database_manager import DatabaseManager
 
 logger = logging.getLogger("strategy_event_reporter")
@@ -99,9 +100,12 @@ class StrategyEventReporter:
         trade_open_summary = defaultdict(_new_bucket)
         counterfactual_summary = defaultdict(_new_bucket)
         range_summary = defaultdict(_new_range_bucket)
+        labeler = StrategyEventOutcomeLabeler(db=self.db)
 
         for event in events:
             outcome = self._parse_outcome(event.get("outcome_json"))
+            if event.get("event_type") == "trade_open" and event.get("trade_id"):
+                outcome["realized_trade"] = labeler._load_realized_trade_outcome(int(event["trade_id"]))
 
             self._add_event(by_symbol[event.get("symbol") or "UNKNOWN"], event, outcome)
             self._add_event(by_event_type[event.get("event_type") or "UNKNOWN"], event, outcome)

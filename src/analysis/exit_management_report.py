@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 from src.config.config import DB_FILE
+from src.analysis.trade_accounting import position_accounting
 
 
 DEFAULT_OUTPUT_DIR = os.path.join("analysis", "exits")
@@ -180,8 +181,9 @@ class ExitManagementReport:
         initial_amount_estimate = max(master_amount, total_child_amount)
         entry_price = _safe_float(master.get("price"))
         exposure = entry_price * initial_amount_estimate
-        pnl = sum(_safe_float(row.get("pnl_eur")) for row in children)
-        fees = sum(_safe_float(row.get("fees")) for row in children)
+        accounting = position_accounting(master, children)
+        pnl = accounting["pnl_eur"]
+        fees = accounting["fees_eur"]
         last_child = children[-1] if children else None
         closed = bool(closes) or str(master.get("status") or "").lower() == "closed"
         path = self._exit_path(child_statuses, closed)
@@ -217,6 +219,9 @@ class ExitManagementReport:
             "partial_exits": len(partials),
             "close_events": len(closes),
             "realized_pnl_eur": _round(pnl),
+            "accounting_version": accounting["accounting_version"],
+            "entry_fees_eur": _round(accounting["entry_fees_eur"]),
+            "exit_fees_eur": _round(accounting["exit_fees_eur"]),
             "fees_eur": _round(fees),
             "roi_pct": _round((pnl / exposure) * 100.0, 4) if exposure else 0.0,
             "hold_hours": hold_hours,

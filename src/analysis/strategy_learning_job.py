@@ -66,6 +66,7 @@ def run_strategy_learning_job(
             limit=label_limit,
             relabel=relabel_existing,
         )
+        label_stats["realized_refreshed"] = labeler.refresh_realized_outcomes(apply=apply_labels)
 
         reporter = StrategyEventReporter(db=db)
         report = reporter.build_report(limit=report_limit, windows=windows or [30, 100, 500])
@@ -96,9 +97,9 @@ def run_strategy_learning_job(
         proposals_path = os.path.join(output_dir, DEFAULT_PROPOSALS_FILE)
         with open(proposals_path, "w", encoding="utf-8") as f:
             json.dump(proposals, f, indent=2, ensure_ascii=False)
-        profiles_written = 0
-        if apply_profiles:
-            profiles_written = proposer.write_coin_profiles_to_db(payload, db=db)
+        profiles_written = proposer.write_coin_profiles_to_db(
+            payload, db=db, context_only=not apply_profiles,
+        )
 
         notification_sent = False
         if notify_daily_summary:
@@ -117,6 +118,7 @@ def run_strategy_learning_job(
             "proposal_symbols": proposals.get("n_symbols", 0),
             "profiles_written": profiles_written,
             "profiles_applied": apply_profiles,
+            "profile_context_refreshed": True,
             "notification_sent": notification_sent,
         }
     finally:

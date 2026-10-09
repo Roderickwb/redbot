@@ -21,6 +21,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from src.config.config import DB_FILE, yaml_config
 from src.analysis.trade_accounting import position_accounting
+from src.analysis.simulation_costs import COST_VERSION, apply_simulation_costs
 from src.database_manager.database_manager import DatabaseManager
 
 logger = logging.getLogger("strategy_event_outcome_labeler")
@@ -38,6 +39,7 @@ class OutcomeConfig:
     tp1_portion_pct: float = 0.5
     trailing_atr_mult: float = 0.9
     breakeven_after_tp1: bool = True
+    fee_rate: float = 0.0035
 
 
 def _analysis_cfg() -> OutcomeConfig:
@@ -54,6 +56,7 @@ def _analysis_cfg() -> OutcomeConfig:
         tp1_portion_pct=float(strategy_cfg.get("tp1_portion_pct", 0.5)),
         trailing_atr_mult=float(strategy_cfg.get("trailing_atr_mult", 0.9)),
         breakeven_after_tp1=bool(strategy_cfg.get("breakeven_after_tp1", True)),
+        fee_rate=float(strategy_cfg.get("fee_rate", 0.0035)),
     )
 
 
@@ -121,6 +124,27 @@ class StrategyEventOutcomeLabeler:
                 self._update_event_outcome(event_id, status="labeled", outcome=outcome)
             updated += 1
         return updated
+
+    def refresh_simulation_costs(self, apply: bool = False, limit: int = 5000) -> dict:
+        rows = self.db.execute_query(
+            """SELECT id, outcome_json FROM strategy_events
+               WHERE outcome_status='labeled'
+                 AND json_valid(outcome_json)
+                 AND json_extract(outcome_json, '$.counterfactual_trade.r_multiple') IS NOT NULL
+                 AND COALESCE(json_extract(outcome_json, '$.counterfactual_trade.cost_version'), '') != ?
+                 AND COALESCE(json_extract(outcome_json, '$.counterfactual_trade.cost_status'), '') != 'missing_prices_or_risk'
+               ORDER BY timestamp DESC, id DESC LIMIT ?""", (COST_VERSION, int(limit)),
+        )
+        updated = missing = 0
+        for event_id, raw in rows or []:
+            outcome = json.loads(raw)
+            trade = apply_simulation_costs(outcome['counterfactual_trade'], self.config.fee_rate)
+            outcome['counterfactual_trade'] = trade
+            missing += trade.get('cost_status') != 'included'
+            if apply:
+                self._update_event_outcome(event_id, status='labeled', outcome=outcome)
+                updated += 1
+        return {"loaded": len(rows or []), "updated": updated, "missing_inputs": missing, "cost_version": COST_VERSION}
 
     def _load_events(self, limit: int, relabel: bool = False) -> list[Dict[str, Any]]:
         cutoff_ts = int(time.time() * 1000) - int(self.config.lookahead_hours * 3600 * 1000)
@@ -358,7 +382,7 @@ class StrategyEventOutcomeLabeler:
             realized_r += remaining_portion * unrealized_r
 
         label = self._counterfactual_label(realized_r, tp1_hit, exit_reason, ambiguous)
-        return {
+        simulated = {
             "status": "ambiguous_intrabar" if ambiguous else "simulated",
             "label": label,
             "direction": direction,
@@ -381,6 +405,7 @@ class StrategyEventOutcomeLabeler:
             "bars": len(candles),
             "exit_ts": final_ts,
         }
+        return apply_simulation_costs(simulated, self.config.fee_rate)
 
     def _counterfactual_label(self, r_multiple: float, tp1_hit: bool, exit_reason: str, ambiguous: bool) -> str:
         if ambiguous:

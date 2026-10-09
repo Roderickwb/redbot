@@ -18,7 +18,8 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
-from src.config.config import DB_FILE
+from src.config.config import DB_FILE, yaml_config
+from src.analysis.simulation_costs import apply_simulation_costs
 
 
 DEFAULT_RESTRICTIONS_PATH = os.path.join(
@@ -82,7 +83,11 @@ def _nested(data: dict, *keys: str) -> Any:
 
 
 def _cf_r(outcome: dict) -> Optional[float]:
-    value = _nested(outcome, "counterfactual_trade", "r_multiple")
+    trade = outcome.get("counterfactual_trade") or {}
+    trade = apply_simulation_costs(trade, float((yaml_config.get('trend_strategy_4h') or {}).get('fee_rate', 0.0035)))
+    if trade.get('cost_status') != 'included':
+        return None
+    value = trade.get('r_multiple')
     if value is None:
         return None
     return _safe_float(value)
@@ -197,6 +202,7 @@ class AdaptiveRestrictionOutcomeTracker:
             "delta_r": round(sum(_safe_float(row.get("delta_R")) for row in rows), 6),
             "event_error": event_error,
             "history_scope": "all_retained_restriction_events",
+            "cost_basis": "entry_exit_fees_v1",
             "live_effect": False,
         }
         payload = {
@@ -325,6 +331,7 @@ class AdaptiveRestrictionOutcomeTracker:
             "candidate_R": round(candidate_r, 6),
             "delta_R": round(delta_r, 6),
             "avg_delta_R": round(avg_delta_r, 6),
+            "cost_basis": "entry_exit_fees_v1",
             "expected_net_R": best.get("estimated_net_R"),
             "candidate_baseline_R": best.get("baseline_R"),
             "candidate_after_R": best.get("candidate_R") or best.get("estimated_after_R"),

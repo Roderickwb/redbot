@@ -8,7 +8,9 @@ from unittest.mock import Mock, patch
 from src.analysis.trade_accounting import position_accounting
 from src.analysis.adaptive_restriction_outcome_tracker import AdaptiveRestrictionOutcomeTracker
 from src.analysis.strategy_profile_proposer import StrategyProfileProposer
-from src.analysis.strategy_event_outcome_labeler import StrategyEventOutcomeLabeler
+from src.analysis.strategy_event_outcome_labeler import StrategyEventOutcomeLabeler, OutcomeConfig
+from src.analysis.simulation_costs import apply_simulation_costs
+from src.operator_app.backend.data import mobile_bundle
 
 
 class LearningRepairs(unittest.TestCase):
@@ -36,7 +38,7 @@ class LearningRepairs(unittest.TestCase):
             con = sqlite3.connect(db_path)
             con.execute("CREATE TABLE strategy_events(id INTEGER, timestamp INTEGER, symbol TEXT, event_type TEXT, decision_stage TEXT, skip_reason TEXT, gpt_action TEXT, trade_id INTEGER, features_json TEXT, outcome_status TEXT, outcome_json TEXT)")
             features = json.dumps({"adaptive_restriction_sizing": {"restrictions": [{"restriction_id": "test", "before": 1, "after": 0.5}]}})
-            outcome = json.dumps({"counterfactual_trade": {"r_multiple": -1}})
+            outcome = json.dumps({"counterfactual_trade": {"r_multiple": -1, "entry_price": 100, "exit_price": 90, "risk_per_unit": 10}})
             for i in range(12):
                 con.execute("INSERT INTO strategy_events VALUES(?,?, 'XBT-EUR','trade_open','open',NULL,NULL,NULL,?,'labeled',?)", (i, i, features, outcome))
             for i in range(12, 50):
@@ -49,7 +51,59 @@ class LearningRepairs(unittest.TestCase):
             for _ in range(2):
                 result = tracker.build(limit=2)
                 self.assertEqual(result["summary"]["labeled_events"], 12)
-                self.assertEqual(result["summary"]["delta_r"], 6)
+                self.assertAlmostEqual(result["summary"]["delta_r"], 6.399)
+
+    def test_simulated_costs_long_short_partial_and_idempotence(self):
+        for direction in ('long', 'short'):
+            trade = {'direction': direction, 'r_multiple': 0.05, 'entry_price': 100,
+                     'exit_price': 100.5, 'risk_per_unit': 10, 'exit_reason': 'OPEN_END'}
+            result = apply_simulation_costs(trade, 0.0035)
+            self.assertAlmostEqual(result['fees_r'], 0.0702)
+            self.assertLess(result['r_multiple'], 0)
+            self.assertEqual(result['label'], 'cf_loss')
+            self.assertEqual(apply_simulation_costs(result, 0.0035), result)
+        partial = apply_simulation_costs({'r_multiple': 1.5, 'entry_price': 100,
+                                        'exit_price': 110, 'tp1_price': 120, 'tp1_hit': True,
+                                        'tp1_portion_pct': 0.5, 'risk_per_unit': 10}, 0.0035)
+        self.assertAlmostEqual(partial['fees_r'], 0.0753)
+
+    def test_invalid_cost_inputs_are_not_claimed_as_net(self):
+        self.assertEqual(apply_simulation_costs({'r_multiple': 1}, 0.0035)['cost_status'], 'missing_prices_or_risk')
+
+    def test_simulator_charges_real_exit_notional_for_long_and_short(self):
+        labeler = StrategyEventOutcomeLabeler(db=Mock(), config=OutcomeConfig(sl_atr_mult=1, tp1_atr_mult=1, trailing_atr_mult=1))
+        long = labeler._simulate_counterfactual_trade('long', 100, 1, [{'timestamp': 1, 'high': 100.5, 'low': 98.9, 'close': 99}])
+        short = labeler._simulate_counterfactual_trade('short', 100, 1, [{'timestamp': 1, 'high': 101.1, 'low': 99.5, 'close': 101}])
+        self.assertAlmostEqual(long['r_multiple'], -1.6965)
+        self.assertAlmostEqual(short['r_multiple'], -1.7035)
+        partial = labeler._simulate_counterfactual_trade('long', 100, 1, [
+            {'timestamp': 1, 'high': 102, 'low': 100, 'close': 101.5},
+            {'timestamp': 2, 'high': 102, 'low': 101, 'close': 101.5}])
+        self.assertAlmostEqual(partial['gross_r_multiple'], 1)
+        self.assertAlmostEqual(partial['r_multiple'], 0.2965)
+        self.assertTrue(partial['tp1_hit'])
+
+    def test_migration_changes_only_simulated_cost_fields(self):
+        labeler = StrategyEventOutcomeLabeler(db=Mock())
+        raw = json.dumps({'counterfactual_trade': {'r_multiple': 0.05, 'entry_price': 100, 'exit_price': 100.5, 'risk_per_unit': 10}, 'realized_trade': {'pnl_eur': 0.123}, 'label': 'existing_move_label'})
+        labeler.db.execute_query.return_value = [(1, raw)]
+        with patch.object(labeler, '_update_event_outcome') as update:
+            stats = labeler.refresh_simulation_costs(apply=True)
+        result = update.call_args.kwargs['outcome']
+        self.assertEqual(result['realized_trade']['pnl_eur'], 0.123)
+        self.assertEqual(result['label'], 'existing_move_label')
+        self.assertLess(result['counterfactual_trade']['r_multiple'], 0)
+        self.assertEqual(stats['updated'], 1)
+
+    def test_mobile_bundle_does_not_copy_raw_evidence_or_execution_snapshots(self):
+        reports = {'recommendations': {'items': [{'id': 'abc', 'title': 'Test', 'operator_evidence': [{'label': 'Aantal', 'value': '12'}], 'evidence': {'large': 'x'*1000000}}]},
+                   'operator_decisions': {'recent': [{'action': 'approve', 'source_snapshot': {'large': 'x'*1000000}}]}}
+        with patch('src.operator_app.backend.data.report', side_effect=lambda name: reports.get(name, {'status': 'OK'})), patch('src.operator_app.backend.data.recent_positions', return_value={'rows': [], 'status': 'OK'}):
+            bundle = mobile_bundle()
+        self.assertLess(len(json.dumps(bundle)), 10000)
+        self.assertNotIn('evidence', bundle['recommendations']['items'][0])
+        self.assertNotIn('source_snapshot', bundle['operator_decisions']['recent'][0])
+        self.assertEqual(bundle['recommendations']['items'][0]['operator_evidence'][0]['value'], '12')
 
     def test_context_refresh_preserves_behavior_and_other_context(self):
         db = Mock()

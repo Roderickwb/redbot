@@ -7,6 +7,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -37,6 +38,7 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 @app.get("/api/health")
@@ -708,6 +710,9 @@ FALLBACK_HTML = """
 
 @app.get("/{path:path}", response_model=None)
 def frontend(path: str):
+    operator = APP_ROOT / "frontend" / "operator.html"
+    if operator.exists():
+        return FileResponse(operator, headers={"Cache-Control": "no-cache"})
     index = FRONTEND_DIST / "index.html"
     if index.exists():
         return FileResponse(index)

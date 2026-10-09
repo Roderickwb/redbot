@@ -787,7 +787,7 @@ class RecommendationAggregator:
                     else "Paper-test blijft onbeslist"
                 ),
                 question=(
-                    "Mag deze bewezen verbetering naar de volgende veilige fase?"
+                    "Wil je dit gemeten voordeel laten beoordelen voor de volgende fase?"
                     if positive
                     else "Deze paper-test is automatisch gepauzeerd; wil je alleen een notitie toevoegen?"
                     if stopped
@@ -818,6 +818,8 @@ class RecommendationAggregator:
                     ("Kandidaat R", self._fmt_r(evidence.get("candidate_R"))),
                     ("Verschil R", self._fmt_r(evidence.get("delta_R"))),
                     ("Gemiddeld verschil R", self._fmt_r(evidence.get("avg_delta_R"))),
+                    ("Netto kandidaat", "nog verliesgevend" if _safe_float(evidence.get("candidate_R")) < 0 else "positief"),
+                    ("Kostenbasis", "inclusief handelskosten" if evidence.get("cost_basis") else "nog niet bijgewerkt"),
                     ("Conclusie", evidence.get("conclusion")),
                     ("Heropencriteria", "; ".join(evidence.get("reopen_criteria") or [])),
                     ("Live effect nu", "geen"),

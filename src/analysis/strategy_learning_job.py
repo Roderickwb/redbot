@@ -67,6 +67,7 @@ def run_strategy_learning_job(
             relabel=relabel_existing,
         )
         label_stats["realized_refreshed"] = labeler.refresh_realized_outcomes(apply=apply_labels)
+        label_stats["simulation_costs"] = labeler.refresh_simulation_costs(apply=apply_labels, limit=report_limit)
 
         reporter = StrategyEventReporter(db=db)
         report = reporter.build_report(limit=report_limit, windows=windows or [30, 100, 500])

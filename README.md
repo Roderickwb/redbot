@@ -356,3 +356,10 @@ Zo krijg je ook in de logs andere beslissingen dan ‘Neutraal’.
 # db_manager.prune_old_candles(days=60, interval='1m')
 
 
+# Private Remote Access
+
+For reproducible Pi Tailscale setup and the iPhone HTTPS home-screen app, see
+[remote access](docs/remote_access.md). The explicit setup script is
+`bash scripts/pi_remote_access.sh`; its default mode is read-only status.
+System changes require operator approval and are not part of normal updates.
+
